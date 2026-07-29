@@ -64,6 +64,10 @@ def calculate_multiples() -> pd.DataFrame:
 
 
 def main() -> None:
+    if not (config.FINANCIALS_FILE.exists() and config.PRICES_FILE.exists()):
+        logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
+        return
+
     df = calculate_multiples()
     if df.empty:
         return
