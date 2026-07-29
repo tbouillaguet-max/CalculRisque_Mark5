@@ -29,18 +29,28 @@ Corrections majeures par rapport à Recuperation10KMark2 :
       interest_expense, shares_outstanding) au lieu du mélange FR/EN
       d'origine ("CA", "Dette net", "Nombre d'action"...) qui empêchait
       06/07/08 de relire correctement les données produites par ce script.
+    - NOUVEAU : throttle par ticker (data/financials/fetch_state.json) et
+      fusion avec le fichier existant au lieu de tout réinterroger/écraser
+      à chaque run. Un 10-K annuel ne sort qu'une fois par an : inutile
+      d'interroger companyfacts pour un ticker déjà interrogé il y a moins
+      de --refresh-days jours (défaut 30). --force-refresh retrouve
+      l'ancien comportement (interroge tous les tickers demandés).
 
 Usage :
     python 04_recuperation_10k.py                 # tout l'univers US
     python 04_recuperation_10k.py --limit 10       # test rapide
     python 04_recuperation_10k.py --ticker AAPL    # une seule entreprise
+    python 04_recuperation_10k.py --refresh-days 7  # throttle plus court
+    python 04_recuperation_10k.py --force-refresh   # réinterroge tous les tickers demandés
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -48,6 +58,9 @@ import pandas as pd
 import requests
 
 import config
+
+FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state.json"
+REFRESH_DAYS_DEFAULT = 30
 
 # ⚠️ À COMPLÉTER : la SEC exige un User-Agent identifiant un contact réel.
 SEC_CONTACT_EMAIL = "jeanboubou1er@gmail.com"
@@ -215,11 +228,49 @@ def extract_financials_for_ticker(ric: str, cik: str) -> pd.DataFrame:
     return df
 
 
+def load_fetch_state(path: Path) -> Dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("État de suivi illisible (%s), on repart de zéro.", e)
+        return {}
+
+
+def save_fetch_state(path: Path, state: Dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def should_skip(symbol: str, existing: pd.DataFrame, state: Dict[str, str], refresh_days: int) -> bool:
+    """Un ticker est ignoré (aucun appel SEC) s'il a déjà des données en
+    cache ET a été interrogé il y a moins de refresh_days jours. Un 10-K
+    n'est déposé qu'une fois par an : pas besoin de rappeler companyfacts
+    à chaque run pour un ticker déjà à jour récemment."""
+    if symbol not in state:
+        return False
+    if existing.empty or symbol not in set(existing["symbol"]):
+        return False
+    last_fetched = datetime.fromisoformat(state[symbol])
+    return (datetime.now() - last_fetched).days <= refresh_days
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--tickers", type=Path, default=config.UNIVERSE_FILE)
     parser.add_argument("--ticker", type=str, default=None, help="Une seule entreprise (ex: AAPL)")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--refresh-days", type=int, default=REFRESH_DAYS_DEFAULT,
+        help="Ignore un ticker déjà interrogé il y a moins de N jours (défaut: %(default)s).",
+    )
+    parser.add_argument(
+        "--force-refresh", action="store_true",
+        help="Ignore le throttle et interroge la SEC pour tous les tickers demandés.",
+    )
     args = parser.parse_args()
 
     if SEC_CONTACT_EMAIL == "ton_email@example.com":
@@ -237,36 +288,70 @@ def main() -> None:
         if args.limit:
             symbols = symbols[: args.limit]
 
-    logger.info("Récupération des CIK SEC pour %d tickers...", len(symbols))
+    existing = pd.read_parquet(config.FINANCIALS_FILE) if config.FINANCIALS_FILE.exists() else pd.DataFrame()
+    if not existing.empty:
+        logger.info("Cache existant chargé : %s (%d lignes, %d symboles).", config.FINANCIALS_FILE, len(existing), existing["symbol"].nunique())
+
+    state = load_fetch_state(FETCH_STATE_FILE)
+    to_query = [
+        t for t in symbols
+        if args.force_refresh or not should_skip(config.to_ib_symbol(t), existing, state, args.refresh_days)
+    ]
+    skip_count = len(symbols) - len(to_query)
+
+    if not to_query:
+        logger.info(
+            "Les %d tickers demandés sont déjà à jour (interrogés il y a moins de %d jours) : "
+            "aucun appel SEC nécessaire.", len(symbols), args.refresh_days,
+        )
+        return
+
+    logger.info("%d/%d tickers déjà à jour (ignorés), %d à interroger.", skip_count, len(symbols), len(to_query))
+    logger.info("Récupération des CIK SEC pour %d tickers...", len(to_query))
     cik_map = get_cik_map()
 
     all_frames = []
     ok_count, fail_count = 0, 0
-    for i, ticker in enumerate(symbols, start=1):
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    for i, ticker in enumerate(to_query, start=1):
         cik = cik_map.get(ticker.upper())
         if not cik:
-            logger.warning("[%d/%d] CIK introuvable pour %s, ignoré.", i, len(symbols), ticker)
+            logger.warning("[%d/%d] CIK introuvable pour %s, ignoré.", i, len(to_query), ticker)
             fail_count += 1
             continue
 
-        logger.info("[%d/%d] %s (CIK %s)...", i, len(symbols), ticker, cik)
+        logger.info("[%d/%d] %s (CIK %s)...", i, len(to_query), ticker, cik)
         df_ticker = extract_financials_for_ticker(ticker, cik)
+        state[config.to_ib_symbol(ticker)] = now_iso
         if df_ticker.empty:
             fail_count += 1
             continue
         all_frames.append(df_ticker)
         ok_count += 1
 
-    logger.info("Terminé. OK: %d | Échecs: %d", ok_count, fail_count)
+    logger.info("Terminé. OK: %d | Échecs: %d | Déjà à jour (ignorés): %d", ok_count, fail_count, skip_count)
+    save_fetch_state(FETCH_STATE_FILE, state)
 
     if not all_frames:
-        logger.warning("Aucune donnée financière récupérée, pas de fichier de sortie généré.")
+        if existing.empty:
+            logger.warning("Aucune donnée financière récupérée, pas de fichier de sortie généré.")
+        else:
+            logger.info("Rien de nouveau à écrire : fichier existant conservé tel quel (%s).", config.FINANCIALS_FILE)
         return
 
-    df_all = pd.concat(all_frames, ignore_index=True)
+    df_new = pd.concat(all_frames, ignore_index=True)
+    combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
+    combined = (
+        combined.sort_values(["symbol", "year"])
+        .drop_duplicates(subset=["symbol", "year"], keep="last")  # les nouvelles valeurs l'emportent (ex: restatement)
+        .reset_index(drop=True)
+    )
     config.FINANCIALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    df_all.to_parquet(config.FINANCIALS_FILE, index=False, engine="pyarrow")
-    logger.info("Fichier écrit : %s (%d lignes)", config.FINANCIALS_FILE, len(df_all))
+    combined.to_parquet(config.FINANCIALS_FILE, index=False, engine="pyarrow")
+    logger.info(
+        "Fichier écrit : %s (%d lignes au total, %d nouvelles/mises à jour ce run).",
+        config.FINANCIALS_FILE, len(combined), len(df_new),
+    )
 
 
 if __name__ == "__main__":
