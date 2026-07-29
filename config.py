@@ -104,6 +104,13 @@ SYMBOL_OVERRIDES: dict[str, str] = {
 CURRENCY = "USD"
 COUNTRY = "United States"
 
+# Taux sans risque constant utilisé par 08_recuperation_options.py pour le
+# pricing Black-Scholes de repli (estimate_iv_and_greeks) quand IBKR ne
+# renvoie pas de modelGreeks. Référencé mais jamais défini auparavant (le
+# script plantait à l'import dès qu'un greek devait être estimé
+# localement) ; approximation du taux 3 mois US, à ajuster si besoin.
+RISK_FREE_RATE = 0.04
+
 # ----------------------------------------------------------------------------
 # Filtre de valorisation (déclenche la récupération des options en 08)
 # ----------------------------------------------------------------------------
