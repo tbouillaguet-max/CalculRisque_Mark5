@@ -1,8 +1,20 @@
 """
-Récupération des chaînes d'options (ITM / ATM / OTM) pour l'univers américain
-(config.UNIVERSE_FILE) via l'API IBKR (ib_insync).
+Récupération des chaînes d'options (ITM / ATM / OTM) via l'API IBKR
+(ib_insync), UNIQUEMENT pour les entreprises dont le cours de bourse
+s'écarte significativement de leur valeur théorique.
 
-Filtres appliqués :
+Dernière étape du pipeline : 03 (cours) et 04 (10-K) alimentent 05/06
+(multiples) et 07 (DCF), qui calcule pour chaque entreprise l'écart en %
+entre cours de bourse et valeur théorique (Écart_DCF_vs_Cours_%). Ce script
+ne récupère les options que pour les entreprises dont cet écart dépasse
+config.VALUATION_GAP_THRESHOLD_PCT (±20% par défaut) : la récupération
+d'options via IBKR est lente et rate-limitée, inutile de la lancer sur les
+~500 entreprises de l'univers si seule une fraction montre une valorisation
+de marché significativement différente de sa valeur théorique.
+Voir filter_universe_by_valuation_gap() ; --skip-valuation-filter retrouve
+l'ancien comportement (options pour tout l'univers fourni).
+
+Filtres appliqués sur les contrats eux-mêmes (inchangés) :
     - expiration à plus de 9 mois (aucun plafond en haut)
     - strikes compris entre -30% et +30% du dernier prix de clôture du sous-jacent
 
@@ -21,14 +33,19 @@ Corrections / changements par rapport à RecuperationOptionMark9 :
       /option/calcul/... (ignorant --output-dir). Écrit maintenant dans
       config.OPTIONS_FILE.
     - Lit config.UNIVERSE_FILE par défaut (au lieu d'un chemin CSV STOXX 600 en dur).
+    - NOUVEAU : passage en dernière étape du pipeline (était l'étape 04) et
+      filtre par écart de valorisation DCF (voir plus haut), au lieu de
+      récupérer les options pour tout l'univers à chaque run.
 
 Prérequis :
     pip install ib_insync pandas pyarrow
 
 Usage :
-    python 04_recuperation_options.py
-    python 04_recuperation_options.py --resume       # reprendre un run interrompu
-    python 04_recuperation_options.py --limit 10      # test rapide
+    python 08_recuperation_options.py
+    python 08_recuperation_options.py --resume       # reprendre un run interrompu
+    python 08_recuperation_options.py --limit 10      # test rapide (après filtre de valorisation)
+    python 08_recuperation_options.py --valuation-threshold 30   # seuil plus strict
+    python 08_recuperation_options.py --skip-valuation-filter    # options pour tout l'univers
 """
 
 from __future__ import annotations
@@ -284,6 +301,34 @@ def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:
 
     logger.info("Univers chargé : %d tickers.", len(df))
     return df
+
+
+def filter_universe_by_valuation_gap(universe: pd.DataFrame, threshold_pct: float) -> pd.DataFrame:
+    """Ne garde que les tickers dont l'écart entre cours de bourse et valeur
+    théorique (DCF, calculé par 07_calcul_dcf.py) dépasse threshold_pct en
+    valeur absolue. C'est le nouveau filtre d'entrée de ce script : voir le
+    docstring en tête de fichier pour le raisonnement."""
+    if not config.DCF_FILE.exists():
+        raise FileNotFoundError(
+            f"{config.DCF_FILE} introuvable. Lance d'abord 03_recuperation_cours.py, "
+            "04_recuperation_10k.py, 05_calcul_multiples.py et 07_calcul_dcf.py "
+            "(dans cet ordre), ou relance ce script avec --skip-valuation-filter "
+            "pour récupérer les options sur tout l'univers sans filtre."
+        )
+
+    dcf = pd.read_excel(config.DCF_FILE, sheet_name="DCF", engine="openpyxl")
+    ecart_col = "Écart_DCF_vs_Cours_%"
+    valorises = dcf.dropna(subset=[ecart_col])
+    flagged = valorises[valorises[ecart_col].abs() >= threshold_pct]
+    tickers_retenus = set(flagged["Ticker"].astype(str))
+
+    filtered = universe[universe["ib_symbol"].isin(tickers_retenus)].reset_index(drop=True)
+    logger.info(
+        "Filtre de valorisation : %d/%d entreprises avec un écart cours/valeur théorique "
+        ">= %.0f%% (sur %d entreprises avec un DCF calculé, %d dans l'univers fourni).",
+        len(filtered), len(universe), threshold_pct, len(valorises), len(universe),
+    )
+    return filtered
 
 
 def connect_ib() -> IB:
@@ -725,10 +770,31 @@ def main() -> None:
              "3 fois de suite, tente un redémarrage complet d'IB Gateway via IBC (nécessite .env "
              "configuré, voir .env.example et restart_gateway.py).",
     )
+    parser.add_argument(
+        "--valuation-threshold", type=float, default=config.VALUATION_GAP_THRESHOLD_PCT,
+        help="Écart minimum (valeur absolue, en %%) entre cours de bourse et valeur théorique "
+             "(07_calcul_dcf.py) pour qu'une entreprise soit retenue (défaut: %(default)s).",
+    )
+    parser.add_argument(
+        "--skip-valuation-filter", action="store_true",
+        help="Désactive le filtre de valorisation et récupère les options pour TOUT l'univers "
+             "fourni (comportement de l'ancien 04_recuperation_options.py).",
+    )
     args = parser.parse_args()
 
     setup_logging(args.output_dir)
     universe = load_universe(args.tickers, limit=args.limit)
+
+    if args.skip_valuation_filter:
+        logger.info("Filtre de valorisation désactivé (--skip-valuation-filter) : récupération pour tout l'univers fourni.")
+    else:
+        universe = filter_universe_by_valuation_gap(universe, threshold_pct=args.valuation_threshold)
+        if universe.empty:
+            logger.warning(
+                "Aucune entreprise ne dépasse le seuil d'écart de valorisation (%.0f%%) : rien à récupérer.",
+                args.valuation_threshold,
+            )
+            return
 
     processed_keys: set[str] = set()
     if args.resume:

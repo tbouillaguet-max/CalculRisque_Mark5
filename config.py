@@ -1,15 +1,23 @@
 """
 Configuration partagée par tous les scripts du pipeline.
 
-Objectif du pipeline (entreprises américaines uniquement) :
+Objectif du pipeline (entreprises américaines uniquement) : on récupère
+d'abord les données de marché "de base" (cours + 10-K), on en dérive une
+valorisation théorique, et on ne va chercher les chaînes d'options (lent,
+rate-limité côté IBKR) que pour les entreprises où cette valorisation
+théorique s'écarte significativement du cours de bourse.
+
     01_build_universe.py        -> univers S&P 500 (RIC, Instrument_Name, Country, Currency, Exchange)
     02_categoriser_secteurs.py  -> ajoute une colonne "sector" à l'univers
     03_recuperation_cours.py    -> cours de clôture de fin d'année via IBKR
-    04_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks
-    05_recuperation_10k.py      -> données financières via l'API XBRL companyfacts de la SEC
-    06_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03 + 05
-    07_calcul_multiples_moyens.py -> moyennes/médianes des multiples par secteur
-    08_calcul_dcf.py            -> valorisation DCF à partir de 05 (+ 02 + 03 pour comparaison)
+    04_recuperation_10k.py      -> données financières via l'API XBRL companyfacts de la SEC
+    05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03 + 04
+    06_calcul_multiples_moyens.py -> moyennes/médianes des multiples par secteur
+    07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
+                                    calcule l'écart en % entre cours de bourse et valeur théorique
+    08_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks, UNIQUEMENT
+                                    pour les entreprises dont l'écart calculé en 07 dépasse
+                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue)
 
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
@@ -95,6 +103,17 @@ SYMBOL_OVERRIDES: dict[str, str] = {
 
 CURRENCY = "USD"
 COUNTRY = "United States"
+
+# ----------------------------------------------------------------------------
+# Filtre de valorisation (déclenche la récupération des options en 08)
+# ----------------------------------------------------------------------------
+# 07_calcul_dcf.py calcule pour chaque entreprise l'écart en % entre son
+# cours de bourse et sa valeur théorique (DCF). 08_recuperation_options.py ne
+# récupère les chaînes d'options que pour les entreprises dont cet écart
+# dépasse ce seuil, en valeur absolue : la récupération d'options via IBKR
+# est lente et rate-limitée, inutile de la lancer sur tout l'univers si seule
+# une fraction des entreprises montre un écart de valorisation significatif.
+VALUATION_GAP_THRESHOLD_PCT = 20.0
 
 
 def to_ib_symbol(ric: str) -> str:

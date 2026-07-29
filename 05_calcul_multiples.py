@@ -1,6 +1,6 @@
 """
 Calcule les multiples (EV/EBITDA, EV/Sales, P/E) à partir des cours (03) et
-des données financières (05).
+des données financières (04).
 
 Corrections par rapport à CalculMultipleMark2 :
     - df_financials était lu avec pd.read_json(..., lines=True) (format
@@ -18,7 +18,7 @@ Corrections par rapport à CalculMultipleMark2 :
       ("CA" -> "revenue", etc.).
 
 Usage :
-    python 06_calcul_multiples.py
+    python 05_calcul_multiples.py
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def main() -> None:
         return
 
     # Rattache le secteur depuis l'univers (ajouté par 02) pour permettre le
-    # regroupement par secteur dans 07. On convertit le RIC au même format
+    # regroupement par secteur dans 06. On convertit le RIC au même format
     # de symbole que le reste du pipeline (config.to_ib_symbol) : sinon les
     # tickers à classes d'actions (BRK.B, BF.B) se retrouvent sans secteur.
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")

@@ -23,7 +23,7 @@ Corrections majeures par rapport à Recuperation10KMark2 :
       ci-dessous avant utilisation, sous peine de blocage (429/403).
     - Écrit un fichier consolidé unique (config.FINANCIALS_FILE, Parquet)
       pour tous les tickers/années au lieu d'un JSON par ticker/année, afin
-      que 06_calcul_multiples.py puisse le lire directement.
+      que 05_calcul_multiples.py puisse le lire directement.
     - Colonnes renommées dans le schéma canonique (revenue, ebitda, ebit,
       net_income, capex, da, working_capital, net_debt, cash, tax_rate,
       interest_expense, shares_outstanding) au lieu du mélange FR/EN
@@ -31,9 +31,9 @@ Corrections majeures par rapport à Recuperation10KMark2 :
       06/07/08 de relire correctement les données produites par ce script.
 
 Usage :
-    python 05_recuperation_10k.py                 # tout l'univers US
-    python 05_recuperation_10k.py --limit 10       # test rapide
-    python 05_recuperation_10k.py --ticker AAPL    # une seule entreprise
+    python 04_recuperation_10k.py                 # tout l'univers US
+    python 04_recuperation_10k.py --limit 10       # test rapide
+    python 04_recuperation_10k.py --ticker AAPL    # une seule entreprise
 """
 
 from __future__ import annotations

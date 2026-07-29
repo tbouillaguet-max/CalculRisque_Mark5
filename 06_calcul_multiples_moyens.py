@@ -1,6 +1,6 @@
 """
 Calcule les multiples moyens/médians par secteur à partir de la sortie de
-06_calcul_multiples.py, et sauvegarde le résultat en Excel.
+05_calcul_multiples.py, et sauvegarde le résultat en Excel.
 
 Corrections par rapport à CalculMultipleMoyenMark1 :
     - Lisait un fichier Excel d'entrée fixe ("donnees_entreprises.xlsx") qui
@@ -10,7 +10,7 @@ Corrections par rapport à CalculMultipleMoyenMark1 :
       correspondre au schéma canonique produit par 02 et 06.
 
 Usage :
-    python 07_calcul_multiples_moyens.py
+    python 06_calcul_multiples_moyens.py
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ def calculer_multiples_moyens_par_secteur(df: pd.DataFrame, colonnes_multiples: 
 
 def main() -> None:
     if not config.MULTIPLES_FILE.exists():
-        logger.error("Fichier introuvable: %s. Lance d'abord 06_calcul_multiples.py.", config.MULTIPLES_FILE)
+        logger.error("Fichier introuvable: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
         return
 
     df = pd.read_parquet(config.MULTIPLES_FILE)
