@@ -59,7 +59,7 @@ def load_options_current() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_options_history() -> pd.DataFrame:
     """Concatène tous les snapshots archivés dans data/options/history/ (un
-    fichier par run de 04, jamais écrasé). Retombe sur le seul snapshot
+    fichier par run de 08, jamais écrasé). Retombe sur le seul snapshot
     courant si aucune archive n'existe encore (ex: juste après la mise à
     jour du script, avant le premier nouveau run)."""
     files = sorted(config.DIR_OPTIONS_HISTORY.glob("option_chains_*.parquet"))
