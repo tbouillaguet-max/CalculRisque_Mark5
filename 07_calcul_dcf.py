@@ -1,7 +1,11 @@
 """
 Calcule la valorisation DCF (Discounted Cash Flow) pour chaque entreprise à
-partir des données financières (05) et des cours (03), et compare la valeur
-intrinsèque par action au cours actuel.
+partir des données financières (04) et des cours (03), et compare la valeur
+intrinsèque par action au cours actuel : c'est la "valeur théorique" de
+l'entreprise, et l'écart calculé ici (Écart_DCF_vs_Cours_%) est le filtre
+utilisé par 08_recuperation_options.py pour décider quelles entreprises
+méritent qu'on aille chercher leurs chaînes d'options (écart >= ±20% par
+défaut, voir config.VALUATION_GAP_THRESHOLD_PCT).
 
 Corrections par rapport à CalculDCFMark1 :
     - Le script lisait un fichier fixe "donnees_entreprises.xlsx" que
@@ -20,7 +24,7 @@ Corrections par rapport à CalculDCFMark1 :
       systématiquement la dernière année de cours si les 10-K ont du retard).
 
 Usage :
-    python 08_calcul_dcf.py
+    python 07_calcul_dcf.py
 """
 
 from __future__ import annotations
@@ -179,7 +183,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 
 def main() -> None:
     if not (config.FINANCIALS_FILE.exists() and config.PRICES_FILE.exists()):
-        logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 05_recuperation_10k.py.")
+        logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
         return
 
     df_input = build_input_table()

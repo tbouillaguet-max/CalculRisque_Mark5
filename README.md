@@ -1,8 +1,8 @@
 # Rapport dynamique — pipeline options US
 
 Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
-par le pipeline (`01_build_universe.py` à `08_calcul_dcf.py`). Le rapport ne
-relance jamais de collecte lui-même : il ne fait que lire `./data/`.
+par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
+rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
 ## Installation
 
@@ -37,7 +37,7 @@ streamlit run report/Home.py
 
 ## Historique des nappes de volatilité
 
-Depuis le correctif apporté à `04_recuperation_options.py`, chaque run
+Depuis le correctif apporté à `08_recuperation_options.py`, chaque run
 archive en plus un snapshot horodaté dans `data/options/history/`
 (jamais écrasé), en parallèle du fichier courant `data/options/option_chains.parquet`
 (toujours écrasé par le run suivant). La page Analyse lit l'historique

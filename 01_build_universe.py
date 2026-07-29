@@ -33,7 +33,7 @@ WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 # (c'est ce que fait pandas.read_html(url) par défaut, via urllib). On passe
 # donc par requests avec un User-Agent explicite, puis on donne le HTML déjà
 # téléchargé à read_html.
-HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: voir SEC_CONTACT_EMAIL en tête de 05_recuperation_10k.py)"}
+HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: voir SEC_CONTACT_EMAIL en tête de 04_recuperation_10k.py)"}
 
 
 def build_universe() -> pd.DataFrame:

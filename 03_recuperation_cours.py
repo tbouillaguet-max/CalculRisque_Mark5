@@ -105,14 +105,29 @@ def resolve_stock_contract(ib: IB, symbol: str, exchange: str, currency: str) ->
 
 
 def fetch_daily_history(ib: IB, contract: Contract, start_year: int, end_year: int) -> pd.DataFrame:
-    all_bars = []
-    for year in range(start_year, end_year + 1):
-        end_dt = f"{year}-12-31 23:59:59"  # ❌ Créée mais...
-        end_dt = datetime.utcnow().strftime("%Y%m%d-%H:%M:%S")  # ❌ **ÉCRASE** la variable !!
-        bars = ib.reqHistoricalData(
-            contract, endDateTime=end_dt, durationStr="5 D",  # ❌ Utilise la date ACTUELLE, pas celle de l'année !
-            barSizeSetting="1 day", whatToShow="TRADES", useRTH=True, formatDate=1,
-        )
+    """Un SEUL appel reqHistoricalData couvrant toute la période
+    [start_year, end_year] (endDateTime="" = jusqu'à maintenant côté IBKR) :
+    extract_year_end_close() se charge ensuite de ne garder que le dernier
+    jour de cotation de chaque année civile. Corrigé : la version précédente
+    recréait bien end_dt par année dans la boucle mais l'écrasait aussitôt
+    avec la date du jour, et interrogeait "5 D" (5 derniers jours depuis
+    maintenant) à CHAQUE itération -- donc jamais l'historique par année, et
+    la fonction ne retournait rien (pas de return). Un seul appel par ticker
+    est aussi cohérent avec HIST_REQUEST_PAUSE_SEC (pacing ~55 req/10min sur
+    reqHistoricalData) : une requête par année et par ticker dépasserait
+    largement ce budget sur l'ensemble de l'univers."""
+    years_needed = end_year - start_year + 1
+    bars = ib.reqHistoricalData(
+        contract, endDateTime="", durationStr=f"{years_needed} Y",
+        barSizeSetting="1 day", whatToShow="TRADES", useRTH=True, formatDate=1,
+    )
+    time.sleep(HIST_REQUEST_PAUSE_SEC)
+    if not bars:
+        return pd.DataFrame()
+
+    history = util.df(bars)
+    history["date"] = pd.to_datetime(history["date"])
+    return history[history["date"].dt.year >= start_year].reset_index(drop=True)
 
 
 def extract_year_end_close(history: pd.DataFrame) -> pd.DataFrame:

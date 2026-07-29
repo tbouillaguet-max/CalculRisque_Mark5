@@ -50,7 +50,7 @@ def load_financials() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_options_current() -> pd.DataFrame:
     """Dernier snapshot uniquement (config.OPTIONS_FILE, toujours écrasé par
-    le run suivant de 04_recuperation_options.py)."""
+    le run suivant de 08_recuperation_options.py)."""
     if not config.OPTIONS_FILE.exists():
         return pd.DataFrame()
     return pd.read_parquet(config.OPTIONS_FILE)
