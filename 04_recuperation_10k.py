@@ -121,11 +121,16 @@ def get_cik_map() -> Dict[str, str]:
     return {entry["ticker"].upper(): str(entry["cik_str"]).zfill(10) for entry in data.values()}
 
 
-def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, float]:
+def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float, str]]:
     """
     Pour une métrique donnée (plusieurs tags candidats US-GAAP, dans l'ordre
-    de préférence), retourne {année_fiscale: valeur} en ne gardant que les
-    faits associés à un 10-K annuel (form == "10-K", fp == "FY").
+    de préférence), retourne {année_fiscale: (valeur, date_de_dépôt)} en ne
+    gardant que les faits associés à un 10-K annuel (form == "10-K",
+    fp == "FY"). La date de dépôt ("filed", format "YYYY-MM-DD") est
+    retournée en plus de la valeur (et non plus jetée après sélection) : le
+    backtest (09_backtest.py) en a besoin pour savoir à partir de quand cette
+    valeur était réellement publique -- l'utiliser dès le 31/12 de l'exercice
+    serait du look-ahead bias (un 10-K est déposé ~2-3 mois après la clôture).
 
     Tous les tags de la liste sont consultés (pas seulement le premier qui a
     des données) : le premier tag reste prioritaire pour une année donnée,
@@ -166,7 +171,7 @@ def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, float]:
                 # une valeur pour cette année, on ne l'écrase pas avec un tag
                 # de repli moins prioritaire.
 
-    return {year: val for year, (_, _, val) in by_year.items()}
+    return {year: (val, filed) for year, (_, filed, val) in by_year.items()}
 
 
 def compute_derived(row: pd.Series) -> pd.Series:
@@ -219,8 +224,21 @@ def extract_financials_for_ticker(ric: str, cik: str) -> pd.DataFrame:
     rows = []
     for year in all_years:
         row = {"symbol": symbol, "cik": cik, "year": year}
+        filed_dates_this_year = []
         for metric, values in per_metric.items():
-            row[metric] = values.get(year)
+            entry = values.get(year)
+            if entry is None:
+                row[metric] = None
+                continue
+            val, filed = entry
+            row[metric] = val
+            if filed:
+                filed_dates_this_year.append(filed)
+        # Date de dépôt retenue pour l'exercice : la PLUS TARDIVE parmi les
+        # métriques utilisées (pas la première) -- tant que toutes les
+        # métriques nécessaires au DCF n'ont pas été déposées, l'exercice
+        # n'est pas exploitable pour un backtest point-in-time.
+        row["filed_date"] = max(filed_dates_this_year) if filed_dates_this_year else None
         rows.append(row)
 
     df = pd.DataFrame(rows)

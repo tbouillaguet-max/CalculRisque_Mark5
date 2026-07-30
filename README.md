@@ -4,6 +4,65 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+## Backtest (01b, 03b, 09)
+
+Trois scripts complètent le pipeline pour permettre de backtester une
+stratégie construite sur l'écart entre cours de bourse et valorisation DCF
+(07_calcul_dcf.py), sans biais de survivance et sans look-ahead bias :
+
+    01b_historique_univers_sp500.py   -> univers POINT-IN-TIME (composants
+                                          actuels + radiés, avec dates
+                                          d'entrée/sortie de l'indice)
+    03b_recuperation_cours_quotidiens.py -> cours QUOTIDIENS (IBKR + repli
+                                          Stooq gratuit pour les radiés,
+                                          qu'IBKR ne résout plus)
+    09_backtest.py                    -> moteur de backtest événementiel
+
+Ordre de lancement pour un backtest complet (en plus de 01/02 déjà connus) :
+
+```bash
+python 01b_historique_univers_sp500.py
+python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
+python 04_recuperation_10k.py --tickers data/universe/sp500_universe_full.csv
+python 07_calcul_dcf.py
+python 09_backtest.py --strategy valuation_gap_dcf --start-date 2015-01-01
+```
+
+`04_recuperation_10k.py` et `03b` doivent recevoir l'univers COMPLET
+(`sp500_universe_full.csv`, sortie de 01b) pour backfiller aussi les
+entreprises sorties du S&P 500 -- sinon le backtest retombe sur l'univers
+actuel appliqué rétroactivement (biais de survivance, signalé par un warning
+au lancement de 09).
+
+Hypothèses du moteur (`backtest/engine.py`), à garder en tête pour
+interpréter des résultats :
+    - Décision à la clôture du jour J, exécution à l'ouverture de J+1 (aucune
+      information n'est utilisée avant sa date réelle de publication : le
+      signal DCF utilise `filed_date`, la date de dépôt SEC du 10-K, pas la
+      date de clôture d'exercice).
+    - Une position n'est JAMAIS fermée simplement parce que son écart de
+      valorisation s'est refermé : seuls un stop-loss, un take-profit, ou une
+      disparition des données de prix (radiation non couverte par Stooq) la
+      clôturent. Elle reste sinon "gelée" à taille inchangée.
+    - Un signal DCF vieux de plus de `BACKTEST_SIGNAL_MAX_AGE_DAYS` (config.py,
+      400 jours par défaut) n'est plus considéré comme une base valable pour
+      une NOUVELLE entrée (mais n'affecte pas une position déjà ouverte).
+
+Résultats sauvegardés intégralement sous `data/backtest/<run_id>/` :
+`equity_curve.parquet`, `positions_history.parquet`, `trades.parquet`,
+`signals_history.parquet`, `metrics.json`, `run_config.json`.
+
+### Ajouter une nouvelle stratégie
+
+Créer un fichier dans `backtest/strategies/`, y définir une classe héritant
+de `Strategy` (`backtest/strategies/base.py`) et décorée par
+`@register_strategy("mon_nom")`, puis l'importer dans
+`backtest/strategies/__init__.py`. Elle devient disponible via
+`python 09_backtest.py --strategy mon_nom` sans toucher au moteur : la
+stratégie ne gère que le choix des candidats et leur pondération relative,
+l'engine gère uniformément le capital, les plafonds de positions, le
+stop-loss/take-profit et les coûts de transaction pour toutes les stratégies.
+
 ## Installation
 
 ```bash

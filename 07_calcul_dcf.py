@@ -83,11 +83,18 @@ def calculer_dcf(
     return equity_value, details
 
 
-def build_input_table() -> pd.DataFrame:
+def build_input_table(latest_only: bool = True) -> pd.DataFrame:
     """Fusionne financials (05) + cours (03) + secteur (02) sur (symbol, year),
     calcule la variation du BFR (BFR de l'exercice N moins BFR de
-    l'exercice N-1, à partir de l'historique complet de financials.parquet),
-    puis ne garde que le dernier exercice disponible par entreprise."""
+    l'exercice N-1, à partir de l'historique complet de financials.parquet).
+
+    latest_only=True (comportement historique, utilisé par le rapport Excel
+    de main()) : ne garde que le dernier exercice disponible par entreprise.
+    latest_only=False (utilisé par 09_backtest.py via DCF_HISTORY_FILE) :
+    garde TOUS les exercices, avec leur 'filed_date' (04), pour permettre de
+    rejouer l'écart de valorisation tel qu'il était connu à chaque date
+    passée plutôt que seulement à la date du dernier 10-K disponible
+    aujourd'hui."""
     financials = pd.read_parquet(config.FINANCIALS_FILE)
     prices = pd.read_parquet(config.PRICES_FILE)
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
@@ -107,8 +114,10 @@ def build_input_table() -> pd.DataFrame:
         universe["symbol"] = universe["RIC"].apply(config.to_ib_symbol)
         df = df.merge(universe[["symbol", "sector"]], on="symbol", how="left")
 
-    df = df.sort_values(["symbol", "year"]).groupby("symbol", as_index=False).tail(1)
-    return df
+    df = df.sort_values(["symbol", "year"])
+    if latest_only:
+        df = df.groupby("symbol", as_index=False).tail(1)
+    return df.reset_index(drop=True)
 
 
 def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_DEFAUT) -> pd.DataFrame:
@@ -169,6 +178,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 
             results.append({
                 "Ticker": symbol, "Secteur": row.get("sector"), "Année": row.get("year"),
+                "filed_date": row.get("filed_date"),
                 "FCF_actuel": fcf_actuel, "Enterprise_Value": details["Enterprise_Value"],
                 "Equity_Value": equity_value, "Valeur_par_action_DCF": valeur_par_action,
                 "Cours_actuel": cours_actuel, "Écart_DCF_vs_Cours_%": ecart_pct,
@@ -186,12 +196,31 @@ def main() -> None:
         logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
         return
 
-    df_input = build_input_table()
-    df_dcf = calculer_dcf_par_entreprise(df_input, HYPOTHESES_DEFAUT)
+    # Calculé UNE SEULE FOIS sur tout l'historique (latest_only=False), puis
+    # dérivé en deux sorties : le rapport Excel (dernier exercice seulement,
+    # comportement historique inchangé) et l'historique complet pour le
+    # backtest (DCF_HISTORY_FILE), sans dupliquer le calcul DCF.
+    df_input_full = build_input_table(latest_only=False)
+    df_dcf_full = calculer_dcf_par_entreprise(df_input_full, HYPOTHESES_DEFAUT)
 
-    if df_dcf.empty:
+    if df_dcf_full.empty:
         logger.error("Aucun résultat DCF calculé. Vérifiez les données d'entrée.")
         return
+
+    history = df_dcf_full.rename(columns={
+        "Ticker": "symbol", "Secteur": "sector", "Année": "year",
+        "Valeur_par_action_DCF": "valuation_dcf_per_share", "Cours_actuel": "close",
+        "Écart_DCF_vs_Cours_%": "gap_pct",
+    })[["symbol", "sector", "year", "filed_date", "close", "valuation_dcf_per_share", "gap_pct"]]
+    config.DCF_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    history.to_parquet(config.DCF_HISTORY_FILE, index=False, engine="pyarrow")
+    logger.info(
+        "Historique DCF (tous exercices, pour le backtest) sauvegardé : %s (%d lignes, %d entreprises).",
+        config.DCF_HISTORY_FILE, len(history), history["symbol"].nunique(),
+    )
+
+    df_dcf = df_dcf_full.sort_values(["Ticker", "Année"]).groupby("Ticker", as_index=False).tail(1)
+    df_input = df_input_full.sort_values(["symbol", "year"]).groupby("symbol", as_index=False).tail(1)
 
     config.DCF_FILE.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(config.DCF_FILE, engine="openpyxl") as writer:
