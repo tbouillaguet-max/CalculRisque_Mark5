@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import math
 import sys
 import time
 from datetime import datetime, date, timedelta
@@ -160,11 +161,23 @@ def resolve_stock_contract(ib, symbol: str, exchange: str, currency: str):
     return None
 
 
+def _duration_str(duration_days: int) -> str:
+    """IBKR rejette (erreur 321) une durée en jours ("D") au-delà de 365
+    jours pour reqHistoricalData : au-delà, il faut exprimer la durée en
+    années ("Y"). Le premier backfill d'un ticker (plusieurs années d'un
+    coup, fetch_from=start_date) dépasse systématiquement ce seuil ; les
+    rafraîchissements incrémentaux (quelques jours) restent en "D"."""
+    if duration_days <= 365:
+        return f"{duration_days} D"
+    years_needed = math.ceil(duration_days / 365)
+    return f"{years_needed} Y"
+
+
 def fetch_ibkr_daily(ib, contract, fetch_from: date, today: date) -> pd.DataFrame:
     from ib_insync import util
     duration_days = max((today - fetch_from).days + 3, 2)  # +3 : marge week-ends/jours fériés
     bars = ib.reqHistoricalData(
-        contract, endDateTime="", durationStr=f"{duration_days} D",
+        contract, endDateTime="", durationStr=_duration_str(duration_days),
         barSizeSetting="1 day", whatToShow="TRADES", useRTH=True, formatDate=1,
     )
     time.sleep(HIST_REQUEST_PAUSE_SEC)
