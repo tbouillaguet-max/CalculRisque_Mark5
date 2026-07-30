@@ -42,6 +42,7 @@ DIR_OPTIONS_HISTORY = DIR_OPTIONS / "history"          # archive d'un snapshot p
 DIR_FINANCIALS = BASE_DIR / "financials"
 DIR_MULTIPLES = BASE_DIR / "multiples"
 DIR_DCF = BASE_DIR / "dcf"
+DIR_BACKTEST = BASE_DIR / "backtest"
 
 UNIVERSE_FILE = DIR_UNIVERSE / "sp500_universe.csv"          # sortie de 01, entrée de 02/03/04
 PRICES_FILE = DIR_PRICES / "year_end_prices.parquet"          # sortie de 03
@@ -51,7 +52,30 @@ MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
 MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
 DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
 
-for d in (DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS, DIR_MULTIPLES, DIR_DCF):
+# ----------------------------------------------------------------------------
+# Backtest (voir 01b/03b/09 et le package backtest/)
+# ----------------------------------------------------------------------------
+# Univers point-in-time : composants ACTUELS + historiquement radiés, avec
+# leurs dates d'entrée/sortie de l'indice, pour permettre un backtest sans
+# biais de survivance (01b_historique_univers_sp500.py).
+UNIVERSE_HISTORY_FILE = DIR_UNIVERSE / "sp500_universe_history.parquet"  # sortie de 01b : spans d'appartenance
+UNIVERSE_FULL_FILE = DIR_UNIVERSE / "sp500_universe_full.csv"            # sortie de 01b : superset actuels+radiés, entrée de 03b/04
+
+# Cours quotidiens (contrairement à PRICES_FILE qui ne garde que la clôture
+# de fin d'année) : nécessaires pour un backtest à granularité journalière.
+DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b
+
+# Écart de valorisation DCF pour CHAQUE exercice historique (pas seulement le
+# dernier comme DCF_FILE), avec la date de dépôt SEC (filed_date) de chaque
+# exercice pour savoir à partir de quand un signal est réellement disponible
+# (le 10-K de l'exercice N est déposé ~2-3 mois après sa clôture : l'utiliser
+# dès le 31/12 de l'exercice N serait du look-ahead bias).
+DCF_HISTORY_FILE = DIR_DCF / "dcf_historique.parquet"         # sortie de 07 (en plus de DCF_FILE)
+
+for d in (
+    DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS,
+    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST,
+):
     d.mkdir(parents=True, exist_ok=True)
 
 # ----------------------------------------------------------------------------
@@ -121,6 +145,29 @@ RISK_FREE_RATE = 0.04
 # est lente et rate-limitée, inutile de la lancer sur tout l'univers si seule
 # une fraction des entreprises montre un écart de valorisation significatif.
 VALUATION_GAP_THRESHOLD_PCT = 20.0
+
+# ----------------------------------------------------------------------------
+# Paramètres par défaut du backtest (voir backtest/strategies/valuation_gap.py)
+# ----------------------------------------------------------------------------
+# Réutilise VALUATION_GAP_THRESHOLD_PCT comme seuil d'entrée par défaut (même
+# logique que 08 : une sous-évaluation de moins de 20% n'est pas jugée
+# significative). Ajustable via --entry-threshold-pct sur 09_backtest.py.
+BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
+BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
+BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
+BACKTEST_MAX_POSITIONS = 20        # nombre de lignes simultanées max dans le portefeuille
+BACKTEST_INITIAL_CAPITAL = 100_000.0
+BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
+BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
+
+# Un signal DCF (10-K annuel) n'est considéré comme une base valable pour une
+# NOUVELLE entrée que s'il a été publié il y a moins de ce nombre de jours ;
+# au-delà, il est traité comme périmé (pas de nouveau 10-K depuis plus d'un
+# an = donnée trop ancienne pour justifier un achat aujourd'hui). > 365 pour
+# tolérer le glissement habituel de quelques semaines de la date de dépôt
+# d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
+# restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
+BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
 
 
 def to_ib_symbol(ric: str) -> str:
