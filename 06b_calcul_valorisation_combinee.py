@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 MULTIPLE_COLUMNS = ["EV/EBITDA", "EV/Sales", "P/E"]
 MIN_PEERS_PER_SECTOR_YEAR = 3  # en dessous, la médiane sectorielle n'est pas jugée assez robuste
 
+# Délai de dépôt SEC par défaut (~2-3 mois après la clôture d'exercice),
+# utilisé UNIQUEMENT en repli quand filed_date est introuvable (cache
+# financials.parquet/dcf_historique.parquet antérieur à l'ajout de cette
+# colonne à 04_recuperation_10k.py, ou jamais régénéré depuis -- un run
+# throttlé de 04 qui ne retélécharge rien laisse l'ancien schéma en place).
+DEFAULT_FILING_LAG_DAYS = 75
+
 
 def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
     """Médiane de chaque multiple par (secteur, année), cross-sectionnel."""
@@ -98,6 +105,22 @@ def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataF
 
 def build_combined_valuation() -> pd.DataFrame:
     multiples = pd.read_parquet(config.MULTIPLES_FILE)
+    if "filed_date" not in multiples.columns:
+        # multiples.parquet régénéré par 05 à partir d'un financials.parquet
+        # antérieur à l'ajout de filed_date (04_recuperation_10k.py), ou
+        # jamais régénéré depuis (un run throttlé de 04 qui ne retélécharge
+        # rien laisse l'ancien schéma en place) : colonne absente plutôt que
+        # simplement vide. Créée à NaT ici pour ne pas planter -- complétée
+        # par repli plus bas, mais régénère financials.parquet
+        # (04 --force-refresh, puis 05) pour une date réelle.
+        logger.warning(
+            "%s n'a pas de colonne filed_date : relance 04_recuperation_10k.py "
+            "--force-refresh puis 05_calcul_multiples.py pour une date réelle. "
+            "Repli sur une approximation en attendant.", config.MULTIPLES_FILE,
+        )
+        multiples = multiples.copy()
+        multiples["filed_date"] = pd.NaT
+
     if not config.DCF_HISTORY_FILE.exists():
         raise FileNotFoundError(f"{config.DCF_HISTORY_FILE} introuvable. Lance d'abord 07_calcul_dcf.py.")
     dcf_history = pd.read_parquet(config.DCF_HISTORY_FILE)
@@ -106,9 +129,30 @@ def build_combined_valuation() -> pd.DataFrame:
     df = compute_implied_valuations(multiples, sector_year_multiples)
 
     df = df.merge(
-        dcf_history[["symbol", "year", "valuation_dcf_per_share"]],
+        dcf_history[["symbol", "year", "valuation_dcf_per_share", "filed_date"]].rename(
+            columns={"filed_date": "filed_date_dcf"}
+        ),
         on=["symbol", "year"], how="left",
     )
+    # filed_date de 05 (financials) en priorité, repli sur celle de 07 (DCF) si
+    # absente -- les deux dérivent normalement de la même ligne financials,
+    # donc identiques en pratique ; l'une peut manquer si un cache est plus
+    # ancien que l'autre.
+    df["filed_date"] = pd.to_datetime(df["filed_date"], errors="coerce")
+    df["filed_date_dcf"] = pd.to_datetime(df["filed_date_dcf"], errors="coerce")
+    df["filed_date"] = df["filed_date"].fillna(df["filed_date_dcf"])
+    df = df.drop(columns=["filed_date_dcf"])
+
+    missing_filed = df["filed_date"].isna()
+    if missing_filed.any():
+        df.loc[missing_filed, "filed_date"] = pd.to_datetime(
+            df.loc[missing_filed, "year"].astype(int).map(lambda y: pd.Timestamp(year=y + 1, month=4, day=1))
+        )
+        logger.warning(
+            "%d/%d lignes sans filed_date exploitable : approximé à year+1-04-01 "
+            "(délai de dépôt SEC par défaut, ~%d jours après la clôture).",
+            missing_filed.sum(), len(df), DEFAULT_FILING_LAG_DAYS,
+        )
 
     has_multiples = df["valuation_multiples_per_share"].notna()
     df["valuation_theoretical_per_share"] = df["valuation_multiples_per_share"].where(
