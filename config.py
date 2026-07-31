@@ -128,9 +128,19 @@ VALORISATION_COMBINEE_FILE = DIR_MULTIPLES / "valorisation_combinee_historique.p
 
 DIR_BACKTEST_OPTIONS = BASE_DIR / "backtest_options"  # sortie de 10_backtest_options.py
 
+# ----------------------------------------------------------------------------
+# Journal d'exécution du pipeline (run_pipeline_quarterly.py)
+# ----------------------------------------------------------------------------
+# Un sous-dossier par run, contenant report.json (statut/durée/tentatives de
+# chaque étape) et un fichier de log par étape. Lu par la page Streamlit
+# "Pipeline" pour montrer l'état du pipeline sans ouvrir les logs à la main,
+# et par --resume pour repartir des étapes qui restent à faire.
+DIR_PIPELINE_RUNS = BASE_DIR / "pipeline_runs"
+PIPELINE_RUN_REPORT_NAME = "report.json"
+
 for d in (
     DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS,
-    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST, DIR_BACKTEST_OPTIONS,
+    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST, DIR_BACKTEST_OPTIONS, DIR_PIPELINE_RUNS,
 ):
     d.mkdir(parents=True, exist_ok=True)
 
