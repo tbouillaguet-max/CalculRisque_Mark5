@@ -17,7 +17,10 @@ théorique s'écarte significativement du cours de bourse.
                                     calcule l'écart en % entre cours de bourse et valeur théorique
     08_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks, UNIQUEMENT
                                     pour les entreprises dont l'écart calculé en 07 dépasse
-                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue)
+                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue). IV/greeks en
+                                    priorité via Alpha Vantage (gratuit, ALPHAVANTAGE_API_KEY,
+                                    voir 08), Black-Scholes local en dernier repli. --av-backfill-dates
+                                    permet aussi de reconstituer un VRAI historique d'options passées.
 
 Backtest (voir README.md pour le détail) :
     01b_historique_univers_sp500.py     -> univers point-in-time (actuels + radiés)

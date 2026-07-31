@@ -91,6 +91,15 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       régulièrement `08_recuperation_options.py` sur un compte paper trading
       pour accumuler des snapshots réels au fil du temps** : plus il y en a,
       moins le backtest s'appuie sur du Black-Scholes simulé.
+      Depuis l'ajout d'Alpha Vantage (source gratuite, voir la docstring de
+      `08_recuperation_options.py` et `ALPHAVANTAGE_API_KEY`), deux leviers
+      supplémentaires réduisent cette dépendance : (1) l'IV/greeks de chaque
+      snapshot IBKR viennent en priorité d'Alpha Vantage (calculés côté
+      Alpha Vantage, pas par notre propre Black-Scholes) ; (2)
+      `08_recuperation_options.py --av-backfill-dates 2024-01-15 2024-02-15 ...`
+      reconstitue directement un VRAI historique d'options déjà expirées
+      (impossible via IBKR seul, qui ne résout plus les contrats expirés),
+      sans attendre l'accumulation de runs futurs.
     - Repricing quotidien TOUJOURS par Black-Scholes (aucune source ne fournit
       un flux d'options continu), à strike/échéance/volatilité fixés à
       l'entrée (volatilité figée pour toute la durée de vie de la position).
@@ -165,3 +174,8 @@ dans le temps** (ex: une fois par semaine) pour voir la nappe évoluer.
 
 Avant le premier run depuis ce correctif, `data/options/history/` est vide :
 le rapport retombe alors sur le seul snapshot courant.
+
+`08_recuperation_options.py --av-backfill-dates AAAA-MM-JJ ...` peuple aussi
+`data/options/history/` directement avec de vraies dates passées (source
+Alpha Vantage, gratuite avec clé), sans attendre l'accumulation de runs
+futurs : voir la docstring en tête de `08_recuperation_options.py`.
