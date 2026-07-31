@@ -38,6 +38,9 @@ Utilise la barre latérale pour naviguer :
   (cours, 10-K, options).
 - **📈 Analyse** — nappe de volatilité, greeks, indicateurs de liquidité, et
   clustering des multiples de valorisation.
+- **🧪 Stratégies** — pour un run de backtest (`09_backtest.py` ou
+  `10_backtest_options.py`) : évolution du portefeuille (valorisation et
+  composition), et journal des achats/ventes (quand, pourquoi).
 """
 )
 

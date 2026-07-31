@@ -11,8 +11,10 @@ pour que `streamlit run report/Home.py` fonctionne depuis n'importe où.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -306,3 +308,121 @@ def cluster_multiples(
     data["pca_2"] = coords[:, 1]
 
     return data, pca.explained_variance_ratio_
+
+
+# ============================================================================
+# Page Stratégies : runs de backtest (09_backtest.py / 10_backtest_options.py)
+# ============================================================================
+
+BACKTEST_RUN_FILES = ("equity_curve", "positions_history", "trades", "signals_history")
+
+
+def _backtest_base_dir(kind: str) -> Path:
+    return config.DIR_BACKTEST if kind == "actions" else config.DIR_BACKTEST_OPTIONS
+
+
+@st.cache_data(ttl=60)
+def list_backtest_runs(kind: str) -> list[str]:
+    """kind: 'actions' (09_backtest.py) ou 'options' (10_backtest_options.py).
+    Sous-dossiers de run (un par exécution, cf. --run-id) triés du plus
+    récent au plus ancien (date de modification)."""
+    base = _backtest_base_dir(kind)
+    if not base.exists():
+        return []
+    runs = [p for p in base.iterdir() if p.is_dir()]
+    runs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return [p.name for p in runs]
+
+
+@st.cache_data(ttl=60)
+def load_backtest_run(kind: str, run_id: str) -> dict:
+    """Charge les 4 tables Parquet + les 2 JSON écrits par 09/10 en fin de
+    run (même schéma de fichiers dans les deux cas, cf. leurs main()).
+    Tables absentes (run antérieur à un ajout de fichier) -> DataFrame vide,
+    pas une erreur."""
+    run_dir = _backtest_base_dir(kind) / run_id
+    result: dict = {}
+    for name in BACKTEST_RUN_FILES:
+        path = run_dir / f"{name}.parquet"
+        result[name] = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+
+    metrics_path = run_dir / "metrics.json"
+    result["metrics"] = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path.exists() else {}
+    run_config_path = run_dir / "run_config.json"
+    result["run_config"] = json.loads(run_config_path.read_text(encoding="utf-8")) if run_config_path.exists() else {}
+    return result
+
+
+def _first_present(df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[str]:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def build_trade_log(positions_history: pd.DataFrame, trades: pd.DataFrame, signals_history: pd.DataFrame) -> pd.DataFrame:
+    """Journal achats/ventes unifié, pour affichage ("quand et pourquoi").
+
+    trades.parquet ne logue QUE les ventes : BacktestEngine._execute_trade /
+    OptionsBacktestEngine._reduce_position n'appellent self.trades.append que
+    côté vente (cf. backtest/engine.py, backtest/options_engine.py) -- une
+    vente y a déjà sa raison (exit_reason: stop_loss/take_profit/rebalance/
+    data_gap/expiry). Les achats n'y sont PAS logués : reconstruits ici à
+    partir des hausses quotidiennes de quantité détenue dans
+    positions_history (nouvelle position ou renforcement), avec pour raison
+    le dernier signal connu (gap_pct) à cette date pour une nouvelle position.
+
+    Gère les deux schémas (actions: colonnes shares/price ; options:
+    contracts/premium, option_type/strike en plus) sans les fusionner en un
+    schéma commun -- juste les colonnes minimales nécessaires à l'affichage."""
+    rows: list[dict] = []
+
+    if trades is not None and not trades.empty:
+        has_option_cols = "option_type" in trades.columns
+        for _, t in trades.iterrows():
+            detail = f" ({t['option_type']} {t.get('strike', '')})" if has_option_cols and pd.notna(t.get("option_type")) else ""
+            rows.append({
+                "date": t["exit_date"], "symbol": t["symbol"], "action": "Vente",
+                "quantite": t.get("shares", t.get("contracts")), "prix": t.get("exit_price"),
+                "raison": f"{t.get('exit_reason', '?')}{detail}",
+                "pnl": t.get("pnl"), "return_pct": t.get("return_pct"),
+            })
+
+    if positions_history is not None and not positions_history.empty:
+        ph = positions_history.sort_values(["symbol", "date"]).copy()
+        qty_col = _first_present(ph, ("shares", "contracts"))
+        price_col = _first_present(ph, ("price", "premium"))
+        has_option_cols = "option_type" in ph.columns
+
+        ph["prev_qty"] = ph.groupby("symbol")[qty_col].shift(1).fillna(0.0)
+        buys = ph[ph[qty_col] > ph["prev_qty"] + 1e-9].copy()
+        buys["qty_bought"] = buys[qty_col] - buys["prev_qty"]
+        buys["is_new_entry"] = buys["prev_qty"] <= 1e-9
+
+        sig = signals_history.sort_values(["symbol", "date"]) if signals_history is not None and not signals_history.empty else pd.DataFrame()
+
+        for _, b in buys.iterrows():
+            detail = f" ({b['option_type']} {b.get('strike', '')})" if has_option_cols and pd.notna(b.get("option_type")) else ""
+            if b["is_new_entry"]:
+                reason = f"Nouvelle position (rebalancement){detail}"
+                if not sig.empty:
+                    candidates = sig[(sig["symbol"] == b["symbol"]) & (sig["date"] <= b["date"])]
+                    if not candidates.empty:
+                        gap = candidates.iloc[-1].get("gap_pct")
+                        if pd.notna(gap):
+                            sens = "sous-évaluation" if gap > 0 else "survalorisation"
+                            reason = f"Signal {sens} (écart {gap:.1f}%){detail}"
+            else:
+                reason = f"Renforcement (rebalancement){detail}"
+            rows.append({
+                "date": b["date"], "symbol": b["symbol"], "action": "Achat",
+                "quantite": b["qty_bought"], "prix": b.get(price_col),
+                "raison": reason, "pnl": None, "return_pct": None,
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=["date", "symbol", "action", "quantite", "prix", "raison", "pnl", "return_pct"])
+
+    log = pd.DataFrame(rows)
+    log["date"] = pd.to_datetime(log["date"])
+    return log.sort_values("date", ascending=False).reset_index(drop=True)
