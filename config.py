@@ -19,6 +19,14 @@ théorique s'écarte significativement du cours de bourse.
                                     pour les entreprises dont l'écart calculé en 07 dépasse
                                     VALUATION_GAP_THRESHOLD_PCT (en valeur absolue)
 
+Backtest (voir README.md pour le détail) :
+    01b_historique_univers_sp500.py     -> univers point-in-time (actuels + radiés)
+    03b_recuperation_cours_quotidiens.py -> cours quotidiens (IBKR + repli Stooq)
+    06b_calcul_valorisation_combinee.py -> valorisation combinée (multiples par année
+                                    en priorité, DCF en repli), signal de la stratégie options
+    09_backtest.py              -> backtest actions (écart DCF)
+    10_backtest_options.py      -> backtest options (call/put, dimensionné par delta)
+
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
 s'enchaîner sans transformation manuelle entre les deux.
@@ -72,9 +80,18 @@ DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b
 # dès le 31/12 de l'exercice N serait du look-ahead bias).
 DCF_HISTORY_FILE = DIR_DCF / "dcf_historique.parquet"         # sortie de 07 (en plus de DCF_FILE)
 
+# Valorisation théorique combinée (multiples sectoriels PAR ANNÉE en priorité,
+# DCF en repli quand les multiples sont indisponibles), pour CHAQUE exercice
+# historique -- signal utilisé par la stratégie options (voir
+# backtest/strategies/valuation_gap_options.py), distincte de DCF_HISTORY_FILE
+# (utilisée par la stratégie actions, DCF seul, inchangée).
+VALORISATION_COMBINEE_FILE = DIR_MULTIPLES / "valorisation_combinee_historique.parquet"  # sortie de 06b
+
+DIR_BACKTEST_OPTIONS = BASE_DIR / "backtest_options"  # sortie de 10_backtest_options.py
+
 for d in (
     DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS,
-    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST,
+    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST, DIR_BACKTEST_OPTIONS,
 ):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +185,49 @@ BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simp
 # d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
 # restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
 BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
+
+# ----------------------------------------------------------------------------
+# Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)
+# ----------------------------------------------------------------------------
+# Reprend le même seuil d'entrée que 08 (écart significatif = ±20%), mais ici
+# directionnel : call si sous-évalué, put si survalué (voir
+# backtest/strategies/valuation_gap_options.py).
+OPTIONS_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
+
+# Contrat visé : mêmes valeurs que MIN_DAYS_TO_EXPIRY / STRIKE_BAND_PCT dans
+# 08_recuperation_options.py (dupliquées ici plutôt qu'importées : 08 charge
+# ib_insync au niveau module, une dépendance dont le backtest n'a pas besoin
+# pour son mode simulé). Garde ces deux jeux de constantes synchronisés si tu
+# changes l'un des deux.
+OPTIONS_TARGET_TENOR_DAYS = 270     # ~9 mois, échéance cible à l'entrée
+OPTIONS_STRIKE_BAND_PCT = 0.30      # bande de strikes considérée autour du spot (ATM y compris)
+OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (convention US)
+
+# Stop-loss/take-profit exprimés en % de variation de la PRIME (pas du cours
+# du sous-jacent comme pour la stratégie actions) : une option étant à effet
+# de levier, ses seuils naturels sont beaucoup plus larges.
+OPTIONS_STOP_LOSS_PCT = -50.0
+OPTIONS_TAKE_PROFIT_PCT = 100.0
+OPTIONS_MAX_POSITIONS = 20
+OPTIONS_INITIAL_CAPITAL = 100_000.0
+
+# Coûts par contrat (pas en bps du notionnel comme les actions : une option a
+# un notionnel qui ne reflète pas son coût de transaction réel). ~0.65$/contrat
+# est l'ordre de grandeur usuel des courtiers US ; le slippage est exprimé en %
+# de la prime (les spreads bid/ask sur options sont larges, surtout hors ATM).
+OPTIONS_COMMISSION_PER_CONTRACT = 0.65
+OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 5.0
+
+# Fenêtre de tolérance (en jours) pour rattacher un signal à un VRAI snapshot
+# archivé par 08_recuperation_options.py (data/options/history/) plutôt que
+# de simuler par Black-Scholes -- au-delà, le snapshot est jugé trop éloigné
+# de la date du signal pour être représentatif.
+OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
+
+# Fenêtre (en jours de cotation) de la volatilité réalisée utilisée comme
+# proxy de la volatilité implicite pour le pricing Black-Scholes simulé,
+# quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
+OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
 
 def to_ib_symbol(ric: str) -> str:

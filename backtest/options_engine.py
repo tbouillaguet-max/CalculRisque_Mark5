@@ -1,0 +1,465 @@
+"""
+Moteur de backtest pour la stratégie OPTIONS (backtest/strategies/valuation_gap_options.py) :
+même philosophie que backtest/engine.py (actions), mécanique différente
+(contrats à échéance, prime, greeks).
+
+Sélection du contrat à l'ENTRÉE (jour D+1, exécution de la décision prise à
+la clôture de D -- même règle "pas de look-ahead" que le moteur actions) :
+    1. Cherche un snapshot RÉEL archivé par 08_recuperation_options.py à
+       proximité de D+1 (data_loader.find_real_option_snapshot, fenêtre de
+       tolérance OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS) -- accumulés au fil du
+       temps par tes runs successifs de 08 sur le compte paper trading.
+    2. Sinon, SIMULE par Black-Scholes (backtest/options_pricing.py) : strike
+       = spot du jour (ATM, pas de grille de strikes discrets en mode
+       simulé), échéance = D+1 + OPTIONS_TARGET_TENOR_DAYS, volatilité =
+       volatilité réalisée glissante (repli si aucune IV réelle disponible).
+
+Repricing QUOTIDIEN (tant que la position est ouverte) : TOUJOURS par Black-
+Scholes, que l'entrée ait été réelle ou simulée -- aucune source ne fournit
+un flux d'options continu au jour le jour. Strike et échéance restent ceux
+fixés à l'entrée ; la volatilité (implicite réelle si l'entrée était réelle,
+sinon estimée) est figée pour toute la durée de vie de la position
+(simplification documentée : pas de re-estimation de la vol jour après jour).
+
+Dimensionnement : le capital actif alloué à un symbole (même logique que le
+moteur actions -- positions gelées, budget net des positions gelées) est
+converti en nombre de contrats via le delta d'entrée : nb_contrats =
+capital_alloué / (|delta| x spot x multiplicateur). C'est ce que
+l'utilisateur appelle "se hedger grâce aux greeks" : l'exposition $ ciblée
+est la même quelle que soit la delta de l'option choisie, pas un nombre de
+contrats arbitraire.
+
+Sortie d'une position : stop-loss/take-profit sur la PRIME (pas le cours du
+sous-jacent), expiration (réglée à la valeur intrinsèque), ou disparition
+des données de prix du sous-jacent. Jamais une position n'est fermée
+uniquement parce que l'écart de valorisation s'est refermé (même choix
+utilisateur que la stratégie actions) -- elle reste "gelée" jusqu'à un de
+ces déclencheurs. Stop-loss/take-profit sont, comme les rebalancements,
+décidés à la clôture de J et exécutés à l'ouverture de J+1 (même règle que
+les entrées, cf. plus haut) ; seules l'expiration (réglée par construction à
+sa date d'échéance) et la disparition des données (rien à attendre) sont
+immédiates.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import Optional
+
+import pandas as pd
+
+import config
+from backtest import data_loader, options_pricing
+from backtest.strategies.options_base import OptionsStrategy
+
+logger = logging.getLogger("backtest.options_engine")
+
+MIN_TRADE_DOLLAR = 1.0
+
+
+@dataclass
+class OptionPosition:
+    symbol: str
+    option_type: str            # "CALL" / "PUT"
+    strike: float
+    expiry: pd.Timestamp
+    contracts: float
+    entry_premium: float        # prix effectif par action (coût de transaction déjà inclus)
+    entry_date: pd.Timestamp
+    vol: float                  # volatilité figée pour la durée de vie de la position
+    multiplier: float
+    source: str                 # "real" ou "simulated" (traçabilité, cf. positions_history)
+
+
+@dataclass
+class _PendingOrder:
+    target_dollar: float
+    reason: str
+    queued_on: pd.Timestamp
+
+
+class OptionsBacktestEngine:
+    def __init__(
+        self,
+        price_panel: dict,
+        signal_events: pd.DataFrame,
+        universe_history: Optional[pd.DataFrame],
+        fallback_universe_symbols: set[str],
+        option_snapshots: pd.DataFrame,
+        strategy: OptionsStrategy,
+        initial_capital: float,
+        commission_per_contract: float,
+        slippage_pct_of_premium: float,
+        stop_loss_pct: float,
+        take_profit_pct: float,
+        max_positions: int,
+        target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
+        contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
+        real_snapshot_tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
+        realized_vol_lookback_days: int = config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
+        signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
+        start_date: Optional[pd.Timestamp] = None,
+        end_date: Optional[pd.Timestamp] = None,
+    ):
+        self.close = price_panel["close"]
+        self.open = price_panel["open"]
+        self.last_valid_date = price_panel["last_valid_date"]
+        self.signal_events = signal_events.sort_values("published_date").reset_index(drop=True)
+        self.universe_history = universe_history
+        self.fallback_universe_symbols = fallback_universe_symbols
+        self.option_snapshots = option_snapshots
+        self.strategy = strategy
+        self.initial_capital = initial_capital
+        self.commission_per_contract = commission_per_contract
+        self.slippage_rate = slippage_pct_of_premium / 100
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_positions = max_positions
+        self.target_tenor_days = target_tenor_days
+        self.contract_multiplier = contract_multiplier
+        self.real_snapshot_tolerance_days = real_snapshot_tolerance_days
+        self.realized_vol_lookback_days = realized_vol_lookback_days
+        self.signal_max_age_days = signal_max_age_days
+
+        self.cash = initial_capital
+        self.positions: dict[str, OptionPosition] = {}
+        self.known_signals: dict[str, dict] = {}
+        self.pending_orders: dict[str, _PendingOrder] = {}
+        self._pending_option_type: dict[str, str] = {}
+
+        self.trades: list[dict] = []
+        self.equity_curve_rows: list[dict] = []
+        self.positions_history_rows: list[dict] = []
+        self.signals_history_rows: list[dict] = []
+
+        calendar = self.close.index
+        if start_date is not None:
+            calendar = calendar[calendar >= start_date]
+        if end_date is not None:
+            calendar = calendar[calendar <= end_date]
+        if len(calendar) == 0:
+            raise ValueError("Aucun jour de bourse dans la plage demandée.")
+        self.calendar = calendar
+
+        if universe_history is None:
+            logger.warning(
+                "Pas d'historique d'univers (lance 01b_historique_univers_sp500.py) : "
+                "l'univers ACTUEL du S&P 500 est appliqué à toutes les dates passées -- "
+                "biais de survivance connu, résultats optimistes."
+            )
+        if option_snapshots.empty:
+            logger.warning(
+                "Aucun snapshot réel d'options trouvé (lance 08_recuperation_options.py pour "
+                "commencer à en accumuler) : toutes les entrées seront simulées par Black-Scholes."
+            )
+
+    # ------------------------------------------------------------------ #
+    def run(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        for today in self.calendar:
+            self._execute_pending_orders(today)
+            exited_today = self._settle_expired_positions(today)
+            exited_today |= self._handle_stale_underlyings(today)
+            exited_today |= self._check_stop_loss_take_profit(today)
+
+            todays_events = self.signal_events[self.signal_events["published_date"] == today]
+            if not todays_events.empty:
+                self._update_known_signals(todays_events, today)
+                self._rebalance(today, exclude=exited_today)
+
+            self._mark_to_market(today)
+            self._record_positions(today)
+
+        equity_curve = pd.DataFrame(self.equity_curve_rows)
+        positions_history = pd.DataFrame(self.positions_history_rows)
+        trades = pd.DataFrame(self.trades)
+        signals_history = pd.DataFrame(self.signals_history_rows)
+        return equity_curve, positions_history, trades, signals_history
+
+    # ------------------------------------------------------------------ #
+    # Pricing d'une position ouverte, à une date donnée
+    # ------------------------------------------------------------------ #
+    def _current_premium(self, pos: OptionPosition, today: pd.Timestamp, spot: Optional[float] = None) -> Optional[float]:
+        """Repricing Black-Scholes à strike/échéance/vol fixés (ceux de la
+        position). spot explicite (prix d'OUVERTURE du jour d'exécution) si
+        fourni -- sinon clôture du jour (utilisé pour les décisions/le
+        marked-to-market, jamais pour exécuter un ordre, cf. les appelants)."""
+        if spot is None:
+            spot = self.close.get(pos.symbol, pd.Series(dtype=float)).get(today)
+        if spot is None or pd.isna(spot):
+            return None
+        t_years = max((pos.expiry - today).days, 0) / 365.0
+        return options_pricing.bs_price(spot, pos.strike, t_years, pos.vol, pos.option_type)
+
+    # ------------------------------------------------------------------ #
+    # Exécution des ordres décidés la veille
+    # ------------------------------------------------------------------ #
+    def _execute_pending_orders(self, today: pd.Timestamp) -> None:
+        if not self.pending_orders:
+            return
+        todays_open = self.open.loc[today] if today in self.open.index else pd.Series(dtype=float)
+
+        still_pending: dict[str, _PendingOrder] = {}
+        for symbol, order in self.pending_orders.items():
+            spot = todays_open.get(symbol)
+            if spot is None or pd.isna(spot):
+                if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
+                    logger.warning(
+                        "Ordre en attente pour %s abandonné (%s) : aucune ouverture "
+                        "disponible depuis plus de %d jours.",
+                        symbol, order.reason, data_loader.FORWARD_FILL_MAX_DAYS,
+                    )
+                    self._pending_option_type.pop(symbol, None)
+                    continue
+                still_pending[symbol] = order
+                continue
+
+            if order.target_dollar <= 0:
+                self._close_position(symbol, today, order.reason, spot=spot)
+            else:
+                option_type = self._pending_option_type.get(symbol)
+                self._open_or_resize(symbol, option_type, order.target_dollar, spot, today, order.reason)
+            self._pending_option_type.pop(symbol, None)
+        self.pending_orders = still_pending
+
+    def _select_contract(self, symbol: str, option_type: str, spot: float, today: pd.Timestamp) -> dict:
+        real = data_loader.find_real_option_snapshot(
+            self.option_snapshots, symbol, option_type, today, self.real_snapshot_tolerance_days,
+        )
+        if real is not None and real["premium"] and pd.notna(real["premium"]) and real["implied_vol"]:
+            return {
+                "strike": real["strike"], "expiry": real["expiry"], "premium": real["premium"],
+                "vol": real["implied_vol"], "delta": real["delta"],
+                "multiplier": real["multiplier"], "source": "real",
+            }
+
+        vol = options_pricing.realized_volatility(self.close[symbol], today, self.realized_vol_lookback_days)
+        if vol is None:
+            vol = 0.30  # repli conservateur si même l'historique de cours est trop court
+            logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, vol * 100)
+
+        strike = spot  # simulé : ATM exact, pas de grille de strikes discrets
+        expiry = today + pd.Timedelta(days=self.target_tenor_days)
+        t_years = self.target_tenor_days / 365.0
+        premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type)
+        greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type)
+        return {
+            "strike": strike, "expiry": expiry, "premium": premium, "vol": vol,
+            "delta": greeks["delta"], "multiplier": self.contract_multiplier, "source": "simulated",
+        }
+
+    def _open_or_resize(self, symbol: str, option_type: str, target_dollar: float, spot: float, today: pd.Timestamp, reason: str) -> None:
+        existing = self.positions.get(symbol)
+        if existing is not None and existing.option_type != option_type:
+            # Le signal a changé de sens (call <-> put) alors qu'une position
+            # existe déjà dans l'autre sens : on laisse l'ancienne gelée
+            # (elle ne sera fermée que par stop/take-profit/expiration/gap de
+            # données, cf. docstring module) et on n'ouvre PAS de position
+            # simultanée dans les deux sens sur le même sous-jacent.
+            logger.debug("%s : signal %s ignoré, une position %s existe déjà (gelée).", symbol, option_type, existing.option_type)
+            return
+
+        contract = self._select_contract(symbol, option_type, spot, today)
+        delta = contract["delta"] or 0.0
+        if abs(delta) < 1e-6:
+            return
+
+        multiplier = contract["multiplier"]
+        target_contracts = target_dollar / (abs(delta) * spot * multiplier)
+
+        if existing is None:
+            effective_premium = contract["premium"] * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
+            cost = target_contracts * multiplier * effective_premium
+            if cost < MIN_TRADE_DOLLAR:
+                return
+            self.cash -= cost
+            self.positions[symbol] = OptionPosition(
+                symbol=symbol, option_type=option_type, strike=contract["strike"], expiry=contract["expiry"],
+                contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
+                vol=contract["vol"], multiplier=multiplier, source=contract["source"],
+            )
+        else:
+            # Renforcement d'une position existante (même sens) : moyenne
+            # pondérée du prix d'entrée. Strike/échéance/vol restent ceux du
+            # contrat déjà détenu (pas de re-sélection de contrat en cours de vie).
+            delta_contracts = target_contracts - existing.contracts
+            if abs(delta_contracts) * multiplier * spot < MIN_TRADE_DOLLAR:
+                return
+            if delta_contracts > 0:
+                current_premium = self._current_premium(existing, today, spot=spot) or contract["premium"]
+                effective_premium = current_premium * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
+                cost = delta_contracts * multiplier * effective_premium
+                self.cash -= cost
+                new_contracts = existing.contracts + delta_contracts
+                existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
+                existing.contracts = new_contracts
+            else:
+                self._reduce_position(existing, -delta_contracts, today, reason, spot=spot)
+
+    def _reduce_position(self, pos: OptionPosition, contracts_to_sell: float, today: pd.Timestamp, reason: str, spot: Optional[float] = None) -> None:
+        contracts_to_sell = min(contracts_to_sell, pos.contracts)
+        if contracts_to_sell <= 0:
+            return
+        current_premium = self._current_premium(pos, today, spot=spot)
+        if current_premium is None:
+            return
+        effective_premium = current_premium * (1 - self.slippage_rate) - self.commission_per_contract / pos.multiplier
+        proceeds = contracts_to_sell * pos.multiplier * effective_premium
+        self.cash += proceeds
+        pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
+        self.trades.append({
+            "symbol": pos.symbol, "entry_date": pos.entry_date, "exit_date": today,
+            "shares": contracts_to_sell * pos.multiplier, "entry_price": pos.entry_premium, "exit_price": effective_premium,
+            "pnl": pnl, "return_pct": (effective_premium - pos.entry_premium) / pos.entry_premium * 100,
+            "holding_days": (today - pos.entry_date).days, "exit_reason": reason,
+            "option_type": pos.option_type, "strike": pos.strike, "contracts": contracts_to_sell, "source": pos.source,
+        })
+        pos.contracts -= contracts_to_sell
+        if pos.contracts <= 1e-9:
+            del self.positions[pos.symbol]
+
+    def _close_position(self, symbol: str, today: pd.Timestamp, reason: str, spot: Optional[float] = None) -> None:
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return
+        self._reduce_position(pos, pos.contracts, today, reason, spot=spot)
+
+    # ------------------------------------------------------------------ #
+    # Gestion du risque
+    # ------------------------------------------------------------------ #
+    def _settle_expired_positions(self, today: pd.Timestamp) -> set[str]:
+        expired = {sym for sym, pos in self.positions.items() if today >= pos.expiry}
+        for symbol in expired:
+            self._close_position(symbol, today, "expiry")
+        return expired
+
+    def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
+        """Décidé à la clôture de today, exécuté à l'ouverture du jour
+        suivant (mis en file via pending_orders, comme un rebalancement) --
+        même règle "pas de look-ahead" que le reste du moteur : on ne
+        clôture jamais une position au prix exact qui vient de déclencher
+        le seuil."""
+        triggered = set()
+        for symbol, pos in list(self.positions.items()):
+            premium = self._current_premium(pos, today)
+            if premium is None:
+                continue
+            move_pct = (premium - pos.entry_premium) / pos.entry_premium * 100
+            if move_pct <= self.stop_loss_pct:
+                self.pending_orders[symbol] = _PendingOrder(0.0, "stop_loss", today)
+                triggered.add(symbol)
+            elif move_pct >= self.take_profit_pct:
+                self.pending_orders[symbol] = _PendingOrder(0.0, "take_profit", today)
+                triggered.add(symbol)
+        return triggered
+
+    def _handle_stale_underlyings(self, today: pd.Timestamp) -> set[str]:
+        closed = set()
+        for symbol, pos in list(self.positions.items()):
+            last_valid = self.last_valid_date.get(symbol)
+            if last_valid is None or pd.isna(last_valid):
+                continue
+            if (today - last_valid).days <= data_loader.FORWARD_FILL_MAX_DAYS:
+                continue
+            logger.warning(
+                "%s : plus aucun cours du sous-jacent depuis %s (>%d jours), position "
+                "options clôturée à la dernière valorisation connue.",
+                symbol, last_valid.date(), data_loader.FORWARD_FILL_MAX_DAYS,
+            )
+            self._close_position(symbol, last_valid, "data_gap")
+            closed.add(symbol)
+        return closed
+
+    # ------------------------------------------------------------------ #
+    # Signaux et rebalancement (même logique de positions gelées que le
+    # moteur actions -- voir backtest/engine.py::_rebalance)
+    # ------------------------------------------------------------------ #
+    def _update_known_signals(self, todays_events: pd.DataFrame, today: pd.Timestamp) -> None:
+        for _, row in todays_events.iterrows():
+            self.known_signals[row["symbol"]] = row.to_dict()
+            self.signals_history_rows.append({
+                "date": today, "symbol": row["symbol"], "sector": row.get("sector"),
+                "fiscal_year": row.get("fiscal_year"), "gap_pct": row.get("gap_pct"),
+                "valuation_theoretical_per_share": row.get("valuation_theoretical_per_share"),
+                "source": row.get("source"),
+            })
+
+    def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
+        universe_today = data_loader.universe_asof(self.universe_history, today, self.fallback_universe_symbols)
+        eligible_signals = pd.DataFrame([
+            s for sym, s in self.known_signals.items()
+            if sym in universe_today
+            and (sym in self.positions or (today - s["published_date"]).days <= self.signal_max_age_days)
+        ])
+        if eligible_signals.empty:
+            return
+
+        current_option_types = {sym: pos.option_type for sym, pos in self.positions.items()}
+        targets = self.strategy.generate_option_targets(eligible_signals, current_option_types)
+        targets = {s: t for s, t in targets.items() if s not in exclude and t["weight"] > 0}
+        if not targets:
+            return
+
+        todays_close = self.close.loc[today] if today in self.close.index else pd.Series(dtype=float)
+        nav_now = self._current_nav(today)
+
+        legacy_value = sum(
+            self._position_value(pos, today)
+            for sym, pos in self.positions.items()
+            if sym not in targets and sym not in exclude
+        )
+        active_budget = max(nav_now - legacy_value, 0.0)
+
+        already_held = {s: t for s, t in targets.items() if s in self.positions}
+        new_candidates = {s: t for s, t in targets.items() if s not in self.positions}
+
+        slots_used = sum(
+            1 for sym in self.positions if sym not in targets and sym not in exclude
+        ) + len(already_held)
+        slots_for_new = max(self.max_positions - slots_used, 0)
+        if len(new_candidates) > slots_for_new:
+            new_candidates = dict(
+                sorted(new_candidates.items(), key=lambda kv: kv[1]["weight"], reverse=True)[:slots_for_new]
+            )
+
+        final_active = {**already_held, **new_candidates}
+        total_weight = sum(t["weight"] for t in final_active.values())
+        if total_weight > 0:
+            for t in final_active.values():
+                t["weight"] = t["weight"] / total_weight
+
+        for symbol, t in final_active.items():
+            self._pending_option_type[symbol] = t["option_type"]
+            self.pending_orders[symbol] = _PendingOrder(t["weight"] * active_budget, "rebalance", today)
+
+    # ------------------------------------------------------------------ #
+    # Comptabilité quotidienne
+    # ------------------------------------------------------------------ #
+    def _position_value(self, pos: OptionPosition, today: pd.Timestamp) -> float:
+        premium = self._current_premium(pos, today)
+        if premium is None:
+            premium = pos.entry_premium
+        return pos.contracts * pos.multiplier * premium
+
+    def _current_nav(self, today: pd.Timestamp) -> float:
+        return self.cash + sum(self._position_value(pos, today) for pos in self.positions.values())
+
+    def _mark_to_market(self, today: pd.Timestamp) -> None:
+        invested = sum(self._position_value(pos, today) for pos in self.positions.values())
+        nav = self.cash + invested
+        self.equity_curve_rows.append({
+            "date": today, "nav": nav, "cash": self.cash, "invested_value": invested,
+            "num_positions": len(self.positions),
+        })
+
+    def _record_positions(self, today: pd.Timestamp) -> None:
+        for symbol, pos in self.positions.items():
+            premium = self._current_premium(pos, today)
+            market_value = pos.contracts * pos.multiplier * (premium if premium is not None else pos.entry_premium)
+            self.positions_history_rows.append({
+                "date": today, "symbol": symbol, "option_type": pos.option_type, "strike": pos.strike,
+                "expiry": pos.expiry, "contracts": pos.contracts, "entry_premium": pos.entry_premium,
+                "entry_date": pos.entry_date, "premium": premium, "market_value": market_value,
+                "unrealized_pnl": (premium - pos.entry_premium) * pos.contracts * pos.multiplier if premium is not None else None,
+                "source": pos.source,
+            })

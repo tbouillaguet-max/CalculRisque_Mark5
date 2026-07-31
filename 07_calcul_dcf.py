@@ -66,14 +66,18 @@ def calculer_terminal_value(fcf_final: float, taux_croissance_terminal: float, t
 
 def calculer_dcf(
     fcf_actuel: float, taux_croissance_fcf: float, taux_croissance_terminal: float,
-    taux_actualisation: float, periode_prevision: int, dette_nette: float = 0, cash: float = 0,
+    taux_actualisation: float, periode_prevision: int, dette_nette: float = 0,
 ) -> Tuple[float, Dict]:
     fcf_futurs = calculer_fcf_futurs(fcf_actuel, taux_croissance_fcf, periode_prevision)
     tv = calculer_terminal_value(fcf_futurs[-1], taux_croissance_terminal, taux_actualisation)
     valeur_actualisee_fcf = np.sum(fcf_futurs / (1 + taux_actualisation) ** np.arange(1, periode_prevision + 1))
     valeur_actualisee_tv = tv / (1 + taux_actualisation) ** periode_prevision
     ev = valeur_actualisee_fcf + valeur_actualisee_tv
-    equity_value = ev - dette_nette + cash
+    # dette_nette (04_recuperation_10k.py) est DÉJÀ nette de cash (dette
+    # brute - cash) : "ev - dette_nette + cash" comptait le cash deux fois
+    # (bug corrigé -- la valeur DCF était surestimée pour les entreprises
+    # avec beaucoup de trésorerie nette).
+    equity_value = ev - dette_nette
 
     details = {
         "FCF_futurs": fcf_futurs.tolist(), "Terminal_Value": tv,
@@ -145,7 +149,6 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 )
                 bfr = 0
             dette_nette = row.get("net_debt") or 0
-            cash = row.get("cash") or 0
             shares_outstanding = row.get("shares_outstanding")
             taux_imposition = row.get("tax_rate")
             if pd.isna(taux_imposition) or taux_imposition is None or not (0 <= taux_imposition < 1):
@@ -166,7 +169,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 taux_croissance_terminal=hypotheses["taux_croissance_terminal"],
                 taux_actualisation=hypotheses["taux_actualisation"],
                 periode_prevision=hypotheses["periode_prevision"],
-                dette_nette=dette_nette, cash=cash,
+                dette_nette=dette_nette,
             )
 
             valeur_par_action = equity_value / shares_outstanding
