@@ -10,8 +10,12 @@ théorique s'écarte significativement du cours de bourse.
     01_build_universe.py        -> univers S&P 500 (RIC, Instrument_Name, Country, Currency, Exchange)
     02_categoriser_secteurs.py  -> ajoute une colonne "sector" à l'univers
     03_recuperation_cours.py    -> cours de clôture de fin d'année via IBKR
-    04_recuperation_10k.py      -> données financières via l'API XBRL companyfacts de la SEC
-    05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03 + 04
+    04_recuperation_10k.py      -> données financières ANNUELLES (10-K) via l'API XBRL
+                                    companyfacts de la SEC
+    04b_recuperation_10q.py     -> données TRIMESTRIELLES (10-Q + 10-K), reconstruit un TTM
+                                    (somme glissante des 4 derniers trimestres) point-in-time,
+                                    voir sa docstring pour la distinction TTM vs trimestre brut
+    05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03(b) + 04 + 04b
     06_calcul_multiples_moyens.py -> moyennes/médianes des multiples par secteur
     07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
                                     calcule l'écart en % entre cours de bourse et valeur théorique
@@ -59,6 +63,15 @@ UNIVERSE_FILE = DIR_UNIVERSE / "sp500_universe.csv"          # sortie de 01, ent
 PRICES_FILE = DIR_PRICES / "year_end_prices.parquet"          # sortie de 03
 OPTIONS_FILE = DIR_OPTIONS / "option_chains.parquet"          # sortie de 04 : DERNIER snapshot uniquement
 FINANCIALS_FILE = DIR_FINANCIALS / "financials.parquet"       # sortie consolidée de 05
+
+# Sortie de 04b_recuperation_10q.py (10-Q + reconstruction TTM, voir sa
+# docstring) : FINANCIALS_QUARTERLY_FILE garde CHAQUE trimestre discret
+# (utile pour audit/debug de la discrétisation) ; FINANCIALS_TTM_FILE garde
+# les lignes TTM glissantes (somme des flux sur 4 trimestres, dernière valeur
+# connue pour les postes de bilan) réellement consommées par 05/06b/07 en
+# plus de FINANCIALS_FILE (annuel, 10-K seul, inchangé).
+FINANCIALS_QUARTERLY_FILE = DIR_FINANCIALS / "financials_quarterly.parquet"
+FINANCIALS_TTM_FILE = DIR_FINANCIALS / "financials_ttm.parquet"
 MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
 MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
 DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
