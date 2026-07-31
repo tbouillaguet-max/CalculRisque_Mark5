@@ -77,8 +77,13 @@ COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 # entreprise dans l'original), la SEC tolère ~10 req/s avec un bon User-Agent.
 REQUEST_DELAY = 0.15
 
-# Tags US-GAAP candidats par métrique, dans l'ordre de préférence (certaines
-# entreprises taguent différemment selon les années/schémas).
+# Tags candidats par métrique, dans l'ordre de préférence (certaines
+# entreprises taguent différemment selon les années/schémas). Un tag préfixé
+# "namespace:" cherche dans cette taxonomie XBRL au lieu de "us-gaap" par
+# défaut (voir extract_annual_values) -- utilisé pour shares_outstanding,
+# dont beaucoup d'entreprises (ex: V, VLO) ne taguent jamais la version
+# us-gaap et ne renseignent que la page de garde du 10-K (taxonomie "dei",
+# quasi universelle chez les émetteurs SEC).
 XBRL_TAGS: Dict[str, List[str]] = {
     "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
     "ebit": ["OperatingIncomeLoss"],
@@ -92,7 +97,9 @@ XBRL_TAGS: Dict[str, List[str]] = {
     "da": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet"],
     "income_tax_expense": ["IncomeTaxExpenseBenefit"],
     "interest_expense": ["InterestExpense"],
-    "shares_outstanding": ["CommonStockSharesOutstanding"],
+    "shares_outstanding": [
+        "CommonStockSharesOutstanding", "dei:EntityCommonStockSharesOutstanding", "CommonStockSharesIssued",
+    ],
     "current_assets": ["AssetsCurrent"],
     "current_liabilities": ["LiabilitiesCurrent"],
 }
@@ -123,14 +130,19 @@ def get_cik_map() -> Dict[str, str]:
 
 def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float, str]]:
     """
-    Pour une métrique donnée (plusieurs tags candidats US-GAAP, dans l'ordre
-    de préférence), retourne {année_fiscale: (valeur, date_de_dépôt)} en ne
+    Pour une métrique donnée (plusieurs tags candidats, dans l'ordre de
+    préférence), retourne {année_fiscale: (valeur, date_de_dépôt)} en ne
     gardant que les faits associés à un 10-K annuel (form == "10-K",
     fp == "FY"). La date de dépôt ("filed", format "YYYY-MM-DD") est
     retournée en plus de la valeur (et non plus jetée après sélection) : le
     backtest (09_backtest.py) en a besoin pour savoir à partir de quand cette
     valeur était réellement publique -- l'utiliser dès le 31/12 de l'exercice
     serait du look-ahead bias (un 10-K est déposé ~2-3 mois après la clôture).
+
+    Un tag "namespace:tag" (ex: "dei:EntityCommonStockSharesOutstanding")
+    cherche dans cette taxonomie XBRL au lieu de "us-gaap" par défaut --
+    nécessaire pour shares_outstanding, que beaucoup d'entreprises ne taguent
+    qu'en "dei" (page de garde du 10-K) et jamais en "us-gaap".
 
     Tous les tags de la liste sont consultés (pas seulement le premier qui a
     des données) : le premier tag reste prioritaire pour une année donnée,
@@ -142,11 +154,12 @@ def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float
     tag non vide faisait perdre silencieusement toutes les années couvertes
     uniquement par un tag de repli.
     """
-    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    all_facts = facts.get("facts", {})
     by_year: Dict[int, tuple] = {}  # year -> (tag_priority, filed_date, value)
 
-    for priority, tag in enumerate(tags):
-        entry = us_gaap.get(tag)
+    for priority, tag_spec in enumerate(tags):
+        namespace, _, tag = tag_spec.rpartition(":") if ":" in tag_spec else ("us-gaap", "", tag_spec)
+        entry = all_facts.get(namespace, {}).get(tag)
         if not entry:
             continue
         for unit_values in entry.get("units", {}).values():
