@@ -4,6 +4,57 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+## Rafraîchissement trimestriel (04b, 04c, 07b, run_pipeline_quarterly.py)
+
+Le pipeline de base (04→07) est annuel (un 10-K par an). Ces scripts
+permettent un rafraîchissement TRIMESTRIEL de la valorisation elle-même,
+point-in-time (chaque donnée datée de son dépôt SEC réel) :
+
+    04b_recuperation_10q.py       -> 10-Q + reconstruction TTM (voir sa
+                                      docstring : TTM vs trimestre brut, et
+                                      la discrétisation cumul YTD -> trimestre)
+    04c_recuperation_8k.py        -> événements matériels (8-K) entre deux
+                                      trimestres TTM connus, classifiés par LLM
+    07b_validation_qualitative.py -> verdict LLM de cohérence qualitative
+                                      (texte du 10-K/10-Q à sa date de dépôt)
+                                      vs l'écart de valorisation quantitatif
+    run_pipeline_quarterly.py     -> orchestre 04b→04c→05→06→06b→07→07b→08 en
+                                      conditions réelles (mode live), ou
+                                      reconstitue une valorisation point-in-time
+                                      passée sans aucun appel réseau
+                                      (--as-of-date, mode replay)
+
+04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
+filings SEC + appel Mistral générique) et nécessitent `MISTRAL_API_KEY` (voir
+02_categoriser_secteurs.py) pour produire un verdict -- sans cette variable,
+ils journalisent "non_evalue" plutôt que de planter.
+
+05/06b/07 consomment automatiquement le TTM (`FINANCIALS_TTM_FILE`) dès que
+04b a tourné une fois, en plus de l'annuel -- sans régression : identique à
+avant si 04b n'a jamais tourné.
+
+```bash
+python 04b_recuperation_10q.py
+python 04c_recuperation_8k.py
+python 05_calcul_multiples.py && python 06_calcul_multiples_moyens.py && python 06b_calcul_valorisation_combinee.py
+python 07_calcul_dcf.py
+python 07b_validation_qualitative.py
+# ou, en une commande :
+python run_pipeline_quarterly.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
+```
+
+Cron (exemple, peu après chaque fenêtre de dépôt 10-Q habituelle) :
+
+```
+0 6 5 2,5,8,11 *  cd /chemin/vers/CalculRisque_Mark3 && python3 run_pipeline_quarterly.py --skip-options >> logs/quarterly.log 2>&1
+```
+
+Reconstitution point-in-time (backtest manuel, aucun appel réseau) :
+
+```bash
+python run_pipeline_quarterly.py --as-of-date 2024-06-30
+```
+
 ## Backtest (01b, 03b, 09)
 
 Trois scripts complètent le pipeline pour permettre de backtester une
