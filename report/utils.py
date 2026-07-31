@@ -353,6 +353,113 @@ def load_backtest_run(kind: str, run_id: str) -> dict:
     return result
 
 
+# ============================================================================
+# Page Pipeline : journal des runs (run_pipeline_quarterly.py) et fraîcheur
+# ============================================================================
+
+# Couleurs d'état, réservées : jamais réutilisées pour une série de données,
+# et toujours accompagnées d'une icône + d'un libellé (voir STATUS_ICONS) pour
+# qu'un statut ne repose jamais sur la seule couleur.
+STATUS_COLORS = {
+    "success": "#0ca30c",   # good
+    "partial": "#fab219",   # warning
+    "skipped": "#ec835a",   # serious
+    "failed": "#d03b3b",    # critical
+    "running": "#ec835a",
+}
+STATUS_ICONS = {
+    "success": "✅", "partial": "⚠️", "skipped": "⏭️", "failed": "❌", "running": "⏳",
+}
+STATUS_LABELS = {
+    "success": "Réussi", "partial": "Partiel", "skipped": "Sautée",
+    "failed": "Échec", "running": "En cours",
+}
+
+
+def status_badge(status: str) -> str:
+    return f"{STATUS_ICONS.get(status, '❔')} {STATUS_LABELS.get(status, status)}"
+
+
+@st.cache_data(ttl=30)
+def load_pipeline_runs() -> list[dict]:
+    """Rapports de run écrits par run_pipeline_quarterly.py
+    (data/pipeline_runs/<run_id>/report.json), du plus récent au plus ancien.
+    Liste vide si l'orchestrateur n'a jamais tourné."""
+    if not config.DIR_PIPELINE_RUNS.exists():
+        return []
+    reports = []
+    for run_dir in sorted(config.DIR_PIPELINE_RUNS.iterdir(), reverse=True):
+        path = run_dir / config.PIPELINE_RUN_REPORT_NAME
+        if not path.exists():
+            continue
+        try:
+            reports.append(json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return reports
+
+
+def read_step_log(run_id: str, script: str, max_lines: int = 400) -> str:
+    """Fin du log d'une étape (les erreurs sont en fin de fichier)."""
+    path = config.DIR_PIPELINE_RUNS / run_id / f"{script}.log"
+    if not path.exists():
+        return "(aucun log pour cette étape)"
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return f"[... {len(lines) - max_lines} ligne(s) tronquée(s) ...]\n" + "\n".join(lines[-max_lines:])
+
+
+# Fichiers de sortie du pipeline suivis pour leur fraîcheur, avec le script
+# qui les produit (affiché tel quel quand un fichier manque ou vieillit).
+PIPELINE_OUTPUTS: list[tuple[str, Path, str]] = [
+    ("Univers S&P 500", config.UNIVERSE_FILE, "01_build_universe.py"),
+    ("Univers point-in-time", config.UNIVERSE_FULL_FILE, "01b_historique_univers_sp500.py"),
+    ("Cours annuels", config.PRICES_FILE, "03_recuperation_cours.py"),
+    ("Cours quotidiens", config.DAILY_PRICES_FILE, "03b_recuperation_cours_quotidiens.py"),
+    ("Financiers annuels (10-K)", config.FINANCIALS_FILE, "04_recuperation_10k.py"),
+    ("Financiers TTM (10-Q)", config.FINANCIALS_TTM_FILE, "04b_recuperation_10q.py"),
+    ("Événements 8-K", config.MATERIAL_EVENTS_8K_FILE, "04c_recuperation_8k.py"),
+    ("Multiples", config.MULTIPLES_FILE, "05_calcul_multiples.py"),
+    ("Valorisation combinée", config.VALORISATION_COMBINEE_FILE, "06b_calcul_valorisation_combinee.py"),
+    ("DCF (historique)", config.DCF_HISTORY_FILE, "07_calcul_dcf.py"),
+    ("Validation qualitative", config.QUALITATIVE_VALIDATION_FILE, "07b_validation_qualitative.py"),
+    ("Chaînes d'options", config.OPTIONS_FILE, "08_recuperation_options.py"),
+]
+
+
+def build_freshness_table(stale_after_days: int = 100) -> pd.DataFrame:
+    """Une ligne par sortie du pipeline : présence, taille, âge en jours.
+
+    Le seuil par défaut (100 jours) correspond au rythme trimestriel du
+    pipeline (~92 jours) plus une marge : au-delà, la donnée n'a pas été
+    rafraîchie au dernier trimestre attendu."""
+    freshness_badge = {"success": "✅ À jour", "partial": "⚠️ Périmé", "failed": "❌ Absent"}
+    now = pd.Timestamp.now()
+    rows = []
+    for label, path, producer in PIPELINE_OUTPUTS:
+        exists = path.exists()
+        modified = pd.Timestamp(path.stat().st_mtime, unit="s") if exists else pd.NaT
+        age_days = (now - modified).days if exists else None
+        if not exists:
+            status = "failed"
+        elif age_days > stale_after_days:
+            status = "partial"
+        else:
+            status = "success"
+        rows.append({
+            "etat": freshness_badge[status],
+            "_status": status,
+            "sortie": label,
+            "fichier": str(path),
+            "produit_par": producer,
+            "derniere_maj": modified,
+            "age_jours": age_days,
+            "taille_mo": round(path.stat().st_size / 1e6, 2) if exists else None,
+        })
+    return pd.DataFrame(rows)
+
+
 def _first_present(df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[str]:
     for c in candidates:
         if c in df.columns:
