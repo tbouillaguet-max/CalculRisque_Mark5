@@ -14,7 +14,7 @@ consommés par backtest/engine.py :
     - universe: historique d'appartenance au S&P 500 (01b), pour ne
                 considérer comme candidates à l'ENTRÉE que les entreprises
                 réellement membres de l'indice à la date courante (voir
-                universe_asof). Les positions déjà ouvertes ne sont PAS
+                UniverseResolver). Les positions déjà ouvertes ne sont PAS
                 clôturées de force si l'entreprise sort de l'indice --
                 seuls stop-loss/take-profit et une disparition des données
                 de prix ferment une position (cf. engine.py).
@@ -23,9 +23,10 @@ consommés par backtest/engine.py :
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -59,7 +60,68 @@ def load_daily_prices(path=None) -> pd.DataFrame:
     return df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
 
-def build_price_panel(daily_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
+class PricePanel:
+    """Cours quotidiens pivotés (date x symbole), avec un accès unitaire en
+    temps constant.
+
+    Les moteurs de backtest interrogent un cours (symbole, date) des
+    centaines de milliers de fois par run. Passer par pandas à chaque appel
+    (`close.loc[date]` ou `close[symbol].get(date)`) reconstruit une Series
+    intermédiaire à chaque fois et domine largement le temps de run : les
+    valeurs sont donc aussi conservées en tableaux numpy bruts, adressés par
+    deux dictionnaires date->ligne et symbole->colonne.
+
+    Les tables pandas (`close`, `open`, `last_valid_date`) restent exposées
+    telles quelles pour les usages non unitaires (calendrier, colonnes).
+    """
+
+    def __init__(self, close: pd.DataFrame, open_: pd.DataFrame, last_valid_date: pd.Series):
+        self.close = close
+        self.open = open_
+        self.last_valid_date = last_valid_date
+
+        self._close_values = close.to_numpy(dtype=float)
+        self._open_values = open_.to_numpy(dtype=float)
+        self._row_of_date = {ts: i for i, ts in enumerate(close.index)}
+        self._close_col = {sym: j for j, sym in enumerate(close.columns)}
+        self._open_col = {sym: j for j, sym in enumerate(open_.columns)}
+
+    def row_of(self, date: pd.Timestamp) -> Optional[int]:
+        return self._row_of_date.get(date)
+
+    def close_at(self, symbol: str, date: pd.Timestamp) -> Optional[float]:
+        """Clôture forward-fillée, ou None si le symbole/la date est absent
+        du panel ou si la valeur est manquante."""
+        row = self._row_of_date.get(date)
+        col = self._close_col.get(symbol)
+        if row is None or col is None:
+            return None
+        value = self._close_values[row, col]
+        return None if value != value else float(value)
+
+    def open_at(self, symbol: str, date: pd.Timestamp) -> Optional[float]:
+        """Ouverture NON forward-fillée (cf. build_price_panel) : None dès
+        que le symbole n'a pas coté ce jour-là."""
+        row = self._row_of_date.get(date)
+        col = self._open_col.get(symbol)
+        if row is None or col is None:
+            return None
+        value = self._open_values[row, col]
+        return None if value != value else float(value)
+
+    def close_history(self, symbol: str, date: pd.Timestamp) -> np.ndarray:
+        """Clôtures du symbole jusqu'à `date` INCLUSE (jamais au-delà : c'est
+        ce découpage qui garantit le caractère point-in-time des indicateurs
+        calculés dessus, cf. options_pricing.realized_volatility). Tableau
+        vide si le symbole ou la date est inconnu."""
+        row = self._row_of_date.get(date)
+        col = self._close_col.get(symbol)
+        if row is None or col is None:
+            return np.empty(0)
+        return self._close_values[: row + 1, col]
+
+
+def build_price_panel(daily_prices: pd.DataFrame) -> PricePanel:
     """Pivote les cours quotidiens en deux tables larges (index=date,
     colonnes=symbol) : 'close' (forward-fillée, bornée à
     FORWARD_FILL_MAX_DAYS) et 'open' (NON forward-fillée : un ordre ne doit
@@ -67,7 +129,7 @@ def build_price_panel(daily_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
     manquant pour un symbole, l'exécution de ses ordres est simplement
     reportée au jour suivant par l'engine).
 
-    Retourne aussi 'last_valid_date' : dernière date avec un cours RÉEL
+    Expose aussi 'last_valid_date' : dernière date avec un cours RÉEL
     (non comblé) par symbole, utilisée par l'engine pour détecter les
     symboles dont les données se sont arrêtées (cf. FORWARD_FILL_MAX_DAYS)."""
     close_raw = daily_prices.pivot(index="date", columns="symbol", values="close").sort_index()
@@ -76,7 +138,7 @@ def build_price_panel(daily_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
     last_valid_date = close_raw.apply(lambda col: col.last_valid_index())
 
     close_ffill = close_raw.ffill(limit=FORWARD_FILL_MAX_DAYS)
-    return {"close": close_ffill, "open": open_raw, "last_valid_date": last_valid_date}
+    return PricePanel(close_ffill, open_raw, last_valid_date)
 
 
 def _fill_missing_filed_dates(df: pd.DataFrame, path) -> pd.DataFrame:
@@ -153,12 +215,40 @@ def load_universe_history(path=None) -> Optional[pd.DataFrame]:
     return df
 
 
-def universe_asof(history: Optional[pd.DataFrame], as_of: pd.Timestamp, fallback_symbols: set[str]) -> set[str]:
-    if history is None or history.empty:
-        return fallback_symbols
-    start_ok = history["start_date"].isna() | (history["start_date"] <= as_of)
-    end_ok = history["end_date"].isna() | (history["end_date"] > as_of)
-    return set(history.loc[start_ok & end_ok, "ric"].map(config.to_ib_symbol))
+class UniverseResolver:
+    """Composition de l'indice à une date donnée, à partir des spans
+    d'appartenance de 01b_historique_univers_sp500.py.
+
+    Les bornes et les symboles sont convertis une seule fois (le mapping
+    RIC -> symbole IBKR était refait à chaque appel), et le résultat est mis
+    en cache par date : l'engine réinterroge la même date autant de fois
+    qu'il y a de rebalancements ce jour-là.
+
+    `history=None` (01b jamais lancé) -> l'univers ACTUEL est renvoyé pour
+    toutes les dates : biais de survivance connu, signalé une fois par
+    l'engine plutôt que bloquant."""
+
+    def __init__(self, history: Optional[pd.DataFrame], fallback_symbols: set[str]):
+        self.fallback_symbols = fallback_symbols
+        self._has_history = history is not None and not history.empty
+        if self._has_history:
+            self._starts = history["start_date"].to_numpy(dtype="datetime64[ns]")
+            self._ends = history["end_date"].to_numpy(dtype="datetime64[ns]")
+            self._symbols = history["ric"].map(config.to_ib_symbol).to_numpy()
+        self._cache: dict[pd.Timestamp, set[str]] = {}
+
+    def asof(self, as_of: pd.Timestamp) -> set[str]:
+        if not self._has_history:
+            return self.fallback_symbols
+        cached = self._cache.get(as_of)
+        if cached is not None:
+            return cached
+        moment = np.datetime64(as_of.to_datetime64())
+        start_ok = np.isnat(self._starts) | (self._starts <= moment)
+        end_ok = np.isnat(self._ends) | (self._ends > moment)
+        members = set(self._symbols[start_ok & end_ok])
+        self._cache[as_of] = members
+        return members
 
 
 def load_current_universe_symbols() -> set[str]:
@@ -183,52 +273,81 @@ def load_option_snapshots_history(directory=None) -> pd.DataFrame:
     return df
 
 
-def find_real_option_snapshot(
-    option_snapshots: pd.DataFrame,
-    symbol: str,
-    option_type: str,
-    as_of: pd.Timestamp,
-    tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
-) -> Optional[dict]:
-    """Contrat réel le plus représentatif pour (symbol, option_type) autour
-    de as_of, ou None si aucun snapshot 08 n'existe dans la fenêtre de
-    tolérance (l'appelant doit alors simuler par Black-Scholes).
-
-    Sélection en deux temps : (1) le snapshot_date le plus proche de as_of,
-    dans la fenêtre de tolérance ; (2) parmi les contrats de cette date pour
-    ce symbole/type, celui le plus proche de la monnaie (min |moneyness_pct|),
-    départagé par l'échéance la plus proche de OPTIONS_TARGET_TENOR_DAYS --
-    cohérent avec la sélection déjà faite par 08 (ATM, >9 mois)."""
-    if option_snapshots.empty:
-        return None
-    candidates = option_snapshots[
-        (option_snapshots["symbol"] == symbol) & (option_snapshots["option_type"] == option_type)
-    ]
-    if candidates.empty:
-        return None
-
-    date_diff = (candidates["snapshot_date"] - as_of).abs()
-    within_tolerance = candidates[date_diff <= pd.Timedelta(days=tolerance_days)]
-    if within_tolerance.empty:
-        return None
-
-    closest_date = within_tolerance.loc[date_diff[within_tolerance.index].idxmin(), "snapshot_date"]
-    same_date = within_tolerance[within_tolerance["snapshot_date"] == closest_date].copy()
-
-    same_date["_moneyness_abs"] = same_date["moneyness_pct"].abs()
-    same_date["_tenor_diff"] = (same_date["expiry"] - closest_date).dt.days.sub(config.OPTIONS_TARGET_TENOR_DAYS).abs()
-    best = same_date.sort_values(["_moneyness_abs", "_tenor_diff"]).iloc[0]
-
-    bid, ask = best.get("bid"), best.get("ask")
+def _premium_of(row: pd.Series):
+    bid, ask = row.get("bid"), row.get("ask")
     if pd.notna(bid) and pd.notna(ask):
-        premium = (bid + ask) / 2
-    else:
-        premium = best.get("last_price") if pd.notna(best.get("last_price")) else best.get("close")
+        return (bid + ask) / 2
+    return row.get("last_price") if pd.notna(row.get("last_price")) else row.get("close")
 
-    return {
-        "strike": best["strike"], "expiry": best["expiry"], "premium": premium,
-        "implied_vol": best.get("implied_vol"), "delta": best.get("delta"), "gamma": best.get("gamma"),
-        "vega": best.get("vega"), "theta": best.get("theta"), "underlying_spot": best.get("underlying_spot"),
-        "multiplier": float(best.get("multiplier") or config.OPTIONS_CONTRACT_MULTIPLIER),
-        "snapshot_date": closest_date, "source": "real",
-    }
+
+class OptionSnapshotIndex:
+    """Index des snapshots réels archivés par 08_recuperation_options.py,
+    interrogeable par (symbole, type d'option, date).
+
+    Le contrat retenu pour un (symbole, type, snapshot_date) ne dépend pas de
+    la date d'interrogation : il est donc choisi UNE FOIS ici, à la
+    construction, plutôt qu'à chaque entrée en position -- le moteur filtrait
+    et triait l'intégralité des snapshots à chaque candidat.
+
+    Sélection, inchangée : le contrat le plus proche de la monnaie
+    (min |moneyness_pct|), départagé par l'échéance la plus proche de
+    OPTIONS_TARGET_TENOR_DAYS -- cohérent avec ce que 08 collecte déjà
+    (ATM, >9 mois)."""
+
+    def __init__(self, option_snapshots: pd.DataFrame):
+        self._by_key: dict[tuple[str, str], tuple[np.ndarray, list[dict]]] = {}
+        if option_snapshots.empty:
+            return
+
+        df = option_snapshots.copy()
+        df["_moneyness_abs"] = df["moneyness_pct"].abs()
+        df["_tenor_diff"] = (df["expiry"] - df["snapshot_date"]).dt.days.sub(config.OPTIONS_TARGET_TENOR_DAYS).abs()
+        best_per_date = (
+            df.sort_values(["symbol", "option_type", "snapshot_date", "_moneyness_abs", "_tenor_diff"])
+            .groupby(["symbol", "option_type", "snapshot_date"], as_index=False, sort=False)
+            .head(1)
+        )
+
+        for (symbol, option_type), group in best_per_date.groupby(["symbol", "option_type"], sort=False):
+            group = group.sort_values("snapshot_date")
+            contracts = [
+                {
+                    "strike": row["strike"], "expiry": row["expiry"], "premium": _premium_of(row),
+                    "implied_vol": row.get("implied_vol"), "delta": row.get("delta"), "gamma": row.get("gamma"),
+                    "vega": row.get("vega"), "theta": row.get("theta"), "underlying_spot": row.get("underlying_spot"),
+                    "multiplier": float(row.get("multiplier") or config.OPTIONS_CONTRACT_MULTIPLIER),
+                    "snapshot_date": row["snapshot_date"], "source": "real",
+                }
+                for _, row in group.iterrows()
+            ]
+            self._by_key[(symbol, option_type)] = (
+                group["snapshot_date"].to_numpy(dtype="datetime64[ns]"), contracts,
+            )
+
+    def find(
+        self,
+        symbol: str,
+        option_type: str,
+        as_of: pd.Timestamp,
+        tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
+    ) -> Optional[dict]:
+        """Contrat réel le plus représentatif autour de as_of, ou None si
+        aucun snapshot n'existe dans la fenêtre de tolérance (l'appelant doit
+        alors simuler par Black-Scholes)."""
+        entry = self._by_key.get((symbol, option_type))
+        if entry is None:
+            return None
+        dates, contracts = entry
+
+        moment = np.datetime64(as_of.to_datetime64())
+        insert_at = int(np.searchsorted(dates, moment))
+        # La date la plus proche est forcément l'une des deux qui encadrent
+        # as_of dans la liste triée.
+        candidates = [i for i in (insert_at - 1, insert_at) if 0 <= i < len(dates)]
+        if not candidates:
+            return None
+        best_index = min(candidates, key=lambda i: abs(dates[i] - moment))
+
+        if abs(dates[best_index] - moment) > np.timedelta64(tolerance_days, "D"):
+            return None
+        return contracts[best_index]
