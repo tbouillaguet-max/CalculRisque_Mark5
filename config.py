@@ -15,7 +15,11 @@ théorique s'écarte significativement du cours de bourse.
     04b_recuperation_10q.py     -> données TRIMESTRIELLES (10-Q + 10-K), reconstruit un TTM
                                     (somme glissante des 4 derniers trimestres) point-in-time,
                                     voir sa docstring pour la distinction TTM vs trimestre brut
+    04c_recuperation_8k.py      -> événements matériels (8-K) entre deux trimestres TTM connus,
+                                    classifiés par LLM (Mistral) via sec_filings_text.py
     05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03(b) + 04 + 04b
+    07b_validation_qualitative.py -> verdict LLM de cohérence qualitative (texte du 10-K/10-Q à sa
+                                    date de dépôt) vs l'écart de valorisation quantitatif (07/06b)
     06_calcul_multiples_moyens.py -> moyennes/médianes des multiples par secteur
     07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
                                     calcule l'écart en % entre cours de bourse et valeur théorique
