@@ -82,6 +82,19 @@ MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
 MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
 DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
 
+# Sortie de 07b_validation_qualitative.py : verdict LLM (Mistral) de
+# cohérence qualitative entre le signal quantitatif (DCF_HISTORY_FILE /
+# VALORISATION_COMBINEE_FILE) et le texte du 10-K/10-Q DE CE DÉPÔT PRÉCIS
+# (jamais un filing plus récent -- contrainte anti-anticipation, voir sa
+# docstring), une ligne par (symbol, period_type, fiscal_year, fiscal_quarter).
+QUALITATIVE_VALIDATION_FILE = DIR_DCF / "validation_qualitative.parquet"
+
+# Sortie de 04c_recuperation_8k.py : événements matériels détectés dans les
+# 8-K déposés entre deux trimestres TTM connus (rachats d'actions, guidance,
+# départ de dirigeant, procédure judiciaire, M&A...), classifiés par le même
+# module LLM point-in-time que 07b (sec_filings_text.py).
+MATERIAL_EVENTS_8K_FILE = DIR_FINANCIALS / "material_events_8k.parquet"
+
 # ----------------------------------------------------------------------------
 # Backtest (voir 01b/03b/09 et le package backtest/)
 # ----------------------------------------------------------------------------

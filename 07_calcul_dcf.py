@@ -207,6 +207,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 
             results.append({
                 "Ticker": symbol, "Secteur": row.get("sector"), "Année": row.get("year"),
+                "cik": row.get("cik"),
                 "period_type": row.get("period_type"), "fiscal_year": row.get("fiscal_year"),
                 "fiscal_quarter": row.get("fiscal_quarter"), "filed_date": row.get("filed_date"),
                 "FCF_actuel": fcf_actuel, "Enterprise_Value": details["Enterprise_Value"],
@@ -242,7 +243,7 @@ def main() -> None:
         "Valeur_par_action_DCF": "valuation_dcf_per_share", "Cours_actuel": "close",
         "Écart_DCF_vs_Cours_%": "gap_pct",
     })[[
-        "symbol", "sector", "period_type", "year", "fiscal_year", "fiscal_quarter",
+        "symbol", "cik", "sector", "period_type", "year", "fiscal_year", "fiscal_quarter",
         "filed_date", "close", "valuation_dcf_per_share", "gap_pct",
     ]]
     config.DCF_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
