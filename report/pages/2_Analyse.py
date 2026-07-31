@@ -27,6 +27,7 @@ from utils import (
     load_dcf,
     load_multiples,
     load_options_history,
+    load_valorisation_combinee,
 )
 
 st.set_page_config(page_title="Analyse — Pipeline options US", page_icon="📈", layout="wide")
@@ -264,6 +265,27 @@ with col2:
         st.dataframe(row_dcf[cols], hide_index=True, width="stretch")
     else:
         st.info("Pas de DCF calculé pour cette entreprise (lance 07_calcul_dcf.py).")
+
+st.markdown("#### Valorisation combinée (utilisée par la stratégie options)")
+st.caption(
+    "Multiples sectoriels moyens PAR ANNÉE en priorité (comparaison aux seuls pairs du même "
+    "secteur cette année-là), DCF en repli quand le secteur a trop peu de pairs ou que les "
+    "multiples ne sont pas calculables. Voir 06b_calcul_valorisation_combinee.py."
+)
+valorisation_combinee = load_valorisation_combinee()
+if not valorisation_combinee.empty:
+    row_vc = valorisation_combinee[valorisation_combinee["symbol"] == symbol].sort_values("year")
+else:
+    row_vc = pd.DataFrame()
+if not row_vc.empty:
+    cols = [
+        "year", "close", "valuation_multiples_per_share", "valuation_dcf_per_share",
+        "valuation_theoretical_per_share", "source", "gap_pct", "n_multiples_used",
+    ]
+    cols = [c for c in cols if c in row_vc.columns]
+    st.dataframe(row_vc[cols], hide_index=True, width="stretch")
+else:
+    st.info("Pas de valorisation combinée pour cette entreprise (lance 06b_calcul_valorisation_combinee.py).")
 
 # ============================================================================
 # Clustering des multiples (portefeuille entier)

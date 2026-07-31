@@ -83,6 +83,16 @@ def load_dcf() -> pd.DataFrame:
     return pd.read_excel(config.DCF_FILE, sheet_name="DCF", engine="openpyxl")
 
 
+@st.cache_data(ttl=300)
+def load_valorisation_combinee() -> pd.DataFrame:
+    """Valorisation théorique combinée (06b) : multiples sectoriels PAR ANNÉE
+    en priorité, DCF en repli. Signal utilisé par la stratégie options
+    (backtest/strategies/valuation_gap_options.py)."""
+    if not config.VALORISATION_COMBINEE_FILE.exists():
+        return pd.DataFrame()
+    return pd.read_parquet(config.VALORISATION_COMBINEE_FILE)
+
+
 # ============================================================================
 # Page Data : table de couverture par entreprise
 # ============================================================================

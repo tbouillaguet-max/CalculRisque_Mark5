@@ -79,15 +79,8 @@ def build_price_panel(daily_prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {"close": close_ffill, "open": open_raw, "last_valid_date": last_valid_date}
 
 
-def load_dcf_history(path=None) -> pd.DataFrame:
-    path = path or config.DCF_HISTORY_FILE
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} introuvable. Lance d'abord 07_calcul_dcf.py (avec 04 déjà à jour)."
-        )
-    df = pd.read_parquet(path)
+def _fill_missing_filed_dates(df: pd.DataFrame, path) -> pd.DataFrame:
     df["filed_date"] = pd.to_datetime(df["filed_date"], errors="coerce")
-
     missing_filed = df["filed_date"].isna()
     if missing_filed.any():
         df.loc[missing_filed, "filed_date"] = pd.to_datetime(
@@ -100,6 +93,16 @@ def load_dcf_history(path=None) -> pd.DataFrame:
             "pour une date réelle.",
             missing_filed.sum(), len(df), path, DEFAULT_FILING_LAG_DAYS,
         )
+    return df
+
+
+def load_dcf_history(path=None) -> pd.DataFrame:
+    path = path or config.DCF_HISTORY_FILE
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} introuvable. Lance d'abord 07_calcul_dcf.py (avec 04 déjà à jour)."
+        )
+    df = _fill_missing_filed_dates(pd.read_parquet(path), path)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
 
@@ -110,6 +113,30 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     return dcf_history.rename(columns={
         "filed_date": "published_date", "year": "fiscal_year", "close": "close_at_filing",
     })[["symbol", "published_date", "fiscal_year", "sector", "close_at_filing", "valuation_dcf_per_share", "gap_pct"]]
+
+
+def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
+    """Signal de la stratégie OPTIONS (multiples sectoriels par année en
+    priorité, DCF en repli -- voir 06b_calcul_valorisation_combinee.py),
+    distinct de load_dcf_history (stratégie actions, DCF seul)."""
+    path = path or config.VALORISATION_COMBINEE_FILE
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} introuvable. Lance d'abord 06b_calcul_valorisation_combinee.py "
+            "(après 05_calcul_multiples.py et 07_calcul_dcf.py)."
+        )
+    df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
+
+
+def build_options_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataFrame:
+    """Un événement par (symbol, filed_date). gap_pct garde son signe (positif
+    = sous-évalué -> call, négatif = survalué -> put) : c'est la stratégie
+    (backtest/strategies/valuation_gap_options.py) qui décide du sens."""
+    return valorisation_combinee.rename(columns={"filed_date": "published_date", "year": "fiscal_year"})[[
+        "symbol", "published_date", "fiscal_year", "sector", "close",
+        "valuation_theoretical_per_share", "source", "gap_pct",
+    ]]
 
 
 def load_universe_history(path=None) -> Optional[pd.DataFrame]:
@@ -137,3 +164,71 @@ def universe_asof(history: Optional[pd.DataFrame], as_of: pd.Timestamp, fallback
 def load_current_universe_symbols() -> set[str]:
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
     return set(universe["RIC"].dropna().map(config.to_ib_symbol))
+
+
+def load_option_snapshots_history(directory=None) -> pd.DataFrame:
+    """Concatène TOUS les snapshots archivés par 08_recuperation_options.py
+    (data/options/history/option_chains_*.parquet, un fichier par run,
+    jamais écrasé). DataFrame vide si 08 n'a encore jamais tourné -- pas une
+    erreur : backtest/options_engine.py retombe alors entièrement sur le
+    pricing Black-Scholes simulé (voir find_real_option_snapshot)."""
+    directory = directory or config.DIR_OPTIONS_HISTORY
+    files = sorted(directory.glob("option_chains_*.parquet"))
+    if not files:
+        return pd.DataFrame()
+    frames = [pd.read_parquet(f) for f in files]
+    df = pd.concat(frames, ignore_index=True)
+    df["snapshot_date"] = pd.to_datetime(df["snapshot_date"])
+    df["expiry"] = pd.to_datetime(df["expiry"], format="%Y%m%d", errors="coerce")
+    return df
+
+
+def find_real_option_snapshot(
+    option_snapshots: pd.DataFrame,
+    symbol: str,
+    option_type: str,
+    as_of: pd.Timestamp,
+    tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
+) -> Optional[dict]:
+    """Contrat réel le plus représentatif pour (symbol, option_type) autour
+    de as_of, ou None si aucun snapshot 08 n'existe dans la fenêtre de
+    tolérance (l'appelant doit alors simuler par Black-Scholes).
+
+    Sélection en deux temps : (1) le snapshot_date le plus proche de as_of,
+    dans la fenêtre de tolérance ; (2) parmi les contrats de cette date pour
+    ce symbole/type, celui le plus proche de la monnaie (min |moneyness_pct|),
+    départagé par l'échéance la plus proche de OPTIONS_TARGET_TENOR_DAYS --
+    cohérent avec la sélection déjà faite par 08 (ATM, >9 mois)."""
+    if option_snapshots.empty:
+        return None
+    candidates = option_snapshots[
+        (option_snapshots["symbol"] == symbol) & (option_snapshots["option_type"] == option_type)
+    ]
+    if candidates.empty:
+        return None
+
+    date_diff = (candidates["snapshot_date"] - as_of).abs()
+    within_tolerance = candidates[date_diff <= pd.Timedelta(days=tolerance_days)]
+    if within_tolerance.empty:
+        return None
+
+    closest_date = within_tolerance.loc[date_diff[within_tolerance.index].idxmin(), "snapshot_date"]
+    same_date = within_tolerance[within_tolerance["snapshot_date"] == closest_date].copy()
+
+    same_date["_moneyness_abs"] = same_date["moneyness_pct"].abs()
+    same_date["_tenor_diff"] = (same_date["expiry"] - closest_date).dt.days.sub(config.OPTIONS_TARGET_TENOR_DAYS).abs()
+    best = same_date.sort_values(["_moneyness_abs", "_tenor_diff"]).iloc[0]
+
+    bid, ask = best.get("bid"), best.get("ask")
+    if pd.notna(bid) and pd.notna(ask):
+        premium = (bid + ask) / 2
+    else:
+        premium = best.get("last_price") if pd.notna(best.get("last_price")) else best.get("close")
+
+    return {
+        "strike": best["strike"], "expiry": best["expiry"], "premium": premium,
+        "implied_vol": best.get("implied_vol"), "delta": best.get("delta"), "gamma": best.get("gamma"),
+        "vega": best.get("vega"), "theta": best.get("theta"), "underlying_spot": best.get("underlying_spot"),
+        "multiplier": float(best.get("multiplier") or config.OPTIONS_CONTRACT_MULTIPLIER),
+        "snapshot_date": closest_date, "source": "real",
+    }
