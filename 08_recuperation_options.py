@@ -36,9 +36,46 @@ Corrections / changements par rapport à RecuperationOptionMark9 :
     - NOUVEAU : passage en dernière étape du pipeline (était l'étape 04) et
       filtre par écart de valorisation DCF (voir plus haut), au lieu de
       récupérer les options pour tout l'univers à chaque run.
+    - NOUVEAU : source Alpha Vantage (HISTORICAL_OPTIONS) en SUPPORT d'IBKR,
+      voir section dédiée ci-dessous.
+
+Alpha Vantage en support d'IBKR (moins de Black-Scholes local) :
+    Avec un compte IBKR sans abonnement de données d'options (MARKET_DATA_TYPE=4,
+    delayed-frozen), IBKR ne renvoie quasiment jamais modelGreeks : jusqu'ici,
+    l'IV et les greeks de CHAQUE contrat étaient donc recalculés localement par
+    Black-Scholes (estimate_iv_and_greeks), une approximation (pas de dividende,
+    taux constant, prix medio comme cible du solveur).
+
+    Ce script interroge maintenant en plus, gratuitement, l'API Alpha Vantage
+    (https://www.alphavantage.co, fonction HISTORICAL_OPTIONS) : UNE requête
+    par ticker renvoie sa chaîne d'options complète avec IV et greeks calculés
+    CÔTÉ Alpha Vantage (pas notre propre Black-Scholes). Quand un contrat y est
+    trouvé, iv_source="alpha_vantage" ; sinon, repli sur Black-Scholes local
+    comme avant (iv_source="estime_local").
+
+    Clé gratuite (aucune carte bancaire) : https://www.alphavantage.co/support/#api-key
+        export ALPHAVANTAGE_API_KEY="ta_cle"
+    Sans cette variable d'environnement, le script se comporte exactement comme
+    avant (Alpha Vantage simplement ignoré). Le palier gratuit est limité
+    (ALPHA_VANTAGE_FREE_DAILY_LIMIT, 25 requêtes/jour par défaut -- ajuste si
+    ton palier diffère) : un compteur journalier est persisté dans
+    --output-dir/alpha_vantage_quota.json pour ne pas le re-consommer bêtement
+    entre deux runs le même jour, et les réponses de quota dépassé d'Alpha
+    Vantage ("Note"/"Information") sont de toute façon détectées et journalisées.
+    --no-alpha-vantage force l'ancien comportement (Black-Scholes local seul).
+
+    NOUVEAU (vrai historique, pas juste le snapshot du jour) : --av-backfill-dates
+    interroge Alpha Vantage avec des dates PASSÉES (paramètre `date` de
+    HISTORICAL_OPTIONS) pour reconstituer un historique réel d'options déjà
+    expirées -- ce qu'IBKR ne peut pas faire (les contrats expirés ne se
+    résolvent plus). Une archive par date est écrite dans
+    data/options/history/option_chains_avhist_<date>.parquet, avec le même
+    schéma que les snapshots IBKR habituels : le backtest (10_backtest_options.py)
+    les traite donc comme des snapshots "réels" au même titre, sans attendre
+    l'accumulation de runs futurs.
 
 Prérequis :
-    pip install ib_insync pandas pyarrow
+    pip install ib_insync pandas pyarrow requests
 
 Usage :
     python 08_recuperation_options.py
@@ -46,6 +83,8 @@ Usage :
     python 08_recuperation_options.py --limit 10      # test rapide (après filtre de valorisation)
     python 08_recuperation_options.py --valuation-threshold 30   # seuil plus strict
     python 08_recuperation_options.py --skip-valuation-filter    # options pour tout l'univers
+    python 08_recuperation_options.py --no-alpha-vantage             # Black-Scholes local uniquement
+    python 08_recuperation_options.py --av-backfill-dates 2026-06-30 2026-05-29  # vrai historique passé
 """
 
 from __future__ import annotations
@@ -65,6 +104,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import requests
 from scipy.optimize import brentq
 from scipy.stats import norm
 
@@ -105,6 +145,14 @@ REQUIRED_COLUMNS = [
     "symbol", "company_name", "expiry", "strike", "option_type",
     "last_price", "bid", "ask", "volume", "open_interest", "iv_source",
 ]
+
+# Source externe (gratuite) d'IV/greeks, en support d'IBKR -- voir docstring en
+# tête de fichier. Clé gratuite : https://www.alphavantage.co/support/#api-key
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY")
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+ALPHA_VANTAGE_FREE_DAILY_LIMIT = 25  # palier gratuit publié par Alpha Vantage ; ajuste si ton offre diffère
+AV_REQUEST_PAUSE_SEC = 1.0
+AV_QUOTA_FILENAME = "alpha_vantage_quota.json"
 
 logger = logging.getLogger("us_options")
 
@@ -406,10 +454,16 @@ def _wait_for_data(ib: IB, tickers, max_wait: float, poll_interval: float = SNAP
             return
 
 
-def get_spot_price(ib: IB, contract: Contract) -> Optional[float]:
+def get_spot_price(ib: IB, contract: Contract, end_date: Optional[datetime] = None) -> Optional[float]:
+    """Spot du sous-jacent. Par défaut (end_date=None) : dernière clôture
+    connue, avec repli sur un snapshot live si l'historique échoue -- comme
+    avant. Avec end_date (utilisé par le backfill Alpha Vantage sur des dates
+    passées), on ne demande QUE la clôture historique à cette date : un
+    snapshot live n'a pas de sens pour une requête sur le passé."""
+    end_str = end_date.strftime("%Y%m%d-23:59:59") if end_date else ""
     try:
         bars = ib.reqHistoricalData(
-            contract, endDateTime="", durationStr="5 D", barSizeSetting="1 day",
+            contract, endDateTime=end_str, durationStr="5 D", barSizeSetting="1 day",
             whatToShow="TRADES", useRTH=True, formatDate=1,
         )
         time.sleep(HIST_REQUEST_PAUSE_SEC)
@@ -417,6 +471,9 @@ def get_spot_price(ib: IB, contract: Contract) -> Optional[float]:
             return float(bars[-1].close)
     except Exception as exc:  # noqa: BLE001
         logger.debug("reqHistoricalData a échoué pour %s: %s", contract.symbol, exc)
+
+    if end_date is not None:
+        return None  # pas de repli snapshot live pour une requête historique
 
     if contract.exchange in BLACKLISTED_EXCHANGES:
         return None
@@ -445,6 +502,114 @@ def get_option_chain(ib: IB, contract: Contract):
     if non_smart:
         return non_smart[0]
     return chains[0]
+
+
+class AlphaVantageQuota:
+    """Suivi du quota gratuit Alpha Vantage (HISTORICAL_OPTIONS), persisté sur
+    disque pour ne pas re-consommer le quota du jour si le script est relancé
+    plusieurs fois dans la même journée (--resume, retests...). Le palier
+    gratuit publié par Alpha Vantage est de ALPHA_VANTAGE_FREE_DAILY_LIMIT
+    requêtes/jour ; ce compteur local est une estimation prudente -- les
+    réponses "Note"/"Information" d'Alpha Vantage (quota réellement dépassé)
+    sont de toute façon détectées séparément dans fetch_alpha_vantage_chain."""
+
+    def __init__(self, path: Path, daily_limit: int = ALPHA_VANTAGE_FREE_DAILY_LIMIT):
+        self.path = path
+        self.daily_limit = daily_limit
+        self.today = datetime.now().date().isoformat()
+        self.used = 0
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if payload.get("date") == self.today:
+            self.used = int(payload.get("used", 0))
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"date": self.today, "used": self.used}), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def has_budget(self) -> bool:
+        return self.used < self.daily_limit
+
+    def consume(self) -> None:
+        self.used += 1
+        self._save()
+
+
+def fetch_alpha_vantage_chain(symbol: str, as_of: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """
+    Interroge HISTORICAL_OPTIONS d'Alpha Vantage : chaîne d'options COMPLÈTE
+    pour `symbol`, à la date `as_of` (YYYY-MM-DD) ou la dernière séance
+    disponible si None. Contrairement au repli local (estimate_iv_and_greeks
+    ci-dessous), l'IV et les greeks sont calculés côté Alpha Vantage -- une
+    vraie source externe, pas notre propre Black-Scholes.
+
+    Retourne None si la clé n'est pas configurée, la requête échoue, la
+    réponse est vide, ou si Alpha Vantage signale un quota dépassé (clé
+    gratuite qui a atteint son plafond journalier : message "Note" ou
+    "Information" dans la réponse au lieu de "data").
+    """
+    if not ALPHA_VANTAGE_API_KEY:
+        return None
+
+    params = {"function": "HISTORICAL_OPTIONS", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY}
+    if as_of:
+        params["date"] = as_of
+
+    try:
+        resp = requests.get(ALPHA_VANTAGE_URL, params=params, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Requête Alpha Vantage échouée pour %s: %s", symbol, exc)
+        return None
+
+    for noisy_key in ("Note", "Information", "Error Message"):
+        if noisy_key in payload:
+            logger.warning("Alpha Vantage (%s) : %s", symbol, payload[noisy_key])
+            return None
+
+    rows = payload.get("data")
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    if df.empty or "expiration" not in df.columns or "type" not in df.columns:
+        return None
+
+    numeric_cols = ["strike", "last", "mark", "bid", "ask", "volume", "open_interest",
+                     "implied_volatility", "delta", "gamma", "theta", "vega", "rho"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["option_type"] = df["type"].astype(str).str.upper()
+    df["expiry"] = pd.to_datetime(df["expiration"], errors="coerce").dt.strftime("%Y%m%d")
+    return df
+
+
+def _match_av_contract(av_chain: Optional[pd.DataFrame], expiry: str, strike: float, option_type: str) -> Optional[pd.Series]:
+    """Cherche dans la chaîne Alpha Vantage déjà récupérée pour un ticker le
+    contrat correspondant exactement (échéance, strike, C/P) à un contrat
+    IBKR. None si la chaîne est vide/absente ou si aucun contrat ne correspond
+    (Alpha Vantage et IBKR n'ont pas toujours exactement les mêmes strikes cotés)."""
+    if av_chain is None or av_chain.empty:
+        return None
+    match = av_chain[
+        (av_chain["expiry"] == expiry)
+        & (av_chain["option_type"] == option_type)
+        & np.isclose(av_chain["strike"].astype(float), strike, atol=1e-6)
+    ]
+    if match.empty:
+        return None
+    return match.iloc[0]
 
 
 def _bs_price(spot: float, strike: float, t: float, vol: float, option_type: str, r: float = config.RISK_FREE_RATE) -> float:
@@ -625,7 +790,7 @@ def qualify_contracts_in_batches(ib: IB, contracts: list[Option], batch_size: in
     return qualified
 
 
-def process_ticker(ib: IB, row: pd.Series) -> list[dict]:
+def process_ticker(ib: IB, row: pd.Series, av_quota: Optional[AlphaVantageQuota] = None) -> list[dict]:
     symbol = row["ib_symbol"]
     exchange = row["ib_exchange"]
     currency = row["Currency"]
@@ -660,6 +825,17 @@ def process_ticker(ib: IB, row: pd.Series) -> list[dict]:
 
     md = fetch_market_data(ib, selected)
 
+    # Chaîne Alpha Vantage récupérée UNE FOIS pour tout le ticker (pas par
+    # contrat) : couvre potentiellement tous les contrats ci-dessous en une
+    # seule requête, avant même de savoir lesquels manqueront de modelGreeks
+    # IBKR (cas systématique en MARKET_DATA_TYPE=4, cf. estimate_iv_and_greeks).
+    av_chain = None
+    if av_quota is not None and av_quota.has_budget():
+        av_chain = fetch_alpha_vantage_chain(symbol)
+        av_quota.consume()
+        if av_chain is not None:
+            logger.info("  Alpha Vantage : %d contrats récupérés pour %s (IV/greeks externes, pas de Black-Scholes local).", len(av_chain), symbol)
+
     rows = []
     now_dt = datetime.now()
     now = now_dt.isoformat(timespec="seconds")
@@ -667,32 +843,45 @@ def process_ticker(ib: IB, row: pd.Series) -> list[dict]:
         vals = md.get(c.conId, {})
         implied_vol = vals.get("implied_vol")
         delta, gamma, vega, theta = vals.get("delta"), vals.get("gamma"), vals.get("vega"), vals.get("theta")
+        option_type = "CALL" if c.right == "C" else "PUT"
 
         if implied_vol is not None:
             iv_source = "ibkr"
         else:
-            # IBKR n'a pas fourni de modelGreeks (cas systématique en
-            # MARKET_DATA_TYPE=4) : on estime l'IV et les greeks nous-mêmes
-            # à partir du prix de l'option (cf. estimate_iv_and_greeks).
-            bid, ask = vals.get("bid"), vals.get("ask")
-            mid_price = (bid + ask) / 2 if bid is not None and ask is not None else (vals.get("last_price") or vals.get("close"))
-            try:
-                expiry_dt = datetime.strptime(c.lastTradeDateOrContractMonth, "%Y%m%d")
-                days_to_expiry = (expiry_dt - now_dt).days
-            except (ValueError, TypeError):
-                days_to_expiry = None
-            option_type = "CALL" if c.right == "C" else "PUT"
-            estimate = estimate_iv_and_greeks(mid_price, spot, c.strike, days_to_expiry, option_type)
-            if estimate:
-                implied_vol = estimate["implied_vol"]
-                delta, gamma, vega, theta = estimate["delta"], estimate["gamma"], estimate["vega"], estimate["theta"]
-                iv_source = "estime_local"
+            av_match = _match_av_contract(av_chain, c.lastTradeDateOrContractMonth, c.strike, option_type)
+            if av_match is not None and pd.notna(av_match.get("implied_volatility")):
+                # Contrat trouvé chez Alpha Vantage : IV/greeks d'une vraie
+                # source externe, on n'a pas besoin de Black-Scholes local.
+                implied_vol = av_match.get("implied_volatility")
+                delta, gamma, vega, theta = av_match.get("delta"), av_match.get("gamma"), av_match.get("vega"), av_match.get("theta")
+                iv_source = "alpha_vantage"
+                # Complète aussi les données de marché manquantes (IBKR
+                # delayed-frozen renvoie souvent bid/ask/volume/OI vides).
+                for field, av_field in (("last_price", "last"), ("bid", "bid"), ("ask", "ask"),
+                                         ("volume", "volume"), ("open_interest", "open_interest")):
+                    if vals.get(field) is None and pd.notna(av_match.get(av_field)):
+                        vals[field] = av_match.get(av_field)
             else:
-                iv_source = "indisponible"
+                # Ni IBKR ni Alpha Vantage : on estime l'IV et les greeks
+                # nous-mêmes à partir du prix de l'option (cf. estimate_iv_and_greeks).
+                bid, ask = vals.get("bid"), vals.get("ask")
+                mid_price = (bid + ask) / 2 if bid is not None and ask is not None else (vals.get("last_price") or vals.get("close"))
+                try:
+                    expiry_dt = datetime.strptime(c.lastTradeDateOrContractMonth, "%Y%m%d")
+                    days_to_expiry = (expiry_dt - now_dt).days
+                except (ValueError, TypeError):
+                    days_to_expiry = None
+                estimate = estimate_iv_and_greeks(mid_price, spot, c.strike, days_to_expiry, option_type)
+                if estimate:
+                    implied_vol = estimate["implied_vol"]
+                    delta, gamma, vega, theta = estimate["delta"], estimate["gamma"], estimate["vega"], estimate["theta"]
+                    iv_source = "estime_local"
+                else:
+                    iv_source = "indisponible"
 
         rows.append({
             "symbol": symbol, "company_name": company_name, "expiry": c.lastTradeDateOrContractMonth,
-            "strike": c.strike, "option_type": "CALL" if c.right == "C" else "PUT",
+            "strike": c.strike, "option_type": option_type,
             "last_price": vals.get("last_price"), "bid": vals.get("bid"), "ask": vals.get("ask"),
             "volume": vals.get("volume"), "open_interest": vals.get("open_interest"),
             "close": vals.get("close"), "high": vals.get("high"), "low": vals.get("low"),
@@ -703,6 +892,93 @@ def process_ticker(ib: IB, row: pd.Series) -> list[dict]:
             "con_id": c.conId, "fetch_timestamp": now,
         })
     return rows
+
+
+def backfill_alpha_vantage_history(ib: IB, universe: pd.DataFrame, dates: list[str], av_quota: AlphaVantageQuota) -> None:
+    """
+    Contrairement au reste du script (snapshot du jour via IBKR, IV/greeks en
+    repli Black-Scholes si besoin), cette fonction récupère un VRAI historique
+    d'options déjà expirées via Alpha Vantage (HISTORICAL_OPTIONS accepte une
+    date passée) -- IBKR ne peut pas fournir ça, les contrats expirés ne se
+    résolvent plus. Le spot du sous-jacent à cette date passée, lui, vient
+    d'IBKR (historique gratuit même sans abonnement data, cf. get_spot_price),
+    pour rester cohérent avec le filtre strike/échéance utilisé partout ailleurs
+    dans ce script.
+
+    Un fichier d'archive par date est écrit dans data/options/history/
+    (même schéma que les snapshots IBKR habituels), pour que le backtest
+    (10_backtest_options.py) les traite comme des snapshots "réels" au même
+    titre, sans attendre l'accumulation de runs futurs.
+    """
+    if not ALPHA_VANTAGE_API_KEY:
+        logger.warning("--av-backfill-dates demandé mais ALPHAVANTAGE_API_KEY non définie : backfill ignoré.")
+        return
+
+    for date_str in dates:
+        try:
+            as_of = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            logger.warning("Date --av-backfill-dates invalide (attendu YYYY-MM-DD) : %s", date_str)
+            continue
+
+        rows_for_date: list[dict] = []
+        for _, row in universe.iterrows():
+            if not av_quota.has_budget():
+                logger.warning(
+                    "Quota Alpha Vantage journalier épuisé -- backfill %s interrompu (%d contrats récupérés jusqu'ici).",
+                    date_str, len(rows_for_date),
+                )
+                break
+
+            symbol = row["ib_symbol"]
+            av_chain = fetch_alpha_vantage_chain(symbol, as_of=date_str)
+            av_quota.consume()
+            ib.sleep(AV_REQUEST_PAUSE_SEC)
+            if av_chain is None or av_chain.empty:
+                continue
+
+            stock = resolve_stock_contract(ib, symbol, row["ib_exchange"], row["Currency"])
+            if stock is None:
+                continue
+            spot = get_spot_price(ib, stock, end_date=as_of)
+            if spot is None:
+                continue
+
+            cutoff = as_of + timedelta(days=MIN_DAYS_TO_EXPIRY)
+            lo, hi = spot * (1 - STRIKE_BAND_PCT), spot * (1 + STRIKE_BAND_PCT)
+            chain = av_chain[
+                (pd.to_datetime(av_chain["expiry"], format="%Y%m%d", errors="coerce") > cutoff)
+                & (av_chain["strike"] >= lo) & (av_chain["strike"] <= hi)
+            ]
+            if chain.empty:
+                continue
+
+            for _, opt in chain.iterrows():
+                rows_for_date.append({
+                    "symbol": symbol, "company_name": row["Instrument_Name"], "expiry": opt["expiry"],
+                    "strike": float(opt["strike"]), "option_type": opt["option_type"],
+                    "last_price": opt.get("last"), "bid": opt.get("bid"), "ask": opt.get("ask"),
+                    "volume": opt.get("volume"), "open_interest": opt.get("open_interest"),
+                    "close": None, "high": None, "low": None,
+                    "implied_vol": opt.get("implied_volatility"), "delta": opt.get("delta"),
+                    "gamma": opt.get("gamma"), "vega": opt.get("vega"), "theta": opt.get("theta"),
+                    "iv_source": "alpha_vantage", "underlying_spot": spot,
+                    "moneyness_pct": round((float(opt["strike"]) / spot - 1) * 100, 2), "currency": row["Currency"],
+                    "exchange": None, "trading_class": symbol, "multiplier": config.OPTIONS_CONTRACT_MULTIPLIER,
+                    "con_id": None, "fetch_timestamp": datetime.now().isoformat(timespec="seconds"),
+                })
+
+        if not rows_for_date:
+            logger.info("Backfill Alpha Vantage %s : aucune donnée récupérée.", date_str)
+            continue
+
+        df = pd.DataFrame(rows_for_date)
+        df["snapshot_date"] = date_str
+        df["snapshot_datetime"] = f"{date_str}T00:00:00"
+        config.DIR_OPTIONS_HISTORY.mkdir(parents=True, exist_ok=True)
+        out_path = config.DIR_OPTIONS_HISTORY / f"option_chains_avhist_{date_str.replace('-', '')}.parquet"
+        df.to_parquet(out_path, index=False, engine="pyarrow")
+        logger.info("Backfill Alpha Vantage %s : %d contrats -> %s", date_str, len(df), out_path)
 
 
 def _progress_path(output_dir: Path) -> Path:
@@ -780,6 +1056,20 @@ def main() -> None:
         help="Désactive le filtre de valorisation et récupère les options pour TOUT l'univers "
              "fourni (comportement de l'ancien 04_recuperation_options.py).",
     )
+    parser.add_argument(
+        "--no-alpha-vantage", action="store_true",
+        help="Désactive Alpha Vantage même si ALPHAVANTAGE_API_KEY est définie : retombe "
+             "entièrement sur le repli Black-Scholes local pour l'IV/greeks (comportement "
+             "d'avant l'ajout de cette source).",
+    )
+    parser.add_argument(
+        "--av-backfill-dates", nargs="+", default=None, metavar="YYYY-MM-DD",
+        help="En plus du snapshot du jour, récupère un VRAI historique d'options déjà "
+             "expirées via Alpha Vantage pour ces dates (une archive par date dans "
+             "data/options/history/), au lieu de compter uniquement sur l'accumulation "
+             "de snapshots IBKR au fil des runs. Consomme le même quota gratuit journalier "
+             "qu'Alpha Vantage sur le run principal. Nécessite ALPHAVANTAGE_API_KEY.",
+    )
     args = parser.parse_args()
 
     setup_logging(args.output_dir)
@@ -804,6 +1094,20 @@ def main() -> None:
     else:
         _progress_path(args.output_dir).unlink(missing_ok=True)
         _checkpoint_path(args.output_dir).unlink(missing_ok=True)
+
+    if not ALPHA_VANTAGE_API_KEY:
+        logger.info(
+            "Alpha Vantage désactivé (ALPHAVANTAGE_API_KEY non définie) : repli Black-Scholes "
+            "local uniquement pour l'IV/greeks. Clé gratuite : "
+            "https://www.alphavantage.co/support/#api-key"
+        )
+        av_quota = None
+    elif args.no_alpha_vantage:
+        logger.info("Alpha Vantage désactivé (--no-alpha-vantage) : repli Black-Scholes local uniquement.")
+        av_quota = None
+    else:
+        logger.info("Alpha Vantage activé en support d'IBKR (quota gratuit estimé : %d requêtes/jour).", ALPHA_VANTAGE_FREE_DAILY_LIMIT)
+        av_quota = AlphaVantageQuota(args.output_dir / AV_QUOTA_FILENAME)
 
     ib = connect_ib()
     ok_count, fail_count, skip_count = 0, 0, 0
@@ -833,7 +1137,7 @@ def main() -> None:
 
             while attempt <= RETRY_PER_TICKER:
                 try:
-                    rows = process_ticker(ib, row)
+                    rows = process_ticker(ib, row, av_quota=av_quota)
                     if _session_poisoned.is_set():
                         # L'erreur peut arriver de façon asynchrone (callback
                         # errorEvent) sans forcément faire échouer l'appel en
@@ -889,6 +1193,15 @@ def main() -> None:
             if since_last_checkpoint >= CHECKPOINT_EVERY:
                 save_progress(args.output_dir, processed_keys)
                 since_last_checkpoint = 0
+
+        if args.av_backfill_dates:
+            if av_quota is not None:
+                backfill_alpha_vantage_history(ib, universe, args.av_backfill_dates, av_quota)
+            else:
+                logger.warning(
+                    "--av-backfill-dates demandé mais Alpha Vantage est désactivé "
+                    "(ALPHAVANTAGE_API_KEY manquante ou --no-alpha-vantage) : backfill ignoré."
+                )
     finally:
         save_progress(args.output_dir, processed_keys)
         ib.disconnect()
