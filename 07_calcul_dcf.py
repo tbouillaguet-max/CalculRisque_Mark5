@@ -22,6 +22,14 @@ Corrections par rapport à CalculDCFMark1 :
     - On utilise l'exercice financier le plus récent disponible par
       entreprise, mis en correspondance avec le cours de la même année (pas
       systématiquement la dernière année de cours si les 10-K ont du retard).
+    - NOUVEAU : build_input_table empile désormais l'annuel (04) et le TTM
+      trimestriel (04b, si disponible) via 05_calcul_multiples.py::
+      load_financials_with_periods/match_price_asof (réutilisées, pas
+      dupliquées) -- le cours utilisé est le cours quotidien connu à
+      filed_date (03b) plutôt que systématiquement la clôture annuelle.
+      DCF_HISTORY_FILE porte désormais period_type ("FY"/"TTM") et
+      fiscal_quarter, pour que 06b_calcul_valorisation_combinee.py compare
+      les pairs au sein du même "millésime de publication".
 
 Usage :
     python 07_calcul_dcf.py
@@ -29,6 +37,7 @@ Usage :
 
 from __future__ import annotations
 
+import importlib
 import logging
 from typing import Dict, Tuple
 
@@ -36,6 +45,14 @@ import numpy as np
 import pandas as pd
 
 import config
+
+# Réutilise le chargement combiné FY+TTM et l'association de cours au plus
+# proche de filed_date déjà écrits pour 05_calcul_multiples.py, plutôt que de
+# les dupliquer (même raisonnement que 04b réutilisant compute_derived de 04 :
+# une seule source de vérité pour cette logique).
+_module_05 = importlib.import_module("05_calcul_multiples")
+load_financials_with_periods = _module_05.load_financials_with_periods
+match_price_asof = _module_05.match_price_asof
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -88,37 +105,46 @@ def calculer_dcf(
 
 
 def build_input_table(latest_only: bool = True) -> pd.DataFrame:
-    """Fusionne financials (05) + cours (03) + secteur (02) sur (symbol, year),
-    calcule la variation du BFR (BFR de l'exercice N moins BFR de
-    l'exercice N-1, à partir de l'historique complet de financials.parquet).
+    """Empile financials annuel (04, period_type="FY") + TTM trimestriel
+    (04b, period_type="TTM", si config.FINANCIALS_TTM_FILE existe -- sinon
+    annuel seul, comportement identique à avant) via
+    05_calcul_multiples.py::load_financials_with_periods, associe le cours
+    (quotidien au plus proche de filed_date si disponible, sinon annuel --
+    match_price_asof) et le secteur (02), calcule la variation du BFR (ΔBFR :
+    BFR de la période N moins BFR de la période N-1 CHRONOLOGIQUEMENT
+    précédente -- pas seulement "année N-1", une ligne TTM et une ligne FY
+    peuvent partager la même 'year').
 
     latest_only=True (comportement historique, utilisé par le rapport Excel
-    de main()) : ne garde que le dernier exercice disponible par entreprise.
+    de main()) : ne garde que la période la plus récente disponible par
+    entreprise (FY ou TTM, la plus récente des deux).
     latest_only=False (utilisé par 09_backtest.py via DCF_HISTORY_FILE) :
-    garde TOUS les exercices, avec leur 'filed_date' (04), pour permettre de
+    garde TOUTES les périodes, avec leur 'filed_date', pour permettre de
     rejouer l'écart de valorisation tel qu'il était connu à chaque date
-    passée plutôt que seulement à la date du dernier 10-K disponible
+    passée plutôt que seulement à la date de la dernière période disponible
     aujourd'hui."""
-    financials = pd.read_parquet(config.FINANCIALS_FILE)
-    prices = pd.read_parquet(config.PRICES_FILE)
+    financials = load_financials_with_periods()
+    financials = match_price_asof(financials)
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
 
-    # 'working_capital' (produit par 05) est un NIVEAU (current_assets -
-    # current_liabilities) pour une année donnée, pas une variation. On
-    # calcule ici la vraie variation année sur année (ΔBFR), en se basant
-    # sur l'historique multi-exercices déjà présent dans financials.parquet
-    # -- AVANT de filtrer sur le dernier exercice uniquement, sinon
-    # l'exercice précédent nécessaire au calcul du delta serait déjà perdu.
-    financials = financials.sort_values(["symbol", "year"])
+    # 'working_capital' (produit par 04/04b) est un NIVEAU (current_assets -
+    # current_liabilities) pour une période donnée, pas une variation. On
+    # calcule ici la vraie variation ΔBFR, en se basant sur l'historique
+    # multi-périodes déjà présent -- AVANT de filtrer sur la période la plus
+    # récente uniquement, sinon la période précédente nécessaire au calcul du
+    # delta serait déjà perdue. Tri par filed_date (ordre RÉEL de
+    # publication), pas par 'year' seul : year=fiscal_year est partagé par
+    # une ligne FY et plusieurs lignes TTM de la même année civile.
+    financials = financials.sort_values(["symbol", "filed_date"])
     financials["working_capital_change"] = financials.groupby("symbol")["working_capital"].diff()
 
-    df = pd.merge(financials, prices[["symbol", "year", "close"]], on=["symbol", "year"], how="inner")
+    df = financials.dropna(subset=["close"]).copy()
     if "sector" in universe.columns:
         universe = universe.copy()
         universe["symbol"] = universe["RIC"].apply(config.to_ib_symbol)
         df = df.merge(universe[["symbol", "sector"]], on="symbol", how="left")
 
-    df = df.sort_values(["symbol", "year"])
+    df = df.sort_values(["symbol", "filed_date"])
     if latest_only:
         df = df.groupby("symbol", as_index=False).tail(1)
     return df.reset_index(drop=True)
@@ -181,7 +207,8 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 
             results.append({
                 "Ticker": symbol, "Secteur": row.get("sector"), "Année": row.get("year"),
-                "filed_date": row.get("filed_date"),
+                "period_type": row.get("period_type"), "fiscal_year": row.get("fiscal_year"),
+                "fiscal_quarter": row.get("fiscal_quarter"), "filed_date": row.get("filed_date"),
                 "FCF_actuel": fcf_actuel, "Enterprise_Value": details["Enterprise_Value"],
                 "Equity_Value": equity_value, "Valeur_par_action_DCF": valeur_par_action,
                 "Cours_actuel": cours_actuel, "Écart_DCF_vs_Cours_%": ecart_pct,
@@ -214,7 +241,10 @@ def main() -> None:
         "Ticker": "symbol", "Secteur": "sector", "Année": "year",
         "Valeur_par_action_DCF": "valuation_dcf_per_share", "Cours_actuel": "close",
         "Écart_DCF_vs_Cours_%": "gap_pct",
-    })[["symbol", "sector", "year", "filed_date", "close", "valuation_dcf_per_share", "gap_pct"]]
+    })[[
+        "symbol", "sector", "period_type", "year", "fiscal_year", "fiscal_quarter",
+        "filed_date", "close", "valuation_dcf_per_share", "gap_pct",
+    ]]
     config.DCF_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     history.to_parquet(config.DCF_HISTORY_FILE, index=False, engine="pyarrow")
     logger.info(
@@ -222,8 +252,12 @@ def main() -> None:
         config.DCF_HISTORY_FILE, len(history), history["symbol"].nunique(),
     )
 
-    df_dcf = df_dcf_full.sort_values(["Ticker", "Année"]).groupby("Ticker", as_index=False).tail(1)
-    df_input = df_input_full.sort_values(["symbol", "year"]).groupby("symbol", as_index=False).tail(1)
+    # Tri par filed_date (ordre RÉEL de publication), pas par année civile
+    # seule : une ligne FY et une ou plusieurs lignes TTM (04b) peuvent
+    # partager la même 'year'/'Année' -- seul filed_date départage laquelle
+    # est effectivement la plus récente.
+    df_dcf = df_dcf_full.sort_values(["Ticker", "filed_date"]).groupby("Ticker", as_index=False).tail(1)
+    df_input = df_input_full.sort_values(["symbol", "filed_date"]).groupby("symbol", as_index=False).tail(1)
 
     config.DCF_FILE.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(config.DCF_FILE, engine="openpyxl") as writer:

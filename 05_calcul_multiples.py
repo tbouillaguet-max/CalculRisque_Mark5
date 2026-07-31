@@ -1,6 +1,7 @@
 """
-Calcule les multiples (EV/EBITDA, EV/Sales, P/E) à partir des cours (03) et
-des données financières (04).
+Calcule les multiples (EV/EBITDA, EV/Sales, P/E) à partir des cours (03/03b)
+et des données financières annuelles (04) + trimestrielles TTM (04b, si
+disponibles).
 
 Corrections par rapport à CalculMultipleMark2 :
     - df_financials était lu avec pd.read_json(..., lines=True) (format
@@ -16,6 +17,14 @@ Corrections par rapport à CalculMultipleMark2 :
       financials.
     - Noms de colonnes harmonisés avec le schéma canonique de config.py
       ("CA" -> "revenue", etc.).
+    - NOUVEAU : empile l'annuel (04, period_type="FY") et le TTM trimestriel
+      (04b, period_type="TTM") si config.FINANCIALS_TTM_FILE existe -- sinon
+      comportement STRICTEMENT identique à avant (annuel seul). Le cours
+      utilisé n'est plus systématiquement la clôture de fin d'année : associé
+      au cours quotidien connu à filed_date (DAILY_PRICES_FILE, 03b) quand
+      disponible, pour que le multiple d'une ligne TTM reflète le cours au
+      moment où cette donnée est devenue publique, pas le 31/12. Repli sur la
+      clôture annuelle (PRICES_FILE, 03) sinon -- comportement d'avant.
 
 Usage :
     python 05_calcul_multiples.py
@@ -33,23 +42,79 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-def calculate_multiples() -> pd.DataFrame:
-    df_financials = pd.read_parquet(config.FINANCIALS_FILE)
-    df_prices = pd.read_parquet(config.PRICES_FILE)
+def load_financials_with_periods() -> pd.DataFrame:
+    """Empile l'annuel (04, une ligne par exercice 10-K, period_type="FY")
+    et le TTM trimestriel (04b, period_type="TTM") si disponible. Ajoute
+    fiscal_year/fiscal_quarter aux lignes annuelles (fiscal_quarter=None)
+    pour un schéma commun avec le TTM. Si 04b n'a jamais tourné
+    (FINANCIALS_TTM_FILE absent), renvoie l'annuel seul -- comportement
+    identique à avant l'ajout du TTM."""
+    annual = pd.read_parquet(config.FINANCIALS_FILE).copy()
+    annual["period_type"] = "FY"
+    # dtype "object" explicite (pas le float64 qu'un simple "= None" produit
+    # sur une colonne 100% vide) : sinon la fusion avec les lignes TTM
+    # (fiscal_quarter="Q1".."Q4", object) ou un merge/groupby ultérieur sur
+    # cette colonne échoue ("merge sur des colonnes object et float64").
+    annual["fiscal_quarter"] = pd.Series([None] * len(annual), index=annual.index, dtype=object)
+    annual["fiscal_year"] = annual["year"]
 
-    # Fusion sur symbol + year
-    df = pd.merge(df_financials, df_prices[["symbol", "year", "close"]], on=["symbol", "year"], how="inner")
+    if not config.FINANCIALS_TTM_FILE.exists():
+        return annual
+
+    ttm = pd.read_parquet(config.FINANCIALS_TTM_FILE).copy()
+    ttm["year"] = ttm["fiscal_year"]
+    return pd.concat([annual, ttm], ignore_index=True, sort=False)
+
+
+def match_price_asof(df: pd.DataFrame) -> pd.DataFrame:
+    """Associe à chaque ligne le dernier cours de clôture QUOTIDIEN connu à
+    filed_date (jamais un cours futur -- même principe point-in-time que le
+    reste du pipeline), via pandas.merge_asof sur DAILY_PRICES_FILE (03b).
+    Repli sur le cours de clôture ANNUEL (PRICES_FILE, 03, jointure sur
+    year) pour les lignes sans correspondance quotidienne (03b jamais lancé,
+    ou trou de couverture au-delà de DAILY_PRICE_ASOF_TOLERANCE_DAYS) --
+    comportement d'avant pour ces lignes-là."""
+    df = df.dropna(subset=["filed_date"]).copy()
+    df["filed_date"] = pd.to_datetime(df["filed_date"], errors="coerce")
+    df = df.dropna(subset=["filed_date"])
+
+    if config.DAILY_PRICES_FILE.exists():
+        daily = pd.read_parquet(config.DAILY_PRICES_FILE)[["symbol", "date", "close"]].copy()
+        daily["date"] = pd.to_datetime(daily["date"])
+        daily = daily.dropna(subset=["date", "close"]).sort_values(["symbol", "date"])
+
+        df = df.sort_values("filed_date")
+        df = pd.merge_asof(
+            df, daily.rename(columns={"date": "price_date"}),
+            left_on="filed_date", right_on="price_date", by="symbol", direction="backward",
+            tolerance=pd.Timedelta(days=config.DAILY_PRICE_ASOF_TOLERANCE_DAYS),
+        ).drop(columns=["price_date"])
+    else:
+        df["close"] = None
+
+    missing = df["close"].isna()
+    if missing.any() and config.PRICES_FILE.exists():
+        annual_prices = pd.read_parquet(config.PRICES_FILE)[["symbol", "year", "close"]]
+        fallback = df.loc[missing, ["symbol", "year"]].merge(annual_prices, on=["symbol", "year"], how="left")
+        df.loc[missing, "close"] = fallback["close"].values
+
+    return df
+
+
+def calculate_multiples() -> pd.DataFrame:
+    df = load_financials_with_periods()
+    df = match_price_asof(df)
 
     if df.empty:
         logger.warning(
-            "Aucune ligne après fusion financials/prices : vérifie que les "
-            "années couvertes se recoupent entre %s et %s.",
-            config.FINANCIALS_FILE, config.PRICES_FILE,
+            "Aucune ligne après association des cours : vérifie que les "
+            "dates couvertes se recoupent entre %s (et éventuellement %s) et %s/%s.",
+            config.FINANCIALS_FILE, config.FINANCIALS_TTM_FILE, config.DAILY_PRICES_FILE, config.PRICES_FILE,
         )
         return df
 
-    # 👇 Supprime les lignes où shares_outstanding est manquant
-    df = df.dropna(subset=["shares_outstanding"])
+    # 👇 Supprime les lignes où shares_outstanding ou le cours est manquant
+    df = df.dropna(subset=["shares_outstanding", "close"])
 
     # Calcul de la market cap (close * shares_outstanding)
     df["market_cap"] = df["close"] * df["shares_outstanding"]

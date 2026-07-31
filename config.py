@@ -72,6 +72,12 @@ FINANCIALS_FILE = DIR_FINANCIALS / "financials.parquet"       # sortie consolid�
 # plus de FINANCIALS_FILE (annuel, 10-K seul, inchangé).
 FINANCIALS_QUARTERLY_FILE = DIR_FINANCIALS / "financials_quarterly.parquet"
 FINANCIALS_TTM_FILE = DIR_FINANCIALS / "financials_ttm.parquet"
+
+# Fenêtre de tolérance (jours) pour associer à une ligne financière (annuelle
+# ou TTM) le dernier cours de clôture QUOTIDIEN connu à sa filed_date (05/07,
+# via DAILY_PRICES_FILE -- 03b_recuperation_cours_quotidiens.py). Au-delà,
+# repli sur le cours de clôture ANNUEL (PRICES_FILE, 03) le plus proche.
+DAILY_PRICE_ASOF_TOLERANCE_DAYS = 10
 MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
 MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
 DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
