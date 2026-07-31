@@ -13,10 +13,15 @@ temps -- le P/E moyen de la tech en 2010 n'a rien à voir avec 2021). Ici, les
 multiples sectoriels moyens sont recalculés PAR ANNÉE (comparaison
 cross-sectionnelle des seuls pairs de cette année-là).
 
-Méthode, pour chaque (symbol, year) :
-    1. Multiples sectoriels médians de cette année-là (EV/EBITDA, EV/Sales,
-       P/E), à partir des seules entreprises du même secteur cette année
-       (ignoré si moins de MIN_PEERS_PER_SECTOR_YEAR pairs disponibles).
+Méthode, pour chaque ligne (symbol, period_type, fiscal_year, fiscal_quarter)
+-- period_type="FY" (annuel, 04) ou "TTM" (trimestriel glissant, 04b, si
+config.FINANCIALS_TTM_FILE existe ; sinon annuel seul, comportement inchangé) :
+    1. Multiples sectoriels médians du même "millésime de publication"
+       (période exacte : même period_type + fiscal_year + fiscal_quarter),
+       à partir des seules entreprises du même secteur pour cette période
+       (ignoré si moins de MIN_PEERS_PER_SECTOR_YEAR pairs disponibles --
+       plus fréquent en TTM tant que peu d'entreprises ont un historique
+       04b, repli DCF alors plus sollicité, cf. point 4).
     2. Valeur implicite par action selon chacun des 3 multiples, appliqués
        aux fondamentaux propres de l'entreprise (EBITDA, revenue, net_income).
     3. valuation_multiples_per_share = médiane des valeurs implicites
@@ -57,12 +62,57 @@ MIN_PEERS_PER_SECTOR_YEAR = 3  # en dessous, la médiane sectorielle n'est pas j
 DEFAULT_FILING_LAG_DAYS = 75
 
 
+GROUP_COLUMNS = ["sector", "period_type", "fiscal_year", "fiscal_quarter"]
+
+
+def _normalize_fiscal_quarter(df: pd.DataFrame) -> pd.DataFrame:
+    """Force fiscal_quarter en dtype object (défensif : un aller-retour
+    Parquet, ou un DataFrame construit différemment selon la provenance,
+    peut typer une colonne 100% None en float64 d'un côté et object de
+    l'autre -- merge/groupby échouent alors sur cette clé)."""
+    if "fiscal_quarter" in df.columns:
+        df = df.copy()
+        df["fiscal_quarter"] = df["fiscal_quarter"].astype(object)
+    return df
+
+
+def _ensure_period_columns(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
+    """multiples.parquet (05) porte period_type/fiscal_year/fiscal_quarter
+    depuis l'ajout du TTM (04b) -- absent seulement si régénéré par une
+    version de 05 antérieure à ce changement. Repli en "tout annuel" (comme
+    avant) plutôt que de planter, avec le même style d'avertissement que le
+    repli filed_date déjà en place plus bas."""
+    missing = [c for c in ("period_type", "fiscal_year", "fiscal_quarter") if c not in df.columns]
+    if not missing:
+        return df
+    logger.warning(
+        "%s n'a pas de colonne(s) %s : relance 05_calcul_multiples.py pour bénéficier du TTM "
+        "(04b_recuperation_10q.py). Repli sur period_type='FY' uniquement en attendant.",
+        source_label, missing,
+    )
+    df = df.copy()
+    df["period_type"] = "FY"
+    df["fiscal_year"] = df["year"]
+    # dtype "object" explicite -- voir le même commentaire dans
+    # 05_calcul_multiples.py::load_financials_with_periods (sinon merge/
+    # groupby ultérieur sur fiscal_quarter échoue si l'autre côté a des
+    # valeurs "Q1".."Q4", object).
+    df["fiscal_quarter"] = pd.Series([None] * len(df), index=df.index, dtype=object)
+    return df
+
+
 def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
-    """Médiane de chaque multiple par (secteur, année), cross-sectionnel."""
+    """Médiane de chaque multiple par (secteur, period_type, fiscal_year,
+    fiscal_quarter) -- comparaison cross-sectionnelle au sein du même
+    "millésime de publication" (une ligne TTM-Q3-2025 comparée aux pairs
+    eux-mêmes en TTM-Q3-2025, pas mélangée avec des exercices FY d'une autre
+    période). Avec period_type="FY" uniquement (pas de 04b), équivaut à
+    l'ancien regroupement par (secteur, année)."""
+    df = _normalize_fiscal_quarter(df)
     valid = df.dropna(subset=["sector"])
     rows = []
-    for (sector, year), group in valid.groupby(["sector", "year"]):
-        row = {"sector": sector, "year": year}
+    for keys, group in valid.groupby(GROUP_COLUMNS, dropna=False):
+        row = dict(zip(GROUP_COLUMNS, keys))
         for col in MULTIPLE_COLUMNS:
             vals = group[col].replace([np.inf, -np.inf], np.nan).dropna()
             vals = vals[vals > 0]
@@ -73,7 +123,9 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataFrame) -> pd.DataFrame:
-    df = df.merge(sector_year_multiples, on=["sector", "year"], how="left")
+    df = _normalize_fiscal_quarter(df)
+    sector_year_multiples = _normalize_fiscal_quarter(sector_year_multiples)
+    df = df.merge(sector_year_multiples, on=GROUP_COLUMNS, how="left")
 
     ev_ebitda_med, ev_sales_med, pe_med = df["EV/EBITDA_median"], df["EV/Sales_median"], df["P/E_median"]
     ebitda, revenue, net_income = df["ebitda"], df["revenue"], df["net_income"]
@@ -121,18 +173,23 @@ def build_combined_valuation() -> pd.DataFrame:
         multiples = multiples.copy()
         multiples["filed_date"] = pd.NaT
 
+    multiples = _ensure_period_columns(multiples, str(config.MULTIPLES_FILE))
+
     if not config.DCF_HISTORY_FILE.exists():
         raise FileNotFoundError(f"{config.DCF_HISTORY_FILE} introuvable. Lance d'abord 07_calcul_dcf.py.")
     dcf_history = pd.read_parquet(config.DCF_HISTORY_FILE)
+    dcf_history = _ensure_period_columns(dcf_history, str(config.DCF_HISTORY_FILE))
+    dcf_history = _normalize_fiscal_quarter(dcf_history)
 
     sector_year_multiples = compute_sector_year_multiples(multiples)
     df = compute_implied_valuations(multiples, sector_year_multiples)
+    df = _normalize_fiscal_quarter(df)
 
     df = df.merge(
-        dcf_history[["symbol", "year", "valuation_dcf_per_share", "filed_date"]].rename(
+        dcf_history[["symbol", *GROUP_COLUMNS[1:], "valuation_dcf_per_share", "filed_date"]].rename(
             columns={"filed_date": "filed_date_dcf"}
         ),
-        on=["symbol", "year"], how="left",
+        on=["symbol", *GROUP_COLUMNS[1:]], how="left",
     )
     # filed_date de 05 (financials) en priorité, repli sur celle de 07 (DCF) si
     # absente -- les deux dérivent normalement de la même ligne financials,
@@ -168,10 +225,10 @@ def build_combined_valuation() -> pd.DataFrame:
     df["gap_pct"] = (df["valuation_theoretical_per_share"] - df["close"]) / df["close"] * 100
 
     return df[[
-        "symbol", "sector", "year", "filed_date", "close",
+        "symbol", "sector", "period_type", "year", "fiscal_quarter", "filed_date", "close",
         "valuation_multiples_per_share", "valuation_dcf_per_share", "valuation_theoretical_per_share",
         "source", "gap_pct", "n_multiples_used", "price_from_ev_ebitda", "price_from_ev_sales", "price_from_pe",
-    ]].sort_values(["symbol", "year"]).reset_index(drop=True)
+    ]].sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
 
 def main() -> None:
