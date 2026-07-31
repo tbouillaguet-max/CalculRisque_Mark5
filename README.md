@@ -109,16 +109,16 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).
 
-**Point de vigilance repéré en cours de route (non corrigé ici, hors
-périmètre de cette tâche)** : `07_calcul_dcf.py::calculer_dcf` calcule
+**Correctif** : `07_calcul_dcf.py::calculer_dcf` calculait
 `equity_value = ev - dette_nette + cash`, alors que `net_debt` (produit par
-`04_recuperation_10k.py`) est déjà net de cash (`dette brute - cash`) — ce
-qui ajoute le cash une seconde fois. `06b_calcul_valorisation_combinee.py`
-utilise la formule correcte (`ev - net_debt`) pour son propre calcul, mais
-les valeurs DCF existantes (`07`, utilisées par `09_backtest.py`) restent
-affectées. À corriger séparément si tu veux des valorisations DCF exactes
-(impact : valeur DCF légèrement surestimée pour les entreprises avec
-beaucoup de cash net).
+`04_recuperation_10k.py`) est déjà net de cash (`dette brute - cash`) — le
+cash était donc compté deux fois (valeur DCF surestimée pour les entreprises
+avec beaucoup de trésorerie nette). Corrigé en `equity_value = ev - dette_nette`
+(paramètre `cash` supprimé de `calculer_dcf`, devenu inutile) ; c'est la
+formule que `06b_calcul_valorisation_combinee.py` utilisait déjà. Si tu as
+des runs `07`/`09_backtest.py` antérieurs à ce correctif, relance
+`07_calcul_dcf.py` pour régénérer des valeurs DCF exactes avant de
+retro-comparer des résultats de backtest.
 
 ## Installation
 
