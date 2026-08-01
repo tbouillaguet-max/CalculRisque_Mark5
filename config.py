@@ -319,6 +319,14 @@ OPTIONS_MULTIPLES_TAKE_PROFIT_PCT = 30.0
 OPTIONS_MULTIPLES_TENOR_DAYS = 730
 OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT = 270
 
+# Plafond appliqué à l'écart QUAND IL SERT À DIMENSIONNER une position (pas
+# quand il sert à sélectionner : le classement reste fait sur l'écart brut).
+# En base "theoretical", l'écart est borné à +100% du côté sous-évalué mais
+# NON borné du côté survalorisé -- une valeur théorique proche de zéro donne
+# un écart de plusieurs milliers de %, et une seule ligne capterait alors
+# l'essentiel du capital. None ou 0 désactive le plafond.
+OPTIONS_MULTIPLES_WEIGHT_CAP_PCT = 100.0
+
 
 def to_ib_symbol(ric: str) -> str:
     """Convertit un RIC de l'univers vers le symbole IBKR utilisé comme

@@ -98,6 +98,13 @@ logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
 
+# Bornes de la volatilité de repricing en mode "rolling" : une volatilité
+# réalisée mesurée sur une fenêtre courte peut devenir aberrante (quasi nulle
+# sur un titre suspendu, ou plusieurs centaines de % après un saut isolé), et
+# Black-Scholes y est très sensible.
+MIN_REPRICING_VOL = 0.05
+MAX_REPRICING_VOL = 2.00
+
 
 @dataclass
 class OptionPosition:
@@ -108,9 +115,20 @@ class OptionPosition:
     contracts: float
     entry_premium: float        # prix effectif par action (coût de transaction déjà inclus)
     entry_date: pd.Timestamp
-    vol: float                  # volatilité figée pour la durée de vie de la position
+    vol: float                  # volatilité retenue à l'entrée
     multiplier: float
     source: str                 # "real" ou "simulated" (traçabilité, cf. positions_history)
+
+    # Rapport entre la volatilité retenue à l'entrée et la volatilité RÉALISÉE
+    # à cette même date, en mode vol_mode="rolling" : la volatilité de
+    # repricing suit ensuite la volatilité réalisée du jour, multipliée par ce
+    # rapport. Il capture l'écart implicite/réalisé constaté à l'entrée (une
+    # entrée sur snapshot réel part d'une IV de marché, pas d'une volatilité
+    # historique) et garantit qu'au jour de l'entrée le repricing redonne
+    # exactement `vol` -- sans lui, la prime sauterait dès le premier jour.
+    # None = volatilité figée pour cette position (mode "frozen", ou
+    # volatilité réalisée indisponible à l'entrée).
+    vol_ratio: Optional[float] = None
 
     # Cours du sous-jacent au moment de l'entrée : référence des stop-loss/
     # take-profit quand ils portent sur le sous-jacent (stop_basis="underlying")
@@ -169,6 +187,7 @@ class OptionsBacktestEngine:
         stop_basis: str = "premium",
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = None,
+        vol_mode: str = "frozen",
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
@@ -200,6 +219,9 @@ class OptionsBacktestEngine:
         self.stop_basis = stop_basis
         self.exit_when_signal_lost = exit_when_signal_lost
         self.roll_when_days_left = roll_when_days_left
+        if vol_mode not in ("frozen", "rolling"):
+            raise ValueError(f"vol_mode attend 'frozen' ou 'rolling', reçu {vol_mode!r}.")
+        self.vol_mode = vol_mode
 
         self.cash = initial_capital
         self.positions: dict[str, OptionPosition] = {}
@@ -266,14 +288,31 @@ class OptionsBacktestEngine:
     # ------------------------------------------------------------------ #
     # Pricing d'une position ouverte, à une date donnée
     # ------------------------------------------------------------------ #
+    def _repricing_vol(self, pos: OptionPosition, today: pd.Timestamp) -> float:
+        """Volatilité utilisée pour repricer une position ouverte.
+
+        Mode "frozen" (défaut) : celle retenue à l'entrée, figée pour toute la
+        durée de vie de la position. Mode "rolling" : la volatilité réalisée
+        du jour, remise à l'échelle de l'entrée (cf. OptionPosition.vol_ratio)
+        -- l'approximation "volatilité constante" est alors levée, ce qui
+        compte d'autant plus que l'échéance est longue. Repli sur la
+        volatilité d'entrée si l'historique du jour est insuffisant."""
+        if self.vol_mode != "rolling" or pos.vol_ratio is None:
+            return pos.vol
+        realized = self.prices.realized_vol_at(pos.symbol, today, self.realized_vol_lookback_days)
+        if realized is None or realized <= 0:
+            return pos.vol
+        return min(max(realized * pos.vol_ratio, MIN_REPRICING_VOL), MAX_REPRICING_VOL)
+
     def _current_premium(self, pos: OptionPosition, today: pd.Timestamp, spot: Optional[float] = None) -> Optional[float]:
-        """Repricing Black-Scholes à strike/échéance/vol fixés (ceux de la
-        position). spot explicite (prix d'OUVERTURE du jour d'exécution) si
-        fourni -- sinon clôture du jour (utilisé pour les décisions/le
-        marked-to-market, jamais pour exécuter un ordre, cf. les appelants)."""
+        """Repricing Black-Scholes à strike/échéance fixés (ceux de la
+        position), à la volatilité donnée par _repricing_vol. spot explicite
+        (prix d'OUVERTURE du jour d'exécution) si fourni -- sinon clôture du
+        jour (utilisé pour les décisions/le marked-to-market, jamais pour
+        exécuter un ordre, cf. les appelants)."""
         if spot is not None:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            return options_pricing.bs_price(spot, pos.strike, t_years, pos.vol, pos.option_type)
+            return options_pricing.bs_price(spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
 
         if pos._premium_asof == today:
             return pos._premium
@@ -282,7 +321,7 @@ class OptionsBacktestEngine:
             premium = None
         else:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            premium = options_pricing.bs_price(close, pos.strike, t_years, pos.vol, pos.option_type)
+            premium = options_pricing.bs_price(close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
         pos._premium_asof, pos._premium = today, premium
         return premium
 
@@ -370,6 +409,19 @@ class OptionsBacktestEngine:
             "delta": greeks["delta"], "multiplier": self.contract_multiplier, "source": "simulated",
         }
 
+    def _entry_vol_ratio(self, symbol: str, today: pd.Timestamp, entry_vol: float) -> Optional[float]:
+        """Rapport volatilité d'entrée / volatilité réalisée du jour, figé pour
+        la position (cf. OptionPosition.vol_ratio). None en mode "frozen", ou
+        quand la volatilité réalisée est indisponible à l'entrée : la position
+        garde alors sa volatilité d'entrée, faute de référence à laquelle
+        rapporter les variations ultérieures."""
+        if self.vol_mode != "rolling":
+            return None
+        realized = self.prices.realized_vol_at(symbol, today, self.realized_vol_lookback_days)
+        if realized is None or realized <= 0 or not entry_vol:
+            return None
+        return entry_vol / realized
+
     def _open_or_resize(
         self,
         symbol: str,
@@ -414,6 +466,7 @@ class OptionsBacktestEngine:
                 vol=contract["vol"], multiplier=multiplier, source=contract["source"],
                 entry_spot=spot, target_dollar=target_dollar,
                 strike_reference_price=strike_reference_price, tenor_days=tenor_days,
+                vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
             )
         else:
             existing.target_dollar = target_dollar

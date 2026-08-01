@@ -152,8 +152,17 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       (impossible via IBKR seul, qui ne résout plus les contrats expirés),
       sans attendre l'accumulation de runs futurs.
     - Repricing quotidien TOUJOURS par Black-Scholes (aucune source ne fournit
-      un flux d'options continu), à strike/échéance/volatilité fixés à
-      l'entrée (volatilité figée pour toute la durée de vie de la position).
+      un flux d'options continu), à strike et échéance fixés à l'entrée. La
+      volatilité, elle, dépend de `--vol-mode` : `frozen` (défaut, comportement
+      historique) la fige à l'entrée pour toute la vie de la position ;
+      `rolling` la fait suivre la volatilité réalisée du jour, remise à
+      l'échelle de l'entrée (le rapport implicite/réalisé constaté à l'entrée
+      est conservé, donc aucun saut de prime le premier jour). Plus l'échéance
+      est longue, plus figer la volatilité est une approximation forte : le
+      mode `rolling` est donc l'implicite de
+      `valuation_gap_multiples_options` (échéance 2 ans), et reste optionnel
+      ailleurs. Le coût en temps est nul (volatilité glissante précalculée en
+      une passe vectorisée sur tout le panel de cours).
     - Stop-loss/take-profit sur la PRIME (`OPTIONS_STOP_LOSS_PCT`/
       `OPTIONS_TAKE_PROFIT_PCT`, -50%/+100% par défaut -- des seuils bien
       plus larges que pour les actions, effet de levier oblige), expiration
@@ -185,6 +194,7 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | Échéance | ~9 mois | **2 ans, roulée à 9 mois** |
 | Stop-loss / take-profit | −50% / +100% de la **prime** | **−25% / +30% du cours du sous-jacent** |
 | Écart refermé | position gelée | **vendue au trimestre suivant** |
+| Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
 
 Comme la valorisation boursière (nb d'actions × cours) et la valorisation
 théorique (nb d'actions × valeur théorique par action) portent sur le même
@@ -206,6 +216,18 @@ Le strike à mi-chemin est **volontairement hors de la monnaie**, de la moitié
 de l'écart : l'option ne devient gagnante que si le titre parcourt au moins
 la moitié du chemin vers sa valeur théorique — une convergence partielle
 suffit, un simple bruit de marché non.
+
+**Plafond de pondération** (`OPTIONS_MULTIPLES_WEIGHT_CAP_PCT`, 100% par
+défaut). Rapporté à la valeur théorique, l'écart est borné à +100% du côté
+sous-évalué (le cours ne peut pas passer sous zéro) mais **non borné du côté
+survalorisé** : une valeur théorique proche de zéro produit un écart de
+plusieurs milliers de %. Comme le poids est proportionnel à l'écart, une
+seule ligne capterait alors l'essentiel du capital — mesuré à **92% du
+portefeuille** pour une théorique à 5$ contre un cours à 100$, contre 38%
+une fois plafonnée. Le plafond ne s'applique qu'au **dimensionnement** : le
+classement des candidats reste fait sur l'écart brut, une survalorisation
+extrême restant une forte conviction. `--strategy-param weight_cap_pct=0`
+le désactive.
 
 **Réévaluation trimestrielle** : elle est automatique, sans réglage
 supplémentaire. Chaque publication (10-Q via `04b_recuperation_10q.py`, 10-K

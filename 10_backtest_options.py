@@ -71,6 +71,7 @@ ENGINE_SETTING_FALLBACKS = {
     "stop_basis": "premium",
     "exit_when_signal_lost": False,
     "roll_when_days_left": None,
+    "vol_mode": "frozen",
 }
 
 
@@ -138,6 +139,11 @@ def main() -> None:
         "--roll-when-days-left", type=int, default=None,
         help="Roule la position sur une échéance pleine à N jours de l'expiration (0 = jamais).",
     )
+    parser.add_argument(
+        "--vol-mode", choices=("frozen", "rolling"), default=None,
+        help="Volatilité de repricing : figée à l'entrée, ou suivie au jour le jour "
+             "(volatilité réalisée courante remise à l'échelle de l'entrée).",
+    )
     parser.add_argument("--real-snapshot-tolerance-days", type=int, default=config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS)
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
@@ -199,6 +205,7 @@ def main() -> None:
         stop_basis=engine_settings["stop_basis"],
         exit_when_signal_lost=engine_settings["exit_when_signal_lost"],
         roll_when_days_left=engine_settings["roll_when_days_left"],
+        vol_mode=engine_settings["vol_mode"],
         start_date=start_date,
         end_date=end_date,
     )

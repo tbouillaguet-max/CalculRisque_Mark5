@@ -85,6 +85,7 @@ class PricePanel:
         self._row_of_date = {ts: i for i, ts in enumerate(close.index)}
         self._close_col = {sym: j for j, sym in enumerate(close.columns)}
         self._open_col = {sym: j for j, sym in enumerate(open_.columns)}
+        self._realized_vol_cache: dict[int, np.ndarray] = {}
 
     def row_of(self, date: pd.Timestamp) -> Optional[int]:
         return self._row_of_date.get(date)
@@ -119,6 +120,55 @@ class PricePanel:
         if row is None or col is None:
             return np.empty(0)
         return self._close_values[: row + 1, col]
+
+    def realized_vol_panel(self, lookback_days: int) -> np.ndarray:
+        """Volatilité réalisée glissante pour CHAQUE (date, symbole), calculée
+        une seule fois puis mise en cache -- nécessaire dès qu'une position est
+        reprise à la volatilité du jour plutôt qu'à celle figée à son entrée
+        (cf. options_engine, vol_mode="rolling") : la recalculer position par
+        position et jour par jour dominerait le temps de run.
+
+        Reproduit EXACTEMENT options_pricing.realized_volatility, qui reste
+        l'estimateur utilisé à l'entrée -- sans quoi entrée et repricing
+        mesureraient deux choses différentes et la prime sauterait dès le
+        premier jour :
+            - fenêtre des `lookback_days` dernières clôtures NON MANQUANTES
+              (donc lookback_days - 1 rendements log au plus) ;
+            - écart-type ddof=1, annualisé par sqrt(252) ;
+            - None (NaN ici) tant que l'historique est trop court.
+        """
+        cached = self._realized_vol_cache.get(lookback_days)
+        if cached is not None:
+            return cached
+
+        min_history = max(lookback_days // 2, 10)  # garde-fou "historique trop court"
+        panel = np.full(self._close_values.shape, np.nan)
+        for col in range(self._close_values.shape[1]):
+            values = self._close_values[:, col]
+            valid_rows = np.flatnonzero(~np.isnan(values))
+            if len(valid_rows) < min_history:
+                continue
+            series = pd.Series(values[valid_rows])
+            log_returns = np.log(series).diff()
+            # rolling sur lookback_days - 1 rendements : une fenêtre de N
+            # clôtures ne porte que N-1 rendements. min_periods=5 reproduit le
+            # garde-fou "moins de 6 points dans la fenêtre".
+            vol = log_returns.rolling(lookback_days - 1, min_periods=5).std(ddof=1) * np.sqrt(252)
+            vol.iloc[: min_history - 1] = np.nan  # historique encore trop court
+            panel[valid_rows, col] = vol.to_numpy()
+
+        self._realized_vol_cache[lookback_days] = panel
+        return panel
+
+    def realized_vol_at(self, symbol: str, date: pd.Timestamp, lookback_days: int) -> Optional[float]:
+        """Volatilité réalisée du symbole à `date`, ou None si l'historique
+        disponible à cette date est trop court (mêmes règles qu'à l'entrée)."""
+        row = self._row_of_date.get(date)
+        col = self._close_col.get(symbol)
+        if row is None or col is None:
+            return None
+        value = self.realized_vol_panel(lookback_days)[row, col]
+        return None if value != value else float(value)
 
 
 def build_price_panel(daily_prices: pd.DataFrame) -> PricePanel:
