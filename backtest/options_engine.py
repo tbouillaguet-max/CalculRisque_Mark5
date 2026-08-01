@@ -6,13 +6,19 @@ même philosophie que backtest/engine.py (actions), mécanique différente
 Sélection du contrat à l'ENTRÉE (jour D+1, exécution de la décision prise à
 la clôture de D -- même règle "pas de look-ahead" que le moteur actions) :
     1. Cherche un snapshot RÉEL archivé par 08_recuperation_options.py à
-       proximité de D+1 (data_loader.find_real_option_snapshot, fenêtre de
+       proximité de D+1 (data_loader.OptionSnapshotIndex, fenêtre de
        tolérance OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS) -- accumulés au fil du
        temps par tes runs successifs de 08 sur le compte paper trading.
     2. Sinon, SIMULE par Black-Scholes (backtest/options_pricing.py) : strike
        = spot du jour (ATM, pas de grille de strikes discrets en mode
        simulé), échéance = D+1 + OPTIONS_TARGET_TENOR_DAYS, volatilité =
        volatilité réalisée glissante (repli si aucune IV réelle disponible).
+
+Une stratégie peut imposer un AUTRE contrat que cet ATM à ~9 mois, en
+ajoutant à sa cible `strike_reference_price` (le strike retenu est alors à
+mi-chemin entre ce prix de référence et le spot d'exécution) et/ou
+`tenor_days` -- voir backtest/strategies/options_base.py. Ces deux clés sont
+optionnelles : sans elles, le comportement ci-dessus est inchangé.
 
 Repricing QUOTIDIEN (tant que la position est ouverte) : TOUJOURS par Black-
 Scholes, que l'entrée ait été réelle ou simulée -- aucune source ne fournit
@@ -29,16 +35,51 @@ l'utilisateur appelle "se hedger grâce aux greeks" : l'exposition $ ciblée
 est la même quelle que soit la delta de l'option choisie, pas un nombre de
 contrats arbitraire.
 
-Sortie d'une position : stop-loss/take-profit sur la PRIME (pas le cours du
-sous-jacent), expiration (réglée à la valeur intrinsèque), ou disparition
-des données de prix du sous-jacent. Jamais une position n'est fermée
-uniquement parce que l'écart de valorisation s'est refermé (même choix
-utilisateur que la stratégie actions) -- elle reste "gelée" jusqu'à un de
-ces déclencheurs. Stop-loss/take-profit sont, comme les rebalancements,
-décidés à la clôture de J et exécutés à l'ouverture de J+1 (même règle que
-les entrées, cf. plus haut) ; seules l'expiration (réglée par construction à
-sa date d'échéance) et la disparition des données (rien à attendre) sont
-immédiates.
+Sortie d'une position : stop-loss/take-profit, expiration (réglée à la valeur
+intrinsèque), ou disparition des données de prix du sous-jacent.
+Stop-loss/take-profit sont, comme les rebalancements, décidés à la clôture de
+J et exécutés à l'ouverture de J+1 (même règle que les entrées, cf. plus
+haut) ; seules l'expiration (réglée par construction à sa date d'échéance) et
+la disparition des données (rien à attendre) sont immédiates.
+
+Trois comportements de sortie/renouvellement sont OPTIONNELS, désactivés par
+défaut -- le moteur se comporte exactement comme avant si aucun n'est activé
+(c'est le cas de la stratégie valuation_gap_options) :
+
+    stop_basis="underlying"     Stop-loss/take-profit mesurés sur le COURS DU
+                                SOUS-JACENT au lieu de la prime, et orientés
+                                dans le sens de la position (pour un PUT, une
+                                HAUSSE du titre est la perte). Sur une
+                                échéance longue, des seuils serrés appliqués à
+                                la prime se déclencheraient sur la seule
+                                érosion de la valeur temps, avant que la thèse
+                                ait le temps de se réaliser -- voir le
+                                commentaire de config.OPTIONS_MULTIPLES_STOP_LOSS_PCT.
+
+    exit_when_signal_lost=True  Une position dont le symbole n'est plus jugé
+                                éligible par la stratégie (écart repassé sous
+                                le seuil) est VENDUE au rebalancement suivant,
+                                au lieu de rester "gelée". L'éligibilité est
+                                demandée à la stratégie
+                                (OptionsStrategy.eligible_symbols) et non
+                                déduite de ses cibles : une position évincée
+                                par le seul plafond de positions simultanées
+                                ne doit pas être vendue comme si son signal
+                                avait disparu. Un retournement de sens
+                                (call <-> put) ferme aussi la position.
+
+    roll_when_days_left=N       À N jours de l'échéance, une position encore
+                                éligible est clôturée et immédiatement
+                                rouverte sur une nouvelle échéance pleine (au
+                                strike recalculé avec la valorisation
+                                théorique la plus récente), à exposition $
+                                inchangée. Évite de subir l'accélération de la
+                                perte de valeur temps en fin de vie du contrat.
+
+Par défaut (aucune des trois options), une position n'est JAMAIS fermée parce
+que son écart de valorisation s'est refermé : elle reste "gelée" jusqu'au
+stop-loss/take-profit, à l'expiration ou à la disparition des données -- même
+choix utilisateur que la stratégie actions.
 """
 
 from __future__ import annotations
@@ -57,6 +98,13 @@ logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
 
+# Bornes de la volatilité de repricing en mode "rolling" : une volatilité
+# réalisée mesurée sur une fenêtre courte peut devenir aberrante (quasi nulle
+# sur un titre suspendu, ou plusieurs centaines de % après un saut isolé), et
+# Black-Scholes y est très sensible.
+MIN_REPRICING_VOL = 0.05
+MAX_REPRICING_VOL = 2.00
+
 
 @dataclass
 class OptionPosition:
@@ -67,9 +115,34 @@ class OptionPosition:
     contracts: float
     entry_premium: float        # prix effectif par action (coût de transaction déjà inclus)
     entry_date: pd.Timestamp
-    vol: float                  # volatilité figée pour la durée de vie de la position
+    vol: float                  # volatilité retenue à l'entrée
     multiplier: float
     source: str                 # "real" ou "simulated" (traçabilité, cf. positions_history)
+
+    # Rapport entre la volatilité retenue à l'entrée et la volatilité RÉALISÉE
+    # à cette même date, en mode vol_mode="rolling" : la volatilité de
+    # repricing suit ensuite la volatilité réalisée du jour, multipliée par ce
+    # rapport. Il capture l'écart implicite/réalisé constaté à l'entrée (une
+    # entrée sur snapshot réel part d'une IV de marché, pas d'une volatilité
+    # historique) et garantit qu'au jour de l'entrée le repricing redonne
+    # exactement `vol` -- sans lui, la prime sauterait dès le premier jour.
+    # None = volatilité figée pour cette position (mode "frozen", ou
+    # volatilité réalisée indisponible à l'entrée).
+    vol_ratio: Optional[float] = None
+
+    # Cours du sous-jacent au moment de l'entrée : référence des stop-loss/
+    # take-profit quand ils portent sur le sous-jacent (stop_basis="underlying")
+    # plutôt que sur la prime.
+    entry_spot: float = 0.0
+    # Exposition $ visée à l'entrée (avant conversion en contrats par le
+    # delta) : rejouée telle quelle lors d'un roulement, pour que renouveler
+    # le contrat ne change pas la taille de la position.
+    target_dollar: float = 0.0
+    # Contrat demandé par la stratégie (None = ATM à l'échéance par défaut du
+    # moteur), conservé pour pouvoir reconstruire le même type de contrat lors
+    # d'un roulement.
+    strike_reference_price: Optional[float] = None
+    tenor_days: Optional[int] = None
 
     # Dernière prime reprise par Black-Scholes, et le jour où elle l'a été.
     # Le contrat (strike, échéance, vol) ne change jamais après l'entrée : la
@@ -85,6 +158,10 @@ class _PendingOrder:
     target_dollar: float
     reason: str
     queued_on: pd.Timestamp
+    # Roulement : clôture puis réouverture immédiate sur une échéance pleine,
+    # à exposition inchangée (voir _roll_position). Distinct d'un simple
+    # redimensionnement, qui garderait le contrat existant.
+    roll: bool = False
 
 
 class OptionsBacktestEngine:
@@ -107,6 +184,10 @@ class OptionsBacktestEngine:
         real_snapshot_tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
         realized_vol_lookback_days: int = config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
+        stop_basis: str = "premium",
+        exit_when_signal_lost: bool = False,
+        roll_when_days_left: Optional[int] = None,
+        vol_mode: str = "frozen",
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
@@ -133,12 +214,27 @@ class OptionsBacktestEngine:
         self.real_snapshot_tolerance_days = real_snapshot_tolerance_days
         self.realized_vol_lookback_days = realized_vol_lookback_days
         self.signal_max_age_days = signal_max_age_days
+        if stop_basis not in ("premium", "underlying"):
+            raise ValueError(f"stop_basis attend 'premium' ou 'underlying', reçu {stop_basis!r}.")
+        self.stop_basis = stop_basis
+        self.exit_when_signal_lost = exit_when_signal_lost
+        self.roll_when_days_left = roll_when_days_left
+        if vol_mode not in ("frozen", "rolling"):
+            raise ValueError(f"vol_mode attend 'frozen' ou 'rolling', reçu {vol_mode!r}.")
+        self.vol_mode = vol_mode
 
         self.cash = initial_capital
         self.positions: dict[str, OptionPosition] = {}
         self.known_signals: dict[str, dict] = {}
         self.pending_orders: dict[str, _PendingOrder] = {}
-        self._pending_option_type: dict[str, str] = {}
+        # Contrat demandé par la stratégie pour l'ordre en attente :
+        # {"option_type", "strike_reference_price", "tenor_days"}.
+        self._pending_spec: dict[str, dict] = {}
+        # {symbole: sens} encore justifiés par le signal au dernier
+        # rebalancement, indépendamment du plafond de positions simultanées.
+        # Sert à la vente sur perte de signal et au roulement ; None tant
+        # qu'aucun rebalancement n'a eu lieu (aucune position ne peut exister).
+        self._eligible_directions: Optional[dict[str, str]] = None
 
         self.trades: list[dict] = []
         self.equity_curve_rows: list[dict] = []
@@ -173,6 +269,7 @@ class OptionsBacktestEngine:
             exited_today = self._settle_expired_positions(today)
             exited_today |= self._handle_stale_underlyings(today)
             exited_today |= self._check_stop_loss_take_profit(today)
+            exited_today |= self._check_rolls(today, exclude=exited_today)
 
             todays_events = self.events_by_date.get(today)
             if todays_events:
@@ -191,14 +288,31 @@ class OptionsBacktestEngine:
     # ------------------------------------------------------------------ #
     # Pricing d'une position ouverte, à une date donnée
     # ------------------------------------------------------------------ #
+    def _repricing_vol(self, pos: OptionPosition, today: pd.Timestamp) -> float:
+        """Volatilité utilisée pour repricer une position ouverte.
+
+        Mode "frozen" (défaut) : celle retenue à l'entrée, figée pour toute la
+        durée de vie de la position. Mode "rolling" : la volatilité réalisée
+        du jour, remise à l'échelle de l'entrée (cf. OptionPosition.vol_ratio)
+        -- l'approximation "volatilité constante" est alors levée, ce qui
+        compte d'autant plus que l'échéance est longue. Repli sur la
+        volatilité d'entrée si l'historique du jour est insuffisant."""
+        if self.vol_mode != "rolling" or pos.vol_ratio is None:
+            return pos.vol
+        realized = self.prices.realized_vol_at(pos.symbol, today, self.realized_vol_lookback_days)
+        if realized is None or realized <= 0:
+            return pos.vol
+        return min(max(realized * pos.vol_ratio, MIN_REPRICING_VOL), MAX_REPRICING_VOL)
+
     def _current_premium(self, pos: OptionPosition, today: pd.Timestamp, spot: Optional[float] = None) -> Optional[float]:
-        """Repricing Black-Scholes à strike/échéance/vol fixés (ceux de la
-        position). spot explicite (prix d'OUVERTURE du jour d'exécution) si
-        fourni -- sinon clôture du jour (utilisé pour les décisions/le
-        marked-to-market, jamais pour exécuter un ordre, cf. les appelants)."""
+        """Repricing Black-Scholes à strike/échéance fixés (ceux de la
+        position), à la volatilité donnée par _repricing_vol. spot explicite
+        (prix d'OUVERTURE du jour d'exécution) si fourni -- sinon clôture du
+        jour (utilisé pour les décisions/le marked-to-market, jamais pour
+        exécuter un ordre, cf. les appelants)."""
         if spot is not None:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            return options_pricing.bs_price(spot, pos.strike, t_years, pos.vol, pos.option_type)
+            return options_pricing.bs_price(spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
 
         if pos._premium_asof == today:
             return pos._premium
@@ -207,7 +321,7 @@ class OptionsBacktestEngine:
             premium = None
         else:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            premium = options_pricing.bs_price(close, pos.strike, t_years, pos.vol, pos.option_type)
+            premium = options_pricing.bs_price(close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
         pos._premium_asof, pos._premium = today, premium
         return premium
 
@@ -228,21 +342,48 @@ class OptionsBacktestEngine:
                         "disponible depuis plus de %d jours.",
                         symbol, order.reason, data_loader.FORWARD_FILL_MAX_DAYS,
                     )
-                    self._pending_option_type.pop(symbol, None)
+                    self._pending_spec.pop(symbol, None)
                     continue
                 still_pending[symbol] = order
                 continue
 
-            if order.target_dollar <= 0:
+            if order.roll:
+                self._roll_position(symbol, spot, today)
+            elif order.target_dollar <= 0:
                 self._close_position(symbol, today, order.reason, spot=spot)
             else:
-                option_type = self._pending_option_type.get(symbol)
-                self._open_or_resize(symbol, option_type, order.target_dollar, spot, today, order.reason)
-            self._pending_option_type.pop(symbol, None)
+                spec = self._pending_spec.get(symbol, {})
+                self._open_or_resize(
+                    symbol, spec.get("option_type"), order.target_dollar, spot, today, order.reason,
+                    strike_reference_price=spec.get("strike_reference_price"),
+                    tenor_days=spec.get("tenor_days"),
+                )
+            self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
 
-    def _select_contract(self, symbol: str, option_type: str, spot: float, today: pd.Timestamp) -> dict:
-        real = self.option_index.find(symbol, option_type, today, self.real_snapshot_tolerance_days)
+    def _select_contract(
+        self,
+        symbol: str,
+        option_type: str,
+        spot: float,
+        today: pd.Timestamp,
+        strike_reference_price: Optional[float] = None,
+        tenor_days: Optional[int] = None,
+    ) -> dict:
+        """Contrat retenu pour une ENTRÉE. Par défaut (aucun argument
+        optionnel) : ATM à l'échéance cible du moteur, comportement
+        historique. Avec strike_reference_price, le strike visé est à
+        mi-chemin entre ce prix de référence (typiquement la valorisation
+        théorique) et le spot d'exécution."""
+        tenor = int(tenor_days) if tenor_days else self.target_tenor_days
+        target_strike = (strike_reference_price + spot) / 2 if strike_reference_price is not None else None
+        wants_custom = strike_reference_price is not None or tenor_days is not None
+
+        real = self.option_index.find(
+            symbol, option_type, today, self.real_snapshot_tolerance_days,
+            target_strike=target_strike,
+            target_tenor_days=float(tenor) if wants_custom else None,
+        )
         if real is not None and real["premium"] and pd.notna(real["premium"]) and real["implied_vol"]:
             return {
                 "strike": real["strike"], "expiry": real["expiry"], "premium": real["premium"],
@@ -257,9 +398,10 @@ class OptionsBacktestEngine:
             vol = 0.30  # repli conservateur si même l'historique de cours est trop court
             logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, vol * 100)
 
-        strike = spot  # simulé : ATM exact, pas de grille de strikes discrets
-        expiry = today + pd.Timedelta(days=self.target_tenor_days)
-        t_years = self.target_tenor_days / 365.0
+        # Simulé : strike exact demandé (ou ATM), pas de grille de strikes discrets.
+        strike = target_strike if target_strike is not None else spot
+        expiry = today + pd.Timedelta(days=tenor)
+        t_years = tenor / 365.0
         premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type)
         greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type)
         return {
@@ -267,7 +409,30 @@ class OptionsBacktestEngine:
             "delta": greeks["delta"], "multiplier": self.contract_multiplier, "source": "simulated",
         }
 
-    def _open_or_resize(self, symbol: str, option_type: str, target_dollar: float, spot: float, today: pd.Timestamp, reason: str) -> None:
+    def _entry_vol_ratio(self, symbol: str, today: pd.Timestamp, entry_vol: float) -> Optional[float]:
+        """Rapport volatilité d'entrée / volatilité réalisée du jour, figé pour
+        la position (cf. OptionPosition.vol_ratio). None en mode "frozen", ou
+        quand la volatilité réalisée est indisponible à l'entrée : la position
+        garde alors sa volatilité d'entrée, faute de référence à laquelle
+        rapporter les variations ultérieures."""
+        if self.vol_mode != "rolling":
+            return None
+        realized = self.prices.realized_vol_at(symbol, today, self.realized_vol_lookback_days)
+        if realized is None or realized <= 0 or not entry_vol:
+            return None
+        return entry_vol / realized
+
+    def _open_or_resize(
+        self,
+        symbol: str,
+        option_type: str,
+        target_dollar: float,
+        spot: float,
+        today: pd.Timestamp,
+        reason: str,
+        strike_reference_price: Optional[float] = None,
+        tenor_days: Optional[int] = None,
+    ) -> None:
         existing = self.positions.get(symbol)
         if existing is not None and existing.option_type != option_type:
             # Le signal a changé de sens (call <-> put) alors qu'une position
@@ -278,7 +443,10 @@ class OptionsBacktestEngine:
             logger.debug("%s : signal %s ignoré, une position %s existe déjà (gelée).", symbol, option_type, existing.option_type)
             return
 
-        contract = self._select_contract(symbol, option_type, spot, today)
+        contract = self._select_contract(
+            symbol, option_type, spot, today,
+            strike_reference_price=strike_reference_price, tenor_days=tenor_days,
+        )
         delta = contract["delta"] or 0.0
         if abs(delta) < 1e-6:
             return
@@ -296,8 +464,12 @@ class OptionsBacktestEngine:
                 symbol=symbol, option_type=option_type, strike=contract["strike"], expiry=contract["expiry"],
                 contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
                 vol=contract["vol"], multiplier=multiplier, source=contract["source"],
+                entry_spot=spot, target_dollar=target_dollar,
+                strike_reference_price=strike_reference_price, tenor_days=tenor_days,
+                vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
             )
         else:
+            existing.target_dollar = target_dollar
             # Renforcement d'une position existante (même sens) : moyenne
             # pondérée du prix d'entrée. Strike/échéance/vol restent ceux du
             # contrat déjà détenu (pas de re-sélection de contrat en cours de vie).
@@ -352,6 +524,27 @@ class OptionsBacktestEngine:
             self._close_position(symbol, today, "expiry")
         return expired
 
+    def _position_move_pct(self, pos: OptionPosition, today: pd.Timestamp) -> Optional[float]:
+        """Variation à comparer aux seuils de stop-loss/take-profit, dans le
+        SENS DE LA POSITION (positif = la position gagne).
+
+        stop_basis="premium" : variation de la prime depuis l'entrée -- déjà
+        orientée, une prime qui monte est un gain pour un call comme pour un
+        put. stop_basis="underlying" : variation du cours du sous-jacent,
+        qu'il faut donc inverser pour un put (le titre qui baisse est le
+        scénario gagnant)."""
+        if self.stop_basis == "premium":
+            premium = self._current_premium(pos, today)
+            if premium is None:
+                return None
+            return (premium - pos.entry_premium) / pos.entry_premium * 100
+
+        close = self.prices.close_at(pos.symbol, today)
+        if close is None or not pos.entry_spot:
+            return None
+        move_pct = (close - pos.entry_spot) / pos.entry_spot * 100
+        return move_pct if pos.option_type == "CALL" else -move_pct
+
     def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
         """Décidé à la clôture de today, exécuté à l'ouverture du jour
         suivant (mis en file via pending_orders, comme un rebalancement) --
@@ -360,10 +553,9 @@ class OptionsBacktestEngine:
         le seuil."""
         triggered = set()
         for symbol, pos in list(self.positions.items()):
-            premium = self._current_premium(pos, today)
-            if premium is None:
+            move_pct = self._position_move_pct(pos, today)
+            if move_pct is None:
                 continue
-            move_pct = (premium - pos.entry_premium) / pos.entry_premium * 100
             if move_pct <= self.stop_loss_pct:
                 self.pending_orders[symbol] = _PendingOrder(0.0, "stop_loss", today)
                 triggered.add(symbol)
@@ -371,6 +563,53 @@ class OptionsBacktestEngine:
                 self.pending_orders[symbol] = _PendingOrder(0.0, "take_profit", today)
                 triggered.add(symbol)
         return triggered
+
+    def _check_rolls(self, today: pd.Timestamp, exclude: set[str]) -> set[str]:
+        """Met en file un roulement pour toute position arrivant à moins de
+        roll_when_days_left de son échéance et toujours justifiée par son
+        signal. Comme les stops, décidé à la clôture de J et exécuté à
+        l'ouverture de J+1."""
+        if not self.roll_when_days_left or not self.positions:
+            return set()
+
+        rolled = set()
+        for symbol, pos in self.positions.items():
+            if symbol in exclude or symbol in self.pending_orders:
+                continue
+            if (pos.expiry - today).days > self.roll_when_days_left:
+                continue
+            # Plus éligible : inutile de renouveler un contrat que la vente
+            # sur perte de signal s'apprête à clôturer (ou que le gel laissera
+            # simplement expirer si cette option n'est pas active).
+            if self._eligible_directions is not None and self._eligible_directions.get(symbol) != pos.option_type:
+                continue
+            self.pending_orders[symbol] = _PendingOrder(pos.target_dollar, "roll", today, roll=True)
+            rolled.add(symbol)
+        return rolled
+
+    def _roll_position(self, symbol: str, spot: float, today: pd.Timestamp) -> None:
+        """Clôture puis rouvre immédiatement, à la même exposition $ visée,
+        sur une échéance pleine et un strike recalculé avec la valorisation
+        théorique la plus récente connue (pas celle de l'entrée initiale)."""
+        pos = self.positions.get(symbol)
+        if pos is None:
+            return
+
+        option_type, target_dollar, tenor_days = pos.option_type, pos.target_dollar, pos.tenor_days
+        reference = pos.strike_reference_price
+        latest_signal = self.known_signals.get(symbol)
+        if reference is not None and latest_signal is not None:
+            refreshed = latest_signal.get("valuation_theoretical_per_share")
+            if refreshed is not None and pd.notna(refreshed):
+                reference = float(refreshed)
+
+        self._close_position(symbol, today, "roll", spot=spot)
+        if symbol in self.positions:  # clôture impossible (prime indisponible) : on ne rouvre rien
+            return
+        self._open_or_resize(
+            symbol, option_type, target_dollar, spot, today, "roll",
+            strike_reference_price=reference, tenor_days=tenor_days,
+        )
 
     def _handle_stale_underlyings(self, today: pd.Timestamp) -> set[str]:
         closed = set()
@@ -416,6 +655,15 @@ class OptionsBacktestEngine:
         current_option_types = {sym: pos.option_type for sym, pos in self.positions.items()}
         targets = self.strategy.generate_option_targets(eligible_signals, current_option_types)
         targets = {s: t for s, t in targets.items() if s not in exclude and t["weight"] > 0}
+
+        if self.exit_when_signal_lost or self.roll_when_days_left:
+            self._eligible_directions = self.strategy.eligible_directions(eligible_signals)
+        if self.exit_when_signal_lost:
+            # Vendues demain à l'ouverture : exclues dès maintenant du capital
+            # "gelé" et des emplacements occupés, puisque leur valeur
+            # redeviendra du cash au même moment que les achats du jour.
+            exclude = exclude | self._close_lost_signals(today, exclude)
+
         if not targets:
             return
 
@@ -447,8 +695,34 @@ class OptionsBacktestEngine:
                 t["weight"] = t["weight"] / total_weight
 
         for symbol, t in final_active.items():
-            self._pending_option_type[symbol] = t["option_type"]
+            self._pending_spec[symbol] = {
+                "option_type": t["option_type"],
+                "strike_reference_price": t.get("strike_reference_price"),
+                "tenor_days": t.get("tenor_days"),
+            }
             self.pending_orders[symbol] = _PendingOrder(t["weight"] * active_budget, "rebalance", today)
+
+    def _close_lost_signals(self, today: pd.Timestamp, exclude: set[str]) -> set[str]:
+        """Clôture les positions dont le signal ne justifie plus la présence :
+        écart repassé sous le seuil d'entrée (le symbole a disparu des
+        éligibles), ou écart qui a changé de sens (call détenu alors que le
+        signal est devenu vendeur, ou l'inverse).
+
+        Une position simplement évincée par le plafond de positions
+        simultanées reste éligible et n'est donc PAS vendue -- c'est tout
+        l'intérêt de demander les éligibles à la stratégie plutôt que de les
+        déduire de ses cibles, déjà tronquées."""
+        closed = set()
+        for symbol, pos in self.positions.items():
+            if symbol in exclude or symbol in self.pending_orders:
+                continue
+            wanted_direction = (self._eligible_directions or {}).get(symbol)
+            if wanted_direction == pos.option_type:
+                continue
+            reason = "signal_lost" if wanted_direction is None else "direction_flip"
+            self.pending_orders[symbol] = _PendingOrder(0.0, reason, today)
+            closed.add(symbol)
+        return closed
 
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne

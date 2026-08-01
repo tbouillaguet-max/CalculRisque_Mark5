@@ -44,5 +44,26 @@ class OptionsStrategy(ABC):
         (renormalisés par l'engine sur le capital disponible, cf.
         backtest/engine.py::_rebalance pour la logique des positions gelées,
         réutilisée telle quelle par options_engine.py).
+
+        Deux clés OPTIONNELLES permettent de choisir un autre contrat que
+        l'ATM à ~9 mois retenu par défaut (voir options_engine._select_contract) :
+            "strike_reference_price" : le strike visé est à mi-chemin entre ce
+                prix et le spot d'exécution (une stratégie qui vise la
+                convergence vers sa valeur théorique y met cette valeur).
+            "tenor_days" : échéance visée, en jours.
+        Les omettre reproduit exactement le comportement historique.
         """
         raise NotImplementedError
+
+    def eligible_directions(self, signals: pd.DataFrame) -> dict[str, str]:
+        """{symbol: "CALL"|"PUT"} pour TOUS les symboles dont le signal
+        justifie encore une position, AVANT tout plafonnement du nombre de
+        positions simultanées.
+
+        Utilisé uniquement par les moteurs configurés en vente sur perte de
+        signal ou en roulement (voir la docstring de
+        backtest/options_engine.py) : une position évincée par le seul
+        plafond ne doit pas être vendue comme si son signal avait disparu, ni
+        empêchée de rouler. Par défaut, déduit des cibles -- à surcharger dès
+        que la stratégie tronque sa liste de candidats."""
+        return {s: t["option_type"] for s, t in self.generate_option_targets(signals, {}).items()}
