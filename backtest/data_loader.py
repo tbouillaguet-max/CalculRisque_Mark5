@@ -261,7 +261,7 @@ def load_option_snapshots_history(directory=None) -> pd.DataFrame:
     (data/options/history/option_chains_*.parquet, un fichier par run,
     jamais écrasé). DataFrame vide si 08 n'a encore jamais tourné -- pas une
     erreur : backtest/options_engine.py retombe alors entièrement sur le
-    pricing Black-Scholes simulé (voir find_real_option_snapshot)."""
+    pricing Black-Scholes simulé (voir OptionSnapshotIndex)."""
     directory = directory or config.DIR_OPTIONS_HISTORY
     files = sorted(directory.glob("option_chains_*.parquet"))
     if not files:
@@ -273,56 +273,115 @@ def load_option_snapshots_history(directory=None) -> pd.DataFrame:
     return df
 
 
-def _premium_of(row: pd.Series):
-    bid, ask = row.get("bid"), row.get("ask")
-    if pd.notna(bid) and pd.notna(ask):
-        return (bid + ask) / 2
-    return row.get("last_price") if pd.notna(row.get("last_price")) else row.get("close")
+def _premium_series(df: pd.DataFrame) -> pd.Series:
+    """Prime retenue pour un contrat : milieu bid/ask quand les deux côtés
+    sont cotés, sinon dernier prix traité, sinon clôture."""
+    def col(name: str) -> pd.Series:
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce")
+        return pd.Series(np.nan, index=df.index, dtype=float)
+
+    bid, ask = col("bid"), col("ask")
+    mid = ((bid + ask) / 2).where(bid.notna() & ask.notna())
+    return mid.fillna(col("last_price")).fillna(col("close"))
+
+
+def _optional_float(value) -> Optional[float]:
+    """NaN -> None : les appelants testent la présence d'un champ par sa
+    valeur de vérité (`if real["implied_vol"]`), et un NaN est "vrai" en
+    Python -- il se propagerait silencieusement dans le pricing au lieu de
+    déclencher le repli Black-Scholes."""
+    return None if value is None or pd.isna(value) else float(value)
 
 
 class OptionSnapshotIndex:
     """Index des snapshots réels archivés par 08_recuperation_options.py,
     interrogeable par (symbole, type d'option, date).
 
-    Le contrat retenu pour un (symbole, type, snapshot_date) ne dépend pas de
-    la date d'interrogation : il est donc choisi UNE FOIS ici, à la
-    construction, plutôt qu'à chaque entrée en position -- le moteur filtrait
-    et triait l'intégralité des snapshots à chaque candidat.
+    Deux modes de sélection du contrat, selon ce que demande l'appelant :
 
-    Sélection, inchangée : le contrat le plus proche de la monnaie
-    (min |moneyness_pct|), départagé par l'échéance la plus proche de
-    OPTIONS_TARGET_TENOR_DAYS -- cohérent avec ce que 08 collecte déjà
-    (ATM, >9 mois)."""
+    - SANS strike/échéance cibles (stratégie valuation_gap_options) : le
+      contrat le plus proche de la monnaie (min |moneyness_pct|), départagé
+      par l'échéance la plus proche de OPTIONS_TARGET_TENOR_DAYS -- cohérent
+      avec ce que 08 collecte déjà (ATM, >9 mois). Ce contrat ne dépend pas de
+      la date d'interrogation : son indice est donc calculé UNE FOIS ici, à la
+      construction, et le `find` correspondant reste en O(1).
+
+    - AVEC strike et/ou échéance cibles (stratégie
+      valuation_gap_multiples_options, qui vise un strike à mi-chemin et une
+      échéance 2 ans) : le contrat le plus proche du strike demandé, départagé
+      par l'échéance la plus proche de celle demandée. La sélection dépend
+      alors de la demande, donc se fait à l'interrogation -- sur le seul
+      sous-ensemble des contrats de la date retenue, pas sur tout l'historique.
+
+    Les colonnes sont stockées à plat en numpy (une seule fois par
+    symbole/type) plutôt qu'en dictionnaires par contrat : seul le contrat
+    finalement retenu est matérialisé en dict."""
+
+    _ARRAY_COLUMNS = (
+        "strike", "premium", "implied_vol", "delta", "gamma", "vega", "theta",
+        "underlying_spot", "multiplier",
+    )
 
     def __init__(self, option_snapshots: pd.DataFrame):
-        self._by_key: dict[tuple[str, str], tuple[np.ndarray, list[dict]]] = {}
+        self._by_key: dict[tuple[str, str], dict] = {}
         if option_snapshots.empty:
             return
 
         df = option_snapshots.copy()
+        df["premium"] = _premium_series(df)
         df["_moneyness_abs"] = df["moneyness_pct"].abs()
-        df["_tenor_diff"] = (df["expiry"] - df["snapshot_date"]).dt.days.sub(config.OPTIONS_TARGET_TENOR_DAYS).abs()
-        best_per_date = (
-            df.sort_values(["symbol", "option_type", "snapshot_date", "_moneyness_abs", "_tenor_diff"])
-            .groupby(["symbol", "option_type", "snapshot_date"], as_index=False, sort=False)
-            .head(1)
-        )
+        df["_tenor_days"] = (df["expiry"] - df["snapshot_date"]).dt.days
+        df["_tenor_diff"] = df["_tenor_days"].sub(config.OPTIONS_TARGET_TENOR_DAYS).abs()
 
-        for (symbol, option_type), group in best_per_date.groupby(["symbol", "option_type"], sort=False):
-            group = group.sort_values("snapshot_date")
-            contracts = [
-                {
-                    "strike": row["strike"], "expiry": row["expiry"], "premium": _premium_of(row),
-                    "implied_vol": row.get("implied_vol"), "delta": row.get("delta"), "gamma": row.get("gamma"),
-                    "vega": row.get("vega"), "theta": row.get("theta"), "underlying_spot": row.get("underlying_spot"),
-                    "multiplier": float(row.get("multiplier") or config.OPTIONS_CONTRACT_MULTIPLIER),
-                    "snapshot_date": row["snapshot_date"], "source": "real",
-                }
-                for _, row in group.iterrows()
-            ]
-            self._by_key[(symbol, option_type)] = (
-                group["snapshot_date"].to_numpy(dtype="datetime64[ns]"), contracts,
-            )
+        if "multiplier" in df.columns:
+            df["multiplier"] = pd.to_numeric(df["multiplier"], errors="coerce")
+        else:
+            df["multiplier"] = np.nan
+        # Un multiplicateur manquant vaut la convention US (1 contrat = 100
+        # actions) plutôt que NaN, qui contaminerait le dimensionnement.
+        df["multiplier"] = df["multiplier"].replace(0, np.nan).fillna(float(config.OPTIONS_CONTRACT_MULTIPLIER))
+
+        for optional in ("implied_vol", "delta", "gamma", "vega", "theta", "underlying_spot"):
+            if optional not in df.columns:
+                df[optional] = np.nan
+
+        # Tri unique : (symbole, type, date) puis monnaie, puis échéance. La
+        # PREMIÈRE ligne de chaque date est donc le contrat par défaut --
+        # exactement ce que renvoyait l'ancien groupby(...).head(1).
+        df = df.sort_values(["symbol", "option_type", "snapshot_date", "_moneyness_abs", "_tenor_diff"])
+
+        for (symbol, option_type), group in df.groupby(["symbol", "option_type"], sort=False):
+            dates = group["snapshot_date"].to_numpy(dtype="datetime64[ns]")
+            unique_dates, starts = np.unique(dates, return_index=True)
+            cols = {name: group[name].to_numpy(dtype=float) for name in self._ARRAY_COLUMNS}
+            cols["expiry"] = group["expiry"].to_numpy(dtype="datetime64[ns]")
+            cols["snapshot_date"] = dates
+            cols["tenor_days"] = group["_tenor_days"].to_numpy(dtype=float)
+            cols["moneyness_abs"] = group["_moneyness_abs"].to_numpy(dtype=float)
+            self._by_key[(symbol, option_type)] = {
+                "dates": unique_dates,
+                "starts": starts,
+                "ends": np.append(starts[1:], len(dates)),
+                "cols": cols,
+            }
+
+    def _contract_at(self, entry: dict, i: int) -> dict:
+        cols = entry["cols"]
+        return {
+            "strike": float(cols["strike"][i]),
+            "expiry": pd.Timestamp(cols["expiry"][i]),
+            "premium": _optional_float(cols["premium"][i]),
+            "implied_vol": _optional_float(cols["implied_vol"][i]),
+            "delta": _optional_float(cols["delta"][i]),
+            "gamma": _optional_float(cols["gamma"][i]),
+            "vega": _optional_float(cols["vega"][i]),
+            "theta": _optional_float(cols["theta"][i]),
+            "underlying_spot": _optional_float(cols["underlying_spot"][i]),
+            "multiplier": float(cols["multiplier"][i]),
+            "snapshot_date": pd.Timestamp(cols["snapshot_date"][i]),
+            "source": "real",
+        }
 
     def find(
         self,
@@ -330,14 +389,22 @@ class OptionSnapshotIndex:
         option_type: str,
         as_of: pd.Timestamp,
         tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
+        target_strike: Optional[float] = None,
+        target_tenor_days: Optional[float] = None,
     ) -> Optional[dict]:
         """Contrat réel le plus représentatif autour de as_of, ou None si
         aucun snapshot n'existe dans la fenêtre de tolérance (l'appelant doit
-        alors simuler par Black-Scholes)."""
+        alors simuler par Black-Scholes).
+
+        target_strike / target_tenor_days : contrat visé quand la stratégie
+        impose autre chose que l'ATM à ~9 mois (voir docstring de la classe).
+        Aucun des deux n'est contraignant -- le contrat réellement coté le
+        plus proche est retenu, même s'il est loin du strike demandé : c'est à
+        l'appelant de juger si l'écart reste acceptable."""
         entry = self._by_key.get((symbol, option_type))
         if entry is None:
             return None
-        dates, contracts = entry
+        dates = entry["dates"]
 
         moment = np.datetime64(as_of.to_datetime64())
         insert_at = int(np.searchsorted(dates, moment))
@@ -346,8 +413,27 @@ class OptionSnapshotIndex:
         candidates = [i for i in (insert_at - 1, insert_at) if 0 <= i < len(dates)]
         if not candidates:
             return None
-        best_index = min(candidates, key=lambda i: abs(dates[i] - moment))
+        best_date = min(candidates, key=lambda i: abs(dates[i] - moment))
 
-        if abs(dates[best_index] - moment) > np.timedelta64(tolerance_days, "D"):
+        if abs(dates[best_date] - moment) > np.timedelta64(tolerance_days, "D"):
             return None
-        return contracts[best_index]
+
+        if target_strike is None and target_tenor_days is None:
+            return self._contract_at(entry, int(entry["starts"][best_date]))
+
+        lo, hi = int(entry["starts"][best_date]), int(entry["ends"][best_date])
+        # Sans strike demandé, le critère prioritaire reste la monnaie -- pour
+        # qu'une cible portant seulement sur l'échéance ne retienne pas un
+        # strike arbitraire.
+        strike_dist = (
+            np.abs(entry["cols"]["strike"][lo:hi] - target_strike)
+            if target_strike is not None else entry["cols"]["moneyness_abs"][lo:hi]
+        )
+        tenor_dist = (
+            np.abs(entry["cols"]["tenor_days"][lo:hi] - target_tenor_days)
+            if target_tenor_days is not None else np.zeros(width)
+        )
+        # Strike prioritaire, échéance en départage : même hiérarchie que la
+        # sélection par défaut (monnaie d'abord, échéance ensuite).
+        best = int(np.lexsort((tenor_dist, strike_dist))[0])
+        return self._contract_at(entry, lo + best)

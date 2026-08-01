@@ -278,6 +278,47 @@ OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
 # quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
 OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
+# ----------------------------------------------------------------------------
+# Stratégie options "multiples" (backtest/strategies/valuation_gap_multiples_options.py)
+# ----------------------------------------------------------------------------
+# Variante LONG TERME de la stratégie options, distincte de
+# valuation_gap_options (ci-dessus) sur quatre points, tous voulus :
+#   1. signal = multiples sectoriels SEULS (les lignes en repli DCF de 06b sont
+#      écartées) ;
+#   2. écart rapporté à la valeur THÉORIQUE, pas au cours (voir plus bas) ;
+#   3. strike à mi-chemin entre valeur théorique et cours, échéance 2 ans
+#      (pari sur une convergence progressive, pas sur un mouvement immédiat) ;
+#   4. stop-loss/take-profit sur le COURS DU SOUS-JACENT, pas sur la prime.
+#
+# Le point 4 n'est pas un détail : sur une option 2 ans hors de la monnaie, le
+# levier est d'environ 3,5x et la seule érosion du temps fait perdre ~29% de la
+# prime en 9 mois à cours inchangé. Des seuils -25%/+30% appliqués à la prime
+# clôtureraient donc la position avant que la convergence visée ait le temps de
+# se produire ; appliqués au cours du sous-jacent, ils décrivent bien le
+# scénario voulu ("le titre a baissé de 25%" / "le titre a monté de 30%").
+OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = 20.0
+
+# Base de calcul de l'écart : "theoretical" -> (théorique - cours)/théorique,
+# "close" -> (théorique - cours)/cours (convention historique de gap_pct en
+# 06b, utilisée par valuation_gap_options). Les deux ne sélectionnent pas les
+# mêmes entreprises : à 20%, théo=120/cours=100 donne +16,7% en base théorique
+# (écarté) contre +20,0% en base cours (retenu).
+OPTIONS_MULTIPLES_GAP_BASIS = "theoretical"
+
+# Appliqués au COURS DU SOUS-JACENT (voir plus haut), et orientés dans le sens
+# de la position : pour un PUT, "le titre monte de 25%" est la perte et "le
+# titre baisse de 30%" le gain (voir options_engine._check_stop_loss_take_profit).
+OPTIONS_MULTIPLES_STOP_LOSS_PCT = -25.0
+OPTIONS_MULTIPLES_TAKE_PROFIT_PCT = 30.0
+
+# Échéance visée à l'entrée, et seuil de roulement : à 9 mois de l'échéance, la
+# position est clôturée et rouverte sur une nouvelle échéance 2 ans (au strike
+# recalculé avec la valorisation théorique la plus récente), tant que l'écart
+# reste au-dessus du seuil d'entrée. Évite de subir l'accélération de la perte
+# de valeur temps sur la dernière année de vie du contrat.
+OPTIONS_MULTIPLES_TENOR_DAYS = 730
+OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT = 270
+
 
 def to_ib_symbol(ric: str) -> str:
     """Convertit un RIC de l'univers vers le symbole IBKR utilisé comme

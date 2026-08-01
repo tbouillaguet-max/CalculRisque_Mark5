@@ -166,6 +166,65 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       `OptionsStrategy` (`backtest/strategies/options_base.py`), décorée par
       `@register_options_strategy("mon_nom")`.
 
+### Stratégie `valuation_gap_multiples_options` (convergence long terme)
+
+Seconde stratégie options, à côté de `valuation_gap_options` (inchangée).
+Elle compare la valorisation théorique issue des **multiples sectoriels
+seuls** à la valorisation boursière, et parie sur la convergence de la
+seconde vers la première à horizon 2 ans :
+
+```bash
+python 10_backtest_options.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
+```
+
+| | `valuation_gap_options` | `valuation_gap_multiples_options` |
+|---|---|---|
+| Signal | multiples, **DCF en repli** | **multiples seuls** (repli DCF écarté) |
+| Écart de ±20% rapporté à | cours de bourse | **valeur théorique** |
+| Strike | ATM | **à mi-chemin théorique/cours** |
+| Échéance | ~9 mois | **2 ans, roulée à 9 mois** |
+| Stop-loss / take-profit | −50% / +100% de la **prime** | **−25% / +30% du cours du sous-jacent** |
+| Écart refermé | position gelée | **vendue au trimestre suivant** |
+
+Comme la valorisation boursière (nb d'actions × cours) et la valorisation
+théorique (nb d'actions × valeur théorique par action) portent sur le même
+nombre d'actions, leur rapport se calcule directement par action : la
+stratégie lit les colonnes de `06b_calcul_valorisation_combinee.py` sans
+reconstruire de capitalisation.
+
+**Pourquoi les stops portent sur le sous-jacent et non sur la prime.** Sur le
+cas type de la stratégie (théorique 120, cours 100 → strike 110, 2 ans, vol
+30%), le levier effectif est de 3,5x : un stop à −25% de la prime se
+déclencherait sur une baisse de seulement −7,6% du titre. Surtout, **à cours
+strictement inchangé, la seule érosion de la valeur temps fait perdre 29% à
+la prime en 9 mois** — le stop se déclencherait donc tout seul avant que la
+convergence visée ait le temps de se produire. Appliqués au cours du
+sous-jacent, les seuils décrivent bien le scénario voulu, et sont orientés
+dans le sens de la position (pour un PUT, une hausse du titre est la perte).
+
+Le strike à mi-chemin est **volontairement hors de la monnaie**, de la moitié
+de l'écart : l'option ne devient gagnante que si le titre parcourt au moins
+la moitié du chemin vers sa valeur théorique — une convergence partielle
+suffit, un simple bruit de marché non.
+
+**Réévaluation trimestrielle** : elle est automatique, sans réglage
+supplémentaire. Chaque publication (10-Q via `04b_recuperation_10q.py`, 10-K
+via `04`) produit un signal daté de sa date de dépôt SEC réelle ; à chacun,
+les entreprises passant le seuil sont achetées et celles qui le repassent en
+sens inverse sont vendues. Lance `run_pipeline_quarterly.py` pour rafraîchir
+ces signaux.
+
+Ces quatre réglages de moteur font partie de la thèse de la stratégie : elle
+les déclare (attribut de classe `engine_defaults`) et `10_backtest_options.py`
+les applique automatiquement, sauf si l'option correspondante est passée
+explicitement en ligne de commande (`--stop-basis`, `--roll-when-days-left`,
+`--no-exit-when-signal-lost`, `--target-tenor-days`...).
+
+Côté moteur (`backtest/options_engine.py`), ces comportements sont **optionnels
+et désactivés par défaut** : `valuation_gap_options` est strictement inchangée
+(vérifié : sorties identiques au bit près sur le banc synthétique, à la seule
+résolution du dtype `expiry` près, µs → ns).
+
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).
 
