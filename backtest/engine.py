@@ -30,7 +30,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 import config
@@ -60,7 +59,7 @@ class _PendingOrder:
 class BacktestEngine:
     def __init__(
         self,
-        price_panel: dict,
+        price_panel: data_loader.PricePanel,
         signal_events: pd.DataFrame,
         universe_history: Optional[pd.DataFrame],
         fallback_universe_symbols: set[str],
@@ -74,12 +73,17 @@ class BacktestEngine:
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
-        self.close = price_panel["close"]
-        self.open = price_panel["open"]
-        self.last_valid_date = price_panel["last_valid_date"]
-        self.signal_events = signal_events.sort_values("published_date").reset_index(drop=True)
-        self.universe_history = universe_history
-        self.fallback_universe_symbols = fallback_universe_symbols
+        self.prices = price_panel
+        self.last_valid_date = price_panel.last_valid_date
+        # Les événements sont regroupés par date de publication une fois pour
+        # toutes : les rechercher par masque booléen sur la table complète à
+        # chacun des ~2500 jours de bourse d'un run coûtait plus cher que le
+        # reste de la journée simulée.
+        self.events_by_date = {
+            published_date: group.to_dict("records")
+            for published_date, group in signal_events.groupby("published_date", sort=False)
+        }
+        self.universe = data_loader.UniverseResolver(universe_history, fallback_universe_symbols)
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.cost_bps = cost_bps
@@ -98,7 +102,7 @@ class BacktestEngine:
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
 
-        calendar = self.close.index
+        calendar = price_panel.close.index
         if start_date is not None:
             calendar = calendar[calendar >= start_date]
         if end_date is not None:
@@ -123,8 +127,8 @@ class BacktestEngine:
             exited_today = self._handle_stale_symbols(today)
             exited_today |= self._check_stop_loss_take_profit(today)
 
-            todays_events = self.signal_events[self.signal_events["published_date"] == today]
-            if not todays_events.empty:
+            todays_events = self.events_by_date.get(today)
+            if todays_events:
                 self._update_known_signals(todays_events, today)
                 self._rebalance(today, exclude=exited_today)
 
@@ -143,12 +147,11 @@ class BacktestEngine:
     def _execute_pending_orders(self, today: pd.Timestamp) -> None:
         if not self.pending_orders:
             return
-        todays_open = self.open.loc[today] if today in self.open.index else pd.Series(dtype=float)
 
         still_pending: dict[str, _PendingOrder] = {}
         for symbol, order in self.pending_orders.items():
-            price = todays_open.get(symbol)
-            if price is None or pd.isna(price):
+            price = self.prices.open_at(symbol, today)
+            if price is None:
                 if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
                     logger.warning(
                         "Ordre en attente pour %s abandonné (%s) : aucune ouverture "
@@ -208,13 +211,12 @@ class BacktestEngine:
     # Gestion du risque : stop-loss / take-profit, données manquantes
     # ------------------------------------------------------------------ #
     def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
-        if today not in self.close.index or not self.positions:
+        if not self.positions:
             return set()
-        todays_close = self.close.loc[today]
         triggered = set()
         for symbol, pos in list(self.positions.items()):
-            price = todays_close.get(symbol)
-            if price is None or pd.isna(price):
+            price = self.prices.close_at(symbol, today)
+            if price is None:
                 continue
             move_pct = (price - pos.entry_price) / pos.entry_price * 100
             if move_pct <= self.stop_loss_pct:
@@ -241,8 +243,8 @@ class BacktestEngine:
                 continue
             if (today - last_valid).days <= data_loader.FORWARD_FILL_MAX_DAYS:
                 continue
-            last_price = self.close.loc[last_valid, symbol] if symbol in self.close.columns else None
-            if last_price is None or pd.isna(last_price):
+            last_price = self.prices.close_at(symbol, last_valid)
+            if last_price is None:
                 continue
             logger.warning(
                 "%s : plus aucun cours depuis %s (>%d jours), position clôturée au "
@@ -259,9 +261,9 @@ class BacktestEngine:
     # ------------------------------------------------------------------ #
     # Signaux et rebalancement
     # ------------------------------------------------------------------ #
-    def _update_known_signals(self, todays_events: pd.DataFrame, today: pd.Timestamp) -> None:
-        for _, row in todays_events.iterrows():
-            self.known_signals[row["symbol"]] = row.to_dict()
+    def _update_known_signals(self, todays_events: list[dict], today: pd.Timestamp) -> None:
+        for row in todays_events:
+            self.known_signals[row["symbol"]] = row
             self.signals_history_rows.append({
                 "date": today, "symbol": row["symbol"], "sector": row.get("sector"),
                 "fiscal_year": row.get("fiscal_year"), "gap_pct": row.get("gap_pct"),
@@ -269,7 +271,7 @@ class BacktestEngine:
             })
 
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
-        universe_today = data_loader.universe_asof(self.universe_history, today, self.fallback_universe_symbols)
+        universe_today = self.universe.asof(today)
         # Un signal périmé (pas de 10-K plus récent que signal_max_age_days)
         # n'est éligible à une NOUVELLE entrée que s'il concerne une position
         # déjà détenue (dans ce cas elle est de toute façon gelée, pas
@@ -288,11 +290,10 @@ class BacktestEngine:
         if not target_weights:
             return
 
-        todays_close = self.close.loc[today] if today in self.close.index else pd.Series(dtype=float)
-        nav_now = self._current_nav(todays_close)
+        nav_now = self._current_nav(today)
 
         legacy_value = sum(
-            pos.shares * todays_close.get(sym, pos.entry_price)
+            pos.shares * self._mark_price(pos, today)
             for sym, pos in self.positions.items()
             if sym not in target_weights and sym not in exclude
         )
@@ -328,13 +329,19 @@ class BacktestEngine:
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne
     # ------------------------------------------------------------------ #
-    def _current_nav(self, todays_close: pd.Series) -> float:
-        invested = sum(pos.shares * todays_close.get(sym, pos.entry_price) for sym, pos in self.positions.items())
-        return self.cash + invested
+    def _mark_price(self, pos: Position, today: pd.Timestamp) -> float:
+        """Cours de valorisation d'une position : la clôture du jour, ou à
+        défaut son prix d'entrée (le symbole n'a pas encore/plus de cours
+        exploitable ce jour-là -- une position dans ce cas est de toute façon
+        en cours de fermeture par _handle_stale_symbols)."""
+        price = self.prices.close_at(pos.symbol, today)
+        return pos.entry_price if price is None else price
+
+    def _current_nav(self, today: pd.Timestamp) -> float:
+        return self.cash + sum(pos.shares * self._mark_price(pos, today) for pos in self.positions.values())
 
     def _mark_to_market(self, today: pd.Timestamp) -> None:
-        todays_close = self.close.loc[today] if today in self.close.index else pd.Series(dtype=float)
-        invested = sum(pos.shares * todays_close.get(sym, pos.entry_price) for sym, pos in self.positions.items())
+        invested = sum(pos.shares * self._mark_price(pos, today) for pos in self.positions.values())
         nav = self.cash + invested
         self.equity_curve_rows.append({
             "date": today, "nav": nav, "cash": self.cash, "invested_value": invested,
@@ -342,9 +349,8 @@ class BacktestEngine:
         })
 
     def _record_positions(self, today: pd.Timestamp) -> None:
-        todays_close = self.close.loc[today] if today in self.close.index else pd.Series(dtype=float)
         for symbol, pos in self.positions.items():
-            price = todays_close.get(symbol, pos.entry_price)
+            price = self._mark_price(pos, today)
             market_value = pos.shares * price
             self.positions_history_rows.append({
                 "date": today, "symbol": symbol, "shares": pos.shares, "entry_price": pos.entry_price,

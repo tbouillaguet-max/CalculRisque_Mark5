@@ -51,7 +51,7 @@ class Strategy(ABC):
         signals : signaux CONNUS à la date courante (dernière valeur publiée
             par entreprise, pas seulement ceux publiés aujourd'hui),
             déjà restreints aux entreprises actuellement membres du S&P 500
-            (voir data_loader.universe_asof). Colonnes : symbol, gap_pct,
+            (voir data_loader.UniverseResolver). Colonnes : symbol, gap_pct,
             sector, valuation_dcf_per_share, close_at_filing, fiscal_year,
             published_date.
         current_positions : symboles actuellement en portefeuille (permet à

@@ -5,15 +5,33 @@ n'est disponible (voir data_loader.find_real_option_snapshot). Formules et
 conventions de signe identiques à 08_recuperation_options.py (_bs_price /
 _bs_greeks), dupliquées ici plutôt qu'importées : 08 charge ib_insync au
 niveau module, une dépendance dont le backtest n'a pas besoin.
+
+Implémentation SCALAIRE en `math` pur plutôt que scipy.stats.norm : le moteur
+reprice chaque position ouverte chaque jour de bourse, soit des centaines de
+milliers d'appels unitaires par run. `norm.cdf` passe par la machinerie
+générique de scipy (validation d'arguments, broadcasting) qui coûte environ
+cent fois le calcul lui-même sur un scalaire, alors que `math.erfc` donne la
+même valeur à la précision machine près.
 """
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
-import pandas as pd
-from scipy.stats import norm
 
 import config
+
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
+_INV_SQRT_2 = 1.0 / math.sqrt(2.0)
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * math.erfc(-x * _INV_SQRT_2)
+
+
+def _norm_pdf(x: float) -> float:
+    return _INV_SQRT_2PI * math.exp(-0.5 * x * x)
 
 
 def bs_price(spot: float, strike: float, t_years: float, vol: float, option_type: str, r: float = config.RISK_FREE_RATE) -> float:
@@ -22,11 +40,13 @@ def bs_price(spot: float, strike: float, t_years: float, vol: float, option_type
     if t_years <= 0 or vol <= 0:
         intrinsic = (spot - strike) if option_type == "CALL" else (strike - spot)
         return max(0.0, intrinsic)
-    d1 = (np.log(spot / strike) + (r + 0.5 * vol ** 2) * t_years) / (vol * np.sqrt(t_years))
-    d2 = d1 - vol * np.sqrt(t_years)
+    sqrt_t = math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * t_years) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t
+    discount = math.exp(-r * t_years)
     if option_type == "CALL":
-        return spot * norm.cdf(d1) - strike * np.exp(-r * t_years) * norm.cdf(d2)
-    return strike * np.exp(-r * t_years) * norm.cdf(-d2) - spot * norm.cdf(-d1)
+        return spot * _norm_cdf(d1) - strike * discount * _norm_cdf(d2)
+    return strike * discount * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
 
 
 def bs_greeks(spot: float, strike: float, t_years: float, vol: float, option_type: str, r: float = config.RISK_FREE_RATE) -> dict:
@@ -38,36 +58,42 @@ def bs_greeks(spot: float, strike: float, t_years: float, vol: float, option_typ
         in_the_money = (spot > strike) if option_type == "CALL" else (spot < strike)
         return {"delta": intrinsic_delta if in_the_money else 0.0, "gamma": 0.0, "vega": 0.0, "theta": 0.0}
 
-    d1 = (np.log(spot / strike) + (r + 0.5 * vol ** 2) * t_years) / (vol * np.sqrt(t_years))
-    d2 = d1 - vol * np.sqrt(t_years)
-    pdf_d1 = norm.pdf(d1)
-    gamma = pdf_d1 / (spot * vol * np.sqrt(t_years))
-    vega = spot * pdf_d1 * np.sqrt(t_years) / 100
+    sqrt_t = math.sqrt(t_years)
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * t_years) / (vol * sqrt_t)
+    d2 = d1 - vol * sqrt_t
+    pdf_d1 = _norm_pdf(d1)
+    gamma = pdf_d1 / (spot * vol * sqrt_t)
+    vega = spot * pdf_d1 * sqrt_t / 100
+    discount = math.exp(-r * t_years)
     if option_type == "CALL":
-        delta = norm.cdf(d1)
-        theta = (-spot * pdf_d1 * vol / (2 * np.sqrt(t_years)) - r * strike * np.exp(-r * t_years) * norm.cdf(d2)) / 365
+        delta = _norm_cdf(d1)
+        theta = (-spot * pdf_d1 * vol / (2 * sqrt_t) - r * strike * discount * _norm_cdf(d2)) / 365
     else:
-        delta = norm.cdf(d1) - 1
-        theta = (-spot * pdf_d1 * vol / (2 * np.sqrt(t_years)) + r * strike * np.exp(-r * t_years) * norm.cdf(-d2)) / 365
+        delta = _norm_cdf(d1) - 1
+        theta = (-spot * pdf_d1 * vol / (2 * sqrt_t) + r * strike * discount * _norm_cdf(-d2)) / 365
     return {"delta": delta, "gamma": gamma, "vega": vega, "theta": theta}
 
 
 def realized_volatility(
-    close_prices: pd.Series,
-    as_of: pd.Timestamp,
+    close_history: np.ndarray,
     lookback_days: int = config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
 ) -> float | None:
     """Volatilité annualisée des rendements log quotidiens sur les
-    lookback_days derniers jours de COTATION précédant (et incluant) as_of --
-    jamais après, pour rester point-in-time. close_prices : série indexée par
-    date (déjà triée), typiquement une colonne du panel de prix de
-    data_loader.build_price_panel. None si l'historique disponible est trop
-    court pour être significatif."""
-    past = close_prices.loc[:as_of].dropna()
+    lookback_days derniers jours de COTATION de `close_history`.
+
+    close_history : cours de clôture jusqu'à la date d'évaluation INCLUSE et
+    jamais au-delà -- le découpage point-in-time est fait par l'appelant (cf.
+    data_loader.PricePanel.close_history). Un tableau numpy plutôt qu'une
+    Series pandas indexée par date : extraire une colonne datée du panel à
+    chaque entrée en position dominait le temps de run.
+
+    None si l'historique disponible est trop court pour être significatif.
+    """
+    past = close_history[~np.isnan(close_history)]
     if len(past) < max(lookback_days // 2, 10):
         return None
-    window = past.iloc[-lookback_days:]
-    log_returns = np.log(window / window.shift(1)).dropna()
-    if len(log_returns) < 5:
+    window = past[-lookback_days:]
+    if len(window) < 6:
         return None
-    return float(log_returns.std() * np.sqrt(252))
+    log_returns = np.diff(np.log(window))
+    return float(log_returns.std(ddof=1) * np.sqrt(252))

@@ -71,6 +71,14 @@ class OptionPosition:
     multiplier: float
     source: str                 # "real" ou "simulated" (traçabilité, cf. positions_history)
 
+    # Dernière prime reprise par Black-Scholes, et le jour où elle l'a été.
+    # Le contrat (strike, échéance, vol) ne change jamais après l'entrée : la
+    # prime à la clôture d'un jour donné ne dépend donc que de ce jour, alors
+    # que le moteur la redemande 3 à 4 fois par journée simulée (stop-loss,
+    # NAV, mark-to-market, historique des positions).
+    _premium_asof: Optional[pd.Timestamp] = None
+    _premium: Optional[float] = None
+
 
 @dataclass
 class _PendingOrder:
@@ -82,7 +90,7 @@ class _PendingOrder:
 class OptionsBacktestEngine:
     def __init__(
         self,
-        price_panel: dict,
+        price_panel: data_loader.PricePanel,
         signal_events: pd.DataFrame,
         universe_history: Optional[pd.DataFrame],
         fallback_universe_symbols: set[str],
@@ -102,13 +110,17 @@ class OptionsBacktestEngine:
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
-        self.close = price_panel["close"]
-        self.open = price_panel["open"]
-        self.last_valid_date = price_panel["last_valid_date"]
-        self.signal_events = signal_events.sort_values("published_date").reset_index(drop=True)
-        self.universe_history = universe_history
-        self.fallback_universe_symbols = fallback_universe_symbols
-        self.option_snapshots = option_snapshots
+        self.prices = price_panel
+        self.last_valid_date = price_panel.last_valid_date
+        # Même optimisation que le moteur actions (cf. backtest/engine.py) :
+        # événements regroupés par date de publication et contrats réels
+        # pré-indexés, plutôt que refiltrés à chaque jour de bourse.
+        self.events_by_date = {
+            published_date: group.to_dict("records")
+            for published_date, group in signal_events.groupby("published_date", sort=False)
+        }
+        self.universe = data_loader.UniverseResolver(universe_history, fallback_universe_symbols)
+        self.option_index = data_loader.OptionSnapshotIndex(option_snapshots)
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.commission_per_contract = commission_per_contract
@@ -133,7 +145,7 @@ class OptionsBacktestEngine:
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
 
-        calendar = self.close.index
+        calendar = price_panel.close.index
         if start_date is not None:
             calendar = calendar[calendar >= start_date]
         if end_date is not None:
@@ -162,8 +174,8 @@ class OptionsBacktestEngine:
             exited_today |= self._handle_stale_underlyings(today)
             exited_today |= self._check_stop_loss_take_profit(today)
 
-            todays_events = self.signal_events[self.signal_events["published_date"] == today]
-            if not todays_events.empty:
+            todays_events = self.events_by_date.get(today)
+            if todays_events:
                 self._update_known_signals(todays_events, today)
                 self._rebalance(today, exclude=exited_today)
 
@@ -184,12 +196,20 @@ class OptionsBacktestEngine:
         position). spot explicite (prix d'OUVERTURE du jour d'exécution) si
         fourni -- sinon clôture du jour (utilisé pour les décisions/le
         marked-to-market, jamais pour exécuter un ordre, cf. les appelants)."""
-        if spot is None:
-            spot = self.close.get(pos.symbol, pd.Series(dtype=float)).get(today)
-        if spot is None or pd.isna(spot):
-            return None
-        t_years = max((pos.expiry - today).days, 0) / 365.0
-        return options_pricing.bs_price(spot, pos.strike, t_years, pos.vol, pos.option_type)
+        if spot is not None:
+            t_years = max((pos.expiry - today).days, 0) / 365.0
+            return options_pricing.bs_price(spot, pos.strike, t_years, pos.vol, pos.option_type)
+
+        if pos._premium_asof == today:
+            return pos._premium
+        close = self.prices.close_at(pos.symbol, today)
+        if close is None:
+            premium = None
+        else:
+            t_years = max((pos.expiry - today).days, 0) / 365.0
+            premium = options_pricing.bs_price(close, pos.strike, t_years, pos.vol, pos.option_type)
+        pos._premium_asof, pos._premium = today, premium
+        return premium
 
     # ------------------------------------------------------------------ #
     # Exécution des ordres décidés la veille
@@ -197,12 +217,11 @@ class OptionsBacktestEngine:
     def _execute_pending_orders(self, today: pd.Timestamp) -> None:
         if not self.pending_orders:
             return
-        todays_open = self.open.loc[today] if today in self.open.index else pd.Series(dtype=float)
 
         still_pending: dict[str, _PendingOrder] = {}
         for symbol, order in self.pending_orders.items():
-            spot = todays_open.get(symbol)
-            if spot is None or pd.isna(spot):
+            spot = self.prices.open_at(symbol, today)
+            if spot is None:
                 if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
                     logger.warning(
                         "Ordre en attente pour %s abandonné (%s) : aucune ouverture "
@@ -223,9 +242,7 @@ class OptionsBacktestEngine:
         self.pending_orders = still_pending
 
     def _select_contract(self, symbol: str, option_type: str, spot: float, today: pd.Timestamp) -> dict:
-        real = data_loader.find_real_option_snapshot(
-            self.option_snapshots, symbol, option_type, today, self.real_snapshot_tolerance_days,
-        )
+        real = self.option_index.find(symbol, option_type, today, self.real_snapshot_tolerance_days)
         if real is not None and real["premium"] and pd.notna(real["premium"]) and real["implied_vol"]:
             return {
                 "strike": real["strike"], "expiry": real["expiry"], "premium": real["premium"],
@@ -233,7 +250,9 @@ class OptionsBacktestEngine:
                 "multiplier": real["multiplier"], "source": "real",
             }
 
-        vol = options_pricing.realized_volatility(self.close[symbol], today, self.realized_vol_lookback_days)
+        vol = options_pricing.realized_volatility(
+            self.prices.close_history(symbol, today), self.realized_vol_lookback_days,
+        )
         if vol is None:
             vol = 0.30  # repli conservateur si même l'historique de cours est trop court
             logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, vol * 100)
@@ -374,9 +393,9 @@ class OptionsBacktestEngine:
     # Signaux et rebalancement (même logique de positions gelées que le
     # moteur actions -- voir backtest/engine.py::_rebalance)
     # ------------------------------------------------------------------ #
-    def _update_known_signals(self, todays_events: pd.DataFrame, today: pd.Timestamp) -> None:
-        for _, row in todays_events.iterrows():
-            self.known_signals[row["symbol"]] = row.to_dict()
+    def _update_known_signals(self, todays_events: list[dict], today: pd.Timestamp) -> None:
+        for row in todays_events:
+            self.known_signals[row["symbol"]] = row
             self.signals_history_rows.append({
                 "date": today, "symbol": row["symbol"], "sector": row.get("sector"),
                 "fiscal_year": row.get("fiscal_year"), "gap_pct": row.get("gap_pct"),
@@ -385,7 +404,7 @@ class OptionsBacktestEngine:
             })
 
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
-        universe_today = data_loader.universe_asof(self.universe_history, today, self.fallback_universe_symbols)
+        universe_today = self.universe.asof(today)
         eligible_signals = pd.DataFrame([
             s for sym, s in self.known_signals.items()
             if sym in universe_today
@@ -400,7 +419,6 @@ class OptionsBacktestEngine:
         if not targets:
             return
 
-        todays_close = self.close.loc[today] if today in self.close.index else pd.Series(dtype=float)
         nav_now = self._current_nav(today)
 
         legacy_value = sum(

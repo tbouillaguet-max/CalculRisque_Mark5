@@ -36,12 +36,24 @@ Corrections majeures par rapport à Recuperation10KMark2 :
       de --refresh-days jours (défaut 30). --force-refresh retrouve
       l'ancien comportement (interroge tous les tickers demandés).
 
+Débit et robustesse réseau : les tickers sont interrogés en PARALLÈLE
+(--workers, 8 par défaut) sur une connexion HTTP persistante partagée, sous
+un limiteur de débit global calé sur la limite d'accès équitable de la SEC
+(MAX_REQUESTS_PER_SECOND). Le nombre de requêtes envoyées à la SEC est
+identique à avant -- seule leur mise en attente change : le script passait
+l'essentiel de son temps à attendre une réponse, une poignée à la fois.
+Les erreurs transitoires (429, 5xx) sont réessayées automatiquement avec un
+backoff exponentiel, et un ticker en échec n'est PAS marqué comme récupéré :
+il sera réinterrogé au run suivant au lieu d'être ignoré pendant
+--refresh-days jours.
+
 Usage :
     python 04_recuperation_10k.py                 # tout l'univers US
     python 04_recuperation_10k.py --limit 10       # test rapide
     python 04_recuperation_10k.py --ticker AAPL    # une seule entreprise
     python 04_recuperation_10k.py --refresh-days 7  # throttle plus court
     python 04_recuperation_10k.py --force-refresh   # réinterroge tous les tickers demandés
+    python 04_recuperation_10k.py --workers 4       # moins de parallélisme (réseau lent/instable)
 """
 
 from __future__ import annotations
@@ -49,13 +61,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 
 import config
 
@@ -63,7 +80,9 @@ FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state.json"
 REFRESH_DAYS_DEFAULT = 30
 
 # ⚠️ À COMPLÉTER : la SEC exige un User-Agent identifiant un contact réel.
-SEC_CONTACT_EMAIL = "jeanboubou1er@gmail.com"
+# Surchargeable par la variable d'environnement du même nom, pour déployer le
+# pipeline (cron, conteneur) sans éditer le script.
+SEC_CONTACT_EMAIL = os.getenv("SEC_CONTACT_EMAIL", "jeanboubou1er@gmail.com")
 
 HEADERS = {
     "User-Agent": f"OptionsPipeline/1.0 ({SEC_CONTACT_EMAIL})",
@@ -73,9 +92,11 @@ HEADERS = {
 TICKERS_JSON_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
-# Faible délai : companyfacts fait 1 requête par entreprise (contre N par
-# entreprise dans l'original), la SEC tolère ~10 req/s avec un bon User-Agent.
-REQUEST_DELAY = 0.15
+# Politique d'accès équitable de la SEC : ~10 requêtes/seconde avec un
+# User-Agent identifiant un contact réel. On reste juste en dessous, tous
+# threads confondus (voir _RateLimiter).
+MAX_REQUESTS_PER_SECOND = 8.0
+DEFAULT_WORKERS = 8
 
 # Tags candidats par métrique, dans l'ordre de préférence (certaines
 # entreprises taguent différemment selon les années/schémas). Un tag préfixé
@@ -108,21 +129,91 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-def _get(url: str) -> Optional[dict]:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("Échec de la requête %s: %s", url, e)
-        return None
-    finally:
-        time.sleep(REQUEST_DELAY)
+class _RateLimiter:
+    """Espace les requêtes d'AU MOINS 1/rate seconde, tous threads confondus.
+
+    L'attente a lieu à l'intérieur du verrou : les threads se mettent
+    naturellement en file et le débit global reste borné, quel que soit leur
+    nombre -- c'est cette garantie qui permet de paralléliser sans dépasser
+    la limite d'accès équitable de la SEC."""
+
+    def __init__(self, rate_per_second: float):
+        self._min_interval = 1.0 / rate_per_second
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._next_slot - now
+            if wait > 0:
+                time.sleep(wait)
+                now = self._next_slot
+            self._next_slot = now + self._min_interval
 
 
-def get_cik_map() -> Dict[str, str]:
+_rate_limiter = _RateLimiter(MAX_REQUESTS_PER_SECOND)
+_session_local = threading.local()
+
+
+def _build_session(pool_size: int) -> requests.Session:
+    """Session HTTP persistante : la connexion TLS vers data.sec.gov est
+    négociée une fois puis réutilisée pour tous les tickers (elle l'était
+    pour chacun d'eux auparavant).
+
+    Les réessais sont gérés par _get et NON par l'adaptateur (max_retries=0) :
+    un réessai interne à urllib3 ne repasserait pas par le limiteur de débit,
+    et rejouerait donc une requête hors quota -- précisément au moment où la
+    SEC vient de nous signaler qu'on en envoie trop (429)."""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    adapter = HTTPAdapter(max_retries=0, pool_connections=pool_size, pool_maxsize=pool_size)
+    session.mount("https://", adapter)
+    return session
+
+
+RETRYABLE_STATUS = frozenset((429, 500, 502, 503, 504))
+MAX_ATTEMPTS = 4
+
+
+def _retry_delay(response: Optional[requests.Response], attempt: int) -> float:
+    """Backoff exponentiel (2s, 4s, 8s), sauf si la SEC indique elle-même
+    combien de temps attendre via Retry-After."""
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return float(retry_after)
+    return 2.0 ** (attempt + 1)
+
+
+def _get(url: str, session: Optional[requests.Session] = None) -> Optional[dict]:
+    if session is None:
+        session = getattr(_session_local, "session", None)
+        if session is None:
+            session = _session_local.session = _build_session(DEFAULT_WORKERS)
+
+    for attempt in range(MAX_ATTEMPTS):
+        _rate_limiter.acquire()
+        response = None
+        try:
+            response = session.get(url, timeout=30)
+            if response.status_code in RETRYABLE_STATUS:
+                raise requests.exceptions.HTTPError(f"HTTP {response.status_code}", response=response)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as exc:
+            if attempt == MAX_ATTEMPTS - 1:
+                logger.error("Échec de la requête %s (%d tentatives) : %s", url, MAX_ATTEMPTS, exc)
+                return None
+            delay = _retry_delay(response, attempt)
+            logger.warning("Requête %s en échec (%s), nouvelle tentative dans %.0fs.", url, exc, delay)
+            time.sleep(delay)
+    return None
+
+
+def get_cik_map(session: Optional[requests.Session] = None) -> Dict[str, str]:
     """Ticker -> CIK (10 chiffres), depuis le fichier officiel SEC."""
-    data = _get(TICKERS_JSON_URL)
+    data = _get(TICKERS_JSON_URL, session=session)
     if not data:
         return {}
     return {entry["ticker"].upper(): str(entry["cik_str"]).zfill(10) for entry in data.values()}
@@ -187,42 +278,53 @@ def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float
     return {year: (val, filed) for year, (_, filed, val) in by_year.items()}
 
 
-def compute_derived(row: pd.Series) -> pd.Series:
-    """Métriques dérivées, calculées sur le schéma canonique déjà en place."""
-    long_term_debt = row.get("long_term_debt") or 0
-    short_term_debt = row.get("short_term_debt") or 0
-    cash = row.get("cash") or 0
-    net_income = row.get("net_income") or 0
-    da = row.get("da") or 0
-    capex = row.get("capex") or 0
-    income_tax_expense = row.get("income_tax_expense") or 0
-    current_assets = row.get("current_assets")
-    current_liabilities = row.get("current_liabilities")
-    ebit = row.get("ebit")
+def compute_derived(df: pd.DataFrame) -> pd.DataFrame:
+    """Métriques dérivées, calculées sur le schéma canonique déjà en place.
 
-    row["net_debt"] = long_term_debt + short_term_debt - cash
+    Vectorisé sur tout le DataFrame plutôt qu'appliqué ligne par ligne, à
+    comportement strictement identique -- y compris la subtilité du `x or 0`
+    d'origine : un NaN étant "vrai" en Python, il n'était PAS remplacé par 0
+    et se propageait aux métriques dérivées, contrairement à un None (métrique
+    qu'aucun exercice ne tague, colonne restée vide)."""
+    def zeroed(column: str) -> pd.Series:
+        if column not in df.columns:
+            return pd.Series(0, index=df.index)
+        series = df[column]
+        if series.dtype == object:
+            series = series.map(lambda value: value or 0)
+        return pd.to_numeric(series, errors="coerce")
+
+    def raw(column: str) -> pd.Series:
+        if column not in df.columns:
+            return pd.Series(np.nan, index=df.index)
+        return pd.to_numeric(df[column], errors="coerce")
+
+    long_term_debt, short_term_debt = zeroed("long_term_debt"), zeroed("short_term_debt")
+    net_income, da, capex = zeroed("net_income"), zeroed("da"), zeroed("capex")
+    income_tax_expense = zeroed("income_tax_expense")
+    total_debt = long_term_debt + short_term_debt
+    ebit, current_assets, current_liabilities = raw("ebit"), raw("current_assets"), raw("current_liabilities")
+
+    df["net_debt"] = total_debt - zeroed("cash")
     # EBIT réellement manquant (None/NaN) -> EBITDA laissé à None plutôt que
     # d'être silencieusement égal à la D&A seule (cf. rapport, erreur 2.3).
-    row["ebitda"] = (ebit + da) if pd.notna(ebit) else None
-    row["fcf"] = net_income + da - capex
-    row["working_capital"] = (
-        current_assets - current_liabilities
-        if pd.notna(current_assets) and pd.notna(current_liabilities)
-        else None
+    df["ebitda"] = (ebit + da).where(ebit.notna())
+    df["fcf"] = net_income + da - capex
+    df["working_capital"] = (current_assets - current_liabilities).where(
+        current_assets.notna() & current_liabilities.notna()
     )
-    total_debt = long_term_debt + short_term_debt
-    row["cost_of_debt"] = (row.get("interest_expense") or 0) / (total_debt + 1e-6) if total_debt else None
+    df["cost_of_debt"] = (zeroed("interest_expense") / (total_debt + 1e-6)).where(total_debt != 0)
     pretax_income = net_income + income_tax_expense
-    row["tax_rate"] = income_tax_expense / pretax_income if pretax_income else None
-    return row
+    df["tax_rate"] = (income_tax_expense / pretax_income).where(pretax_income != 0)
+    return df
 
 
-def extract_financials_for_ticker(ric: str, cik: str) -> pd.DataFrame:
+def extract_financials_for_ticker(ric: str, cik: str, session: Optional[requests.Session] = None) -> pd.DataFrame:
     """ric : ticker tel qu'utilisé par la SEC pour retrouver le CIK (peut
     contenir un point, ex "BRK.B"). La colonne 'symbol' du DataFrame de
     sortie utilise en revanche config.to_ib_symbol(ric), pour être
     identique au 'symbol' produit par 03/04 (cf. erreur 2.1 du rapport)."""
-    facts = _get(COMPANYFACTS_URL.format(cik=cik))
+    facts = _get(COMPANYFACTS_URL.format(cik=cik), session=session)
     if not facts:
         logger.warning("Aucune donnée companyfacts pour %s (CIK %s)", ric, cik)
         return pd.DataFrame()
@@ -254,9 +356,7 @@ def extract_financials_for_ticker(ric: str, cik: str) -> pd.DataFrame:
         row["filed_date"] = max(filed_dates_this_year) if filed_dates_this_year else None
         rows.append(row)
 
-    df = pd.DataFrame(rows)
-    df = df.apply(compute_derived, axis=1)
-    return df
+    return compute_derived(pd.DataFrame(rows))
 
 
 def load_fetch_state(path: Path) -> Dict[str, str]:
@@ -302,6 +402,11 @@ def main() -> None:
         "--force-refresh", action="store_true",
         help="Ignore le throttle et interroge la SEC pour tous les tickers demandés.",
     )
+    parser.add_argument(
+        "--workers", type=int, default=DEFAULT_WORKERS,
+        help="Tickers interrogés en parallèle (défaut: %(default)s). Le débit vers la "
+             f"SEC reste plafonné à {MAX_REQUESTS_PER_SECOND:.0f} requêtes/seconde quel que soit ce nombre.",
+    )
     args = parser.parse_args()
 
     if SEC_CONTACT_EMAIL == "ton_email@example.com":
@@ -337,28 +442,41 @@ def main() -> None:
         )
         return
 
+    workers = max(1, args.workers)
     logger.info("%d/%d tickers déjà à jour (ignorés), %d à interroger.", skip_count, len(symbols), len(to_query))
+    session = _build_session(workers)
     logger.info("Récupération des CIK SEC pour %d tickers...", len(to_query))
-    cik_map = get_cik_map()
+    cik_map = get_cik_map(session=session)
+
+    with_cik = [(t, cik_map[t.upper()]) for t in to_query if t.upper() in cik_map]
+    for ticker in to_query:
+        if ticker.upper() not in cik_map:
+            logger.warning("CIK introuvable pour %s, ignoré.", ticker)
 
     all_frames = []
-    ok_count, fail_count = 0, 0
+    ok_count, fail_count = 0, len(to_query) - len(with_cik)
     now_iso = datetime.now().isoformat(timespec="seconds")
-    for i, ticker in enumerate(to_query, start=1):
-        cik = cik_map.get(ticker.upper())
-        if not cik:
-            logger.warning("[%d/%d] CIK introuvable pour %s, ignoré.", i, len(to_query), ticker)
-            fail_count += 1
-            continue
 
-        logger.info("[%d/%d] %s (CIK %s)...", i, len(to_query), ticker, cik)
-        df_ticker = extract_financials_for_ticker(ticker, cik)
-        state[config.to_ib_symbol(ticker)] = now_iso
-        if df_ticker.empty:
-            fail_count += 1
-            continue
-        all_frames.append(df_ticker)
-        ok_count += 1
+    logger.info("Interrogation de companyfacts sur %d threads...", workers)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(extract_financials_for_ticker, ticker, cik, session): ticker
+            for ticker, cik in with_cik
+        }
+        for done, future in enumerate(as_completed(futures), start=1):
+            ticker = futures[future]
+            df_ticker = future.result()
+            if df_ticker.empty:
+                # Pas de marquage dans `state` : un échec (réseau, CIK sans
+                # 10-K exploitable) doit être réessayé au prochain run, pas
+                # ignoré pendant --refresh-days jours.
+                fail_count += 1
+                continue
+            state[config.to_ib_symbol(ticker)] = now_iso
+            all_frames.append(df_ticker)
+            ok_count += 1
+            if done % 25 == 0 or done == len(futures):
+                logger.info("[%d/%d] tickers traités...", done, len(futures))
 
     logger.info("Terminé. OK: %d | Échecs: %d | Déjà à jour (ignorés): %d", ok_count, fail_count, skip_count)
     save_fetch_state(FETCH_STATE_FILE, state)
