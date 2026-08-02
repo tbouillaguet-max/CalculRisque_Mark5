@@ -75,13 +75,21 @@ def match_price_asof(df: pd.DataFrame) -> pd.DataFrame:
     ou trou de couverture au-delà de DAILY_PRICE_ASOF_TOLERANCE_DAYS) --
     comportement d'avant pour ces lignes-là."""
     df = df.dropna(subset=["filed_date"]).copy()
-    df["filed_date"] = pd.to_datetime(df["filed_date"], errors="coerce")
+    # config.to_naive_day des deux côtés (et pas un simple pd.to_datetime) :
+    # merge_asof refuse deux clés de résolutions différentes, or filed_date
+    # (chaîne SEC -> datetime64[us]) et la date des cours quotidiens (date32
+    # dans le Parquet de 03b -> datetime64[s]) n'ont pas la même.
+    df["filed_date"] = config.to_naive_day(df["filed_date"])
     df = df.dropna(subset=["filed_date"])
 
     if config.DAILY_PRICES_FILE.exists():
         daily = pd.read_parquet(config.DAILY_PRICES_FILE)[["symbol", "date", "close"]].copy()
-        daily["date"] = pd.to_datetime(daily["date"])
-        daily = daily.dropna(subset=["date", "close"]).sort_values(["symbol", "date"])
+        daily["date"] = config.to_naive_day(daily["date"])
+        # Tri sur la SEULE clé temporelle des deux côtés : merge_asof exige que
+        # 'on' soit globalement croissant, y compris avec by="symbol" (un tri
+        # ["symbol", "date"] rend la colonne de dates non monotone d'un symbole
+        # au suivant -> ValueError: right keys must be sorted).
+        daily = daily.dropna(subset=["date", "close"]).sort_values("date")
 
         df = df.sort_values("filed_date")
         df = pd.merge_asof(

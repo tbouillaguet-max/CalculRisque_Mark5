@@ -337,3 +337,25 @@ def to_ib_symbol(ric: str) -> str:
     pour les tickers à classes d'actions (ex: "BRK.B" -> "BRK B").
     """
     return SYMBOL_OVERRIDES.get(ric, ric.split(".")[0])
+
+
+def to_naive_day(values):
+    """Normalise une colonne de dates en datetime64[us] naïf, tronqué au jour.
+
+    À utiliser des DEUX côtés de toute jointure sur une date, pour la même
+    raison que to_ib_symbol pour les jointures sur 'symbol' : les fichiers du
+    pipeline ne stockent pas tous leurs dates de la même façon. 03b écrit des
+    datetime.date (stockés en date32 dans le Parquet, relus en
+    datetime64[s]), alors que 'filed_date' est une chaîne "YYYY-MM-DD" venant
+    de la SEC (04/04b), parsée en datetime64[us] par pandas >= 3.
+
+    pandas.merge_asof exige des clés STRICTEMENT du même dtype et refuse ce
+    mélange de résolutions ("MergeError: incompatible merge keys ... must be
+    the same type"), là où un merge classique le tolère silencieusement.
+    """
+    import pandas as pd  # local : garde config.py importable sans pandas
+
+    series = pd.to_datetime(pd.Series(values), errors="coerce")
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        series = series.dt.tz_convert("UTC").dt.tz_localize(None)
+    return series.dt.normalize().astype("datetime64[us]")
