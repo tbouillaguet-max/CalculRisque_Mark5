@@ -297,6 +297,30 @@ OPTIONS_INITIAL_CAPITAL = 100_000.0
 OPTIONS_COMMISSION_PER_CONTRACT = 0.65
 OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 5.0
 
+# Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique 0,65$/contrat
+# mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat coûte donc
+# 1,00$, pas 0,65$ -- et une stratégie qui multiplie les petits ordres paie
+# nettement plus que "nb_contrats x 0,65$". Modéliser la commission comme un
+# simple taux par contrat sous-estimait donc structurellement les frais.
+OPTIONS_COMMISSION_MIN_PER_ORDER = 1.0
+
+# Plafond par ordre, en % de la valeur négociée (prime x contrats x
+# multiplicateur) : protège les ordres sur options très bon marché, où le
+# minimum par ordre dépasserait la valeur échangée. Ce plafond prime sur le
+# minimum ci-dessus.
+# ATTENTION : contrairement au 0,65$/contrat et au minimum de 1,00$ (confirmés),
+# cette valeur n'a PAS pu être vérifiée sur la grille officielle IBKR
+# (interactivebrokers.com renvoie 403 aux requêtes automatisées). Recoupe-la
+# avec tes propres relevés de compte. 0 ou None désactive le plafond.
+OPTIONS_COMMISSION_MAX_PCT_OF_TRADE = 1.0
+
+# Les options se négocient par contrats ENTIERS. Le moteur dimensionnait en
+# contrats fractionnaires (0,931 contrat...), ce qui n'existe pas et fausse
+# doublement les frais : la commission par contrat était appliquée au prorata,
+# et le minimum par ordre n'existait pas. False rétablit l'ancien
+# comportement fractionnaire (utile seulement pour comparer).
+OPTIONS_WHOLE_CONTRACTS = True
+
 # Fenêtre de tolérance (en jours) pour rattacher un signal à un VRAI snapshot
 # archivé par 08_recuperation_options.py (data/options/history/) plutôt que
 # de simuler par Black-Scholes -- au-delà, le snapshot est jugé trop éloigné

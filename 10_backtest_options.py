@@ -119,6 +119,20 @@ def main() -> None:
     parser.add_argument("--initial-capital", type=float, default=config.OPTIONS_INITIAL_CAPITAL)
     parser.add_argument("--commission-per-contract", type=float, default=config.OPTIONS_COMMISSION_PER_CONTRACT)
     parser.add_argument("--slippage-pct-of-premium", type=float, default=config.OPTIONS_SLIPPAGE_PCT_OF_PREMIUM)
+    parser.add_argument(
+        "--commission-min-per-order", type=float, default=config.OPTIONS_COMMISSION_MIN_PER_ORDER,
+        help="Minimum facturé PAR ORDRE (IBKR : 1,00$), pas par contrat. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--commission-max-pct-of-trade", type=float, default=config.OPTIONS_COMMISSION_MAX_PCT_OF_TRADE,
+        help="Plafond de commission par ordre, en %% de la valeur négociée. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--fractional-contracts", dest="whole_contracts", action="store_false",
+        default=config.OPTIONS_WHOLE_CONTRACTS,
+        help="Autorise des contrats fractionnaires (irréaliste : les options se négocient "
+             "par contrats entiers). À n'utiliser que pour comparer avec l'ancien comportement.",
+    )
     # default=None sur les réglages qu'une stratégie peut imposer : distingue
     # "non demandé" (la stratégie décide) de "demandé explicitement" (priorité
     # à la ligne de commande). Voir resolve_engine_settings.
@@ -215,6 +229,9 @@ def main() -> None:
         initial_capital=args.initial_capital,
         commission_per_contract=args.commission_per_contract,
         slippage_pct_of_premium=args.slippage_pct_of_premium,
+        commission_min_per_order=args.commission_min_per_order,
+        commission_max_pct_of_trade=args.commission_max_pct_of_trade,
+        whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
         take_profit_pct=engine_settings["take_profit_pct"],
         max_positions=engine_settings["max_positions"],
