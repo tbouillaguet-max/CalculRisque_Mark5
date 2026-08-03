@@ -76,6 +76,15 @@ def main() -> None:
     parser.add_argument("--max-positions", type=int, default=config.BACKTEST_MAX_POSITIONS)
     parser.add_argument("--entry-threshold-pct", type=float, default=config.BACKTEST_ENTRY_THRESHOLD_PCT, help="Passé à la stratégie si elle accepte ce paramètre.")
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE", help="Paramètre supplémentaire spécifique à la stratégie (répétable).")
+    parser.add_argument(
+        "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
+        help="Momentum 12-1 minimal (en %%) pour une NOUVELLE entrée, filtre anti-value-trap. "
+             "Ex: -10. Utiliser --no-momentum-filter pour le désactiver.",
+    )
+    parser.add_argument(
+        "--no-momentum-filter", dest="momentum_min_pct", action="store_const", const=None,
+        help="Désactive le filtre momentum.",
+    )
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de sortie (défaut: horodatage).")
     parser.add_argument("--risk-free-rate", type=float, default=config.RISK_FREE_RATE)
     args = parser.parse_args()
@@ -98,6 +107,7 @@ def main() -> None:
     signal_events = data_loader.build_signal_events(dcf_history)
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
+    material_events = data_loader.load_material_events_8k()
 
     strategy_cls = STRATEGY_REGISTRY[args.strategy]
     strategy_params = {"entry_threshold_pct": args.entry_threshold_pct, "max_positions": args.max_positions}
@@ -118,6 +128,8 @@ def main() -> None:
         stop_loss_pct=args.stop_loss_pct,
         take_profit_pct=args.take_profit_pct,
         max_positions=args.max_positions,
+        momentum_min_pct=args.momentum_min_pct,
+        material_events_8k=material_events,
         start_date=start_date,
         end_date=end_date,
     )

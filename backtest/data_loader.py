@@ -121,6 +121,22 @@ class PricePanel:
             return np.empty(0)
         return self._close_values[: row + 1, col]
 
+    def momentum_12_1(self, symbol: str, date: pd.Timestamp, lag_days: int = 21, lookback_days: int = 252) -> Optional[float]:
+        """Momentum "12-1" à `date` : rendement du titre sur les 12 derniers
+        mois EN EXCLUANT le dernier (convention académique -- le dernier mois
+        porte un effet de retournement à court terme, de signe opposé).
+
+        Point-in-time par construction : s'appuie sur close_history, qui
+        s'arrête à `date` incluse. None si l'historique est trop court (titre
+        récemment entré dans l'univers)."""
+        hist = self.close_history(symbol, date)
+        if len(hist) < lookback_days + 1:
+            return None
+        start, end = hist[-(lookback_days + 1)], hist[-(lag_days + 1)]
+        if not np.isfinite(start) or not np.isfinite(end) or start <= 0:
+            return None
+        return float(end / start - 1)
+
     def realized_vol_panel(self, lookback_days: int) -> np.ndarray:
         """Volatilité réalisée glissante pour CHAQUE (date, symbole), calculée
         une seule fois puis mise en cache -- nécessaire dès qu'une position est
@@ -208,6 +224,52 @@ def _fill_missing_filed_dates(df: pd.DataFrame, path) -> pd.DataFrame:
     return df
 
 
+def _period_key(df: pd.DataFrame) -> pd.Series:
+    """Clé de période (symbol|period_type|fiscal_year|fiscal_quarter) sous
+    forme de chaîne : un merge direct sur ces quatre colonnes échouerait sur
+    fiscal_quarter, vide (None) pour les lignes annuelles et de dtype variable
+    d'un fichier à l'autre."""
+    def norm(col: str) -> pd.Series:
+        if col not in df.columns:
+            return pd.Series([""] * len(df), index=df.index)
+        return df[col].astype("object").where(df[col].notna(), "").astype(str)
+
+    return norm("symbol") + "|" + norm("period_type") + "|" + norm("fiscal_year") + "|" + norm("fiscal_quarter")
+
+
+def apply_qualitative_gate(df: pd.DataFrame, path=None) -> pd.DataFrame:
+    """Écarte les périodes dont 07b_validation_qualitative.py a jugé le texte
+    du 10-K/10-Q CONTRADICTOIRE avec l'écart de valorisation quantitatif
+    (config.QUALITATIVE_GATE_EXCLUDED_VERDICTS) -- les value traps que le
+    chiffre seul ne voit pas (dépréciation d'actif, guidance abaissée).
+
+    Sans effet si 07b n'a jamais tourné, ou tant que MISTRAL_API_KEY n'est pas
+    définie : tous les verdicts valent alors "non_evalue", et une période non
+    évaluée est CONSERVÉE (on ne filtre que sur un jugement explicite)."""
+    excluded = set(config.QUALITATIVE_GATE_EXCLUDED_VERDICTS or ())
+    path = path or config.QUALITATIVE_VALIDATION_FILE
+    if not excluded or df.empty or not path.exists():
+        return df
+
+    qual = pd.read_parquet(path)
+    if "verdict" not in qual.columns:
+        return df
+    rejected = qual[qual["verdict"].isin(excluded)]
+    if rejected.empty:
+        return df
+
+    # Jointure par clé de période plutôt que merge : aucune colonne ajoutée,
+    # donc aucun risque de dupliquer une ligne de signal si 07b contient
+    # plusieurs verdicts pour la même période.
+    mask = ~_period_key(df).isin(set(_period_key(rejected)))
+    if not mask.all():
+        logger.info(
+            "Filtre qualitatif (07b) : %d/%d signaux écartés (verdict %s).",
+            (~mask).sum(), len(df), "/".join(sorted(excluded)),
+        )
+    return df[mask].reset_index(drop=True)
+
+
 def load_dcf_history(path=None) -> pd.DataFrame:
     path = path or config.DCF_HISTORY_FILE
     if not path.exists():
@@ -215,6 +277,7 @@ def load_dcf_history(path=None) -> pd.DataFrame:
             f"{path} introuvable. Lance d'abord 07_calcul_dcf.py (avec 04 déjà à jour)."
         )
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
 
@@ -229,9 +292,74 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     # colonnes "fiscal_year" -- pandas droppe alors l'une des deux SANS
     # erreur au premier .to_dict("records") (engine.py), juste un UserWarning
     # "columns are not unique" facile à manquer dans les logs.
-    return dcf_history.rename(columns={
-        "filed_date": "published_date", "close": "close_at_filing",
-    })[["symbol", "published_date", "fiscal_year", "sector", "close_at_filing", "valuation_dcf_per_share", "gap_pct"]]
+    renamed = dcf_history.rename(columns={"filed_date": "published_date", "close": "close_at_filing"})
+    cols = ["symbol", "published_date", "fiscal_year", "sector", "close_at_filing", "valuation_dcf_per_share", "gap_pct"]
+    # period_type : porté jusqu'à l'engine pour dater la péremption du signal
+    # (un TTM trimestriel se périme plus vite qu'un exercice annuel, cf.
+    # signal_max_age_for). Absent des caches antérieurs au TTM (04b).
+    if "period_type" in renamed.columns:
+        cols.append("period_type")
+    return renamed[cols]
+
+
+class MaterialEventResolver:
+    """Dates de dépôt des 8-K jugés MATÉRIELS par 04c_recuperation_8k.py,
+    indexées par symbole pour une interrogation en O(log n) par jour simulé.
+
+    Sert à périmer un signal : entre le dépôt du 10-K/10-Q qui l'a produit et
+    aujourd'hui, un événement matériel (dépréciation, litige, changement de
+    direction, guidance revue) a pu invalider les fondamentaux sur lesquels il
+    repose. On ne fait AUCUNE hypothèse sur le SENS de l'événement -- 04c ne
+    la capture pas : un événement matériel rend le signal périmé, il ne le
+    retourne pas."""
+
+    def __init__(self, events: Optional[pd.DataFrame]):
+        self._dates_by_symbol: dict[str, np.ndarray] = {}
+        if events is None or events.empty:
+            return
+        for symbol, group in events.groupby("symbol"):
+            dates = np.sort(group["filed_date"].to_numpy(dtype="datetime64[ns]"))
+            if len(dates):
+                self._dates_by_symbol[symbol] = dates
+
+    def has_event_between(self, symbol: str, after: pd.Timestamp, upto: pd.Timestamp) -> bool:
+        """Un événement matériel a-t-il été déposé dans ]after, upto] ?"""
+        dates = self._dates_by_symbol.get(symbol)
+        if dates is None:
+            return False
+        lo = np.searchsorted(dates, np.datetime64(pd.Timestamp(after).to_datetime64()), side="right")
+        hi = np.searchsorted(dates, np.datetime64(pd.Timestamp(upto).to_datetime64()), side="right")
+        return bool(hi > lo)  # bool natif, pas un numpy.bool_
+
+
+def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
+    """8-K jugés matériels (04c). None si 04c n'a jamais tourné, ou si aucune
+    ligne n'est marquée matérielle -- notamment quand MISTRAL_API_KEY n'est pas
+    définie : 04c écrit alors materiality=None partout (aucune classification),
+    et le filtre reste sans effet plutôt que d'écarter tous les signaux."""
+    path = path or config.MATERIAL_EVENTS_8K_FILE
+    if not path.exists():
+        return None
+    df = pd.read_parquet(path)
+    if "materiality" not in df.columns or "filed_date" not in df.columns:
+        return None
+    df = df[df["materiality"].fillna(False).astype(bool)].copy()
+    if df.empty:
+        logger.info(
+            "%s ne contient aucun 8-K classé matériel (MISTRAL_API_KEY non définie lors du "
+            "run de 04c ?) : le filtre d'événements matériels reste sans effet.", path,
+        )
+        return None
+    df["filed_date"] = config.to_naive_day(df["filed_date"])
+    return df.dropna(subset=["symbol", "filed_date"])
+
+
+def signal_max_age_for(signal: dict, default: int) -> int:
+    """Âge maximal (en jours) au-delà duquel ce signal n'est plus actionnable,
+    selon le type de période qui l'a produit (config.BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD).
+    Repli sur `default` si le period_type est inconnu ou absent du cache."""
+    by_period = getattr(config, "BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD", None) or {}
+    return by_period.get(signal.get("period_type"), default)
 
 
 def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
@@ -245,6 +373,7 @@ def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
             "(après 05_calcul_multiples.py et 07_calcul_dcf.py)."
         )
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
 
@@ -252,10 +381,14 @@ def build_options_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataF
     """Un événement par (symbol, filed_date). gap_pct garde son signe (positif
     = sous-évalué -> call, négatif = survalué -> put) : c'est la stratégie
     (backtest/strategies/valuation_gap_options.py) qui décide du sens."""
-    return valorisation_combinee.rename(columns={"filed_date": "published_date", "year": "fiscal_year"})[[
+    renamed = valorisation_combinee.rename(columns={"filed_date": "published_date", "year": "fiscal_year"})
+    cols = [
         "symbol", "published_date", "fiscal_year", "sector", "close",
         "valuation_theoretical_per_share", "source", "gap_pct",
-    ]]
+    ]
+    if "period_type" in renamed.columns:
+        cols.append("period_type")
+    return renamed[cols]
 
 
 def load_universe_history(path=None) -> Optional[pd.DataFrame]:

@@ -14,7 +14,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import Strategy, register_strategy
+from backtest.strategies.base import Strategy, capped_weights, register_strategy
 
 
 @register_strategy("valuation_gap_dcf")
@@ -40,5 +40,9 @@ class ValuationGapDCFStrategy(Strategy):
         # poids sur des candidats qui seraient de toute façon écartés.
         candidates = candidates.sort_values("gap_pct", ascending=False).head(self.max_positions)
 
-        total_gap = candidates["gap_pct"].sum()
-        return dict(zip(candidates["symbol"], candidates["gap_pct"] / total_gap))
+        # Poids plafonnés (config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT) : le
+        # classement reste fait sur l'écart brut, seul le DIMENSIONNEMENT est
+        # borné -- un écart de plusieurs milliers de % est une conviction
+        # légitime, pas une raison de mettre 90% du capital sur une ligne.
+        weights = capped_weights(candidates["gap_pct"])
+        return dict(zip(candidates["symbol"], weights))

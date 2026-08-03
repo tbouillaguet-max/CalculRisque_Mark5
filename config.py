@@ -222,6 +222,22 @@ BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
 BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
 BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
 BACKTEST_MAX_POSITIONS = 20        # nombre de lignes simultanées max dans le portefeuille
+
+# Plafond de concentration : part maximale du portefeuille pour UNE ligne,
+# quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
+# de l'écart ; sans plafond, un écart aberrant (valeur théorique proche de
+# zéro -> plusieurs milliers de %) capte à lui seul l'essentiel du capital.
+# 20% = 4x le poids équipondéré à 20 positions. 0 ou None désactive le plafond.
+BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
+
+# Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
+# 12 derniers mois (dernier mois exclu, cf. PricePanel.momentum_12_1) n'est
+# plus éligible à une NOUVELLE entrée, même si son écart de valorisation est
+# large. C'est le garde-fou classique de la "value trap" : un écart qui
+# s'élargit parce que le marché intègre une dégradation que les derniers
+# états financiers publiés ne montrent pas encore.
+# None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
+BACKTEST_MOMENTUM_MIN_PCT = -10.0
 BACKTEST_INITIAL_CAPITAL = 100_000.0
 BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
 BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
@@ -234,6 +250,20 @@ BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simp
 # d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
 # restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
 BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
+
+# Durée de vie d'un signal selon le type de période qui l'a produit : un TTM
+# trimestriel (04b) est remplacé par un nouveau ~90 jours plus tard, alors
+# qu'un exercice annuel (10-K) reste la dernière information publiée pendant
+# ~12 mois. Garder 400 jours pour les deux laissait un signal trimestriel
+# actif bien après avoir été démenti par le trimestre suivant.
+# BACKTEST_SIGNAL_MAX_AGE_DAYS reste le repli quand le period_type est inconnu.
+BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD = {"FY": 270, "TTM": 120}
+
+# Verdicts de 07b_validation_qualitative.py qui DISQUALIFIENT un signal dans
+# les backtests (voir backtest/data_loader.apply_qualitative_gate). Vide ->
+# filtre désactivé. "non_evalue" ne doit PAS y figurer : c'est la valeur prise
+# par toutes les périodes quand MISTRAL_API_KEY n'est pas définie.
+QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
 
 # ----------------------------------------------------------------------------
 # Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)
@@ -326,6 +356,71 @@ OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT = 270
 # un écart de plusieurs milliers de %, et une seule ligne capterait alors
 # l'essentiel du capital. None ou 0 désactive le plafond.
 OPTIONS_MULTIPLES_WEIGHT_CAP_PCT = 100.0
+
+
+# ----------------------------------------------------------------------------
+# Hypothèses DCF par SECTEUR (07_calcul_dcf.py)
+# ----------------------------------------------------------------------------
+# Un WACC unique pour toutes les entreprises est un biais sectoriel, pas un
+# signal : 10% surestime le coût du capital d'une utility régulée (dette bon
+# marché, flux stables) et le sous-estime pour une techno. Toutes les valeurs
+# stables ressortaient donc "sous-évaluées" en permanence.
+#
+# Les clés sont les secteurs tels que 02_categoriser_secteurs.py les écrit
+# (SECTEURS, en français) -- PAS les libellés GICS anglais : une clé qui ne
+# correspond à rien retomberait silencieusement sur "_default" et le
+# paramétrage sectoriel n'aurait aucun effet. Ordres de grandeur usuels
+# (Damodaran, secteur US), à ajuster si tu as mieux.
+SECTOR_DCF_PARAMS: dict[str, dict] = {
+    "Technologie":                          {"wacc": 0.100, "fcf_growth": 0.07, "terminal_growth": 0.030},
+    "Santé":                                {"wacc": 0.090, "fcf_growth": 0.06, "terminal_growth": 0.025},
+    "Agro-alimentaire et boissons":         {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Produits ménagers et de soin personnel": {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Services aux collectivités":           {"wacc": 0.065, "fcf_growth": 0.02, "terminal_growth": 0.015},
+    "Banques":                              {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Assurance":                            {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Services financiers":                  {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Immobilier":                           {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Pétrole et gaz":                       {"wacc": 0.100, "fcf_growth": 0.03, "terminal_growth": 0.015},
+    "Biens et services industriels":        {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Bâtiment et matériaux de construction": {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Matières premières":                   {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Chimie":                               {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Medias":                               {"wacc": 0.090, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Télécommunications":                   {"wacc": 0.090, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Distribution":                         {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Automobiles et équipementiers":        {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Voyage et loisirs":                    {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    # Secteur inconnu, "indetermine" (02) ou absent de l'univers.
+    "_default":                             {"wacc": 0.100, "fcf_growth": 0.05, "terminal_growth": 0.020},
+}
+
+
+# ----------------------------------------------------------------------------
+# Multiples pertinents par SECTEUR (06b_calcul_valorisation_combinee.py)
+# ----------------------------------------------------------------------------
+# Appliquer les trois mêmes multiples à tous les secteurs mélange des mesures
+# qui n'ont pas de sens partout : une banque n'a pas d'EBITDA ni de chiffre
+# d'affaires comparable à celui d'un industriel (structure de bilan
+# différente), et le P/E d'une foncière est écrasé par les amortissements.
+# Mêmes clés que SECTOR_DCF_PARAMS (libellés de 02, en français).
+SECTOR_MULTIPLES: dict[str, list] = {
+    "Banques": ["P/E"],
+    "Assurance": ["P/E"],
+    "Services financiers": ["P/E"],
+    "Immobilier": ["EV/EBITDA"],
+    "Services aux collectivités": ["EV/EBITDA", "EV/Sales"],
+    "_default": ["EV/EBITDA", "EV/Sales", "P/E"],
+}
+
+# Bornes de plausibilité appliquées AVANT le calcul de la médiane sectorielle :
+# une entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x
+# et déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
+    "EV/EBITDA": (0.0, 50.0),
+    "EV/Sales": (0.0, 20.0),
+    "P/E": (0.0, 60.0),
+}
 
 
 def to_ib_symbol(ric: str) -> str:

@@ -150,8 +150,28 @@ def build_input_table(latest_only: bool = True) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def hypotheses_pour_secteur(sector, hypotheses: Dict = HYPOTHESES_DEFAUT) -> Dict:
+    """Hypothèses DCF de `hypotheses`, dont le WACC et les deux taux de
+    croissance sont remplacés par ceux du secteur (config.SECTOR_DCF_PARAMS).
+
+    Un taux d'actualisation unique pour tout l'univers est un biais
+    systématique : à 10%, une utility régulée (WACC réel ~6,5%) ressort
+    mécaniquement sous-évaluée et une techno surévaluée, quelle que soit sa
+    situation réelle."""
+    params = config.SECTOR_DCF_PARAMS.get(
+        sector if isinstance(sector, str) else "", config.SECTOR_DCF_PARAMS["_default"],
+    )
+    return {
+        **hypotheses,
+        "taux_actualisation": params["wacc"],
+        "taux_croissance_fcf": params["fcf_growth"],
+        "taux_croissance_terminal": params["terminal_growth"],
+    }
+
+
 def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_DEFAUT) -> pd.DataFrame:
     results = []
+    secteurs_inconnus = set()
     for _, row in df.iterrows():
         symbol = row.get("symbol", "?")
         try:
@@ -189,12 +209,17 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 logger.warning("FCF actuel <= 0 pour %s. DCF non calculé.", symbol)
                 continue
 
+            secteur = row.get("sector")
+            if isinstance(secteur, str) and secteur not in config.SECTOR_DCF_PARAMS:
+                secteurs_inconnus.add(secteur)
+            hyp = hypotheses_pour_secteur(secteur, hypotheses)
+
             equity_value, details = calculer_dcf(
                 fcf_actuel=fcf_actuel,
-                taux_croissance_fcf=hypotheses["taux_croissance_fcf"],
-                taux_croissance_terminal=hypotheses["taux_croissance_terminal"],
-                taux_actualisation=hypotheses["taux_actualisation"],
-                periode_prevision=hypotheses["periode_prevision"],
+                taux_croissance_fcf=hyp["taux_croissance_fcf"],
+                taux_croissance_terminal=hyp["taux_croissance_terminal"],
+                taux_actualisation=hyp["taux_actualisation"],
+                periode_prevision=hyp["periode_prevision"],
                 dette_nette=dette_nette,
             )
 
@@ -207,7 +232,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 
             results.append({
                 "Ticker": symbol, "Secteur": row.get("sector"), "Année": row.get("year"),
-                "cik": row.get("cik"),
+                "cik": row.get("cik"), "WACC": hyp["taux_actualisation"],
                 "period_type": row.get("period_type"), "fiscal_year": row.get("fiscal_year"),
                 "fiscal_quarter": row.get("fiscal_quarter"), "filed_date": row.get("filed_date"),
                 "FCF_actuel": fcf_actuel, "Enterprise_Value": details["Enterprise_Value"],
@@ -219,6 +244,13 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
             logger.error("Erreur pour %s: %s", symbol, e)
             continue
 
+    if secteurs_inconnus:
+        logger.warning(
+            "Secteurs absents de config.SECTOR_DCF_PARAMS (hypothèses par défaut "
+            "appliquées, WACC %.1f%%) : %s. Ajoute-les à la table si le paramétrage "
+            "sectoriel doit s'y appliquer.",
+            config.SECTOR_DCF_PARAMS["_default"]["wacc"] * 100, ", ".join(sorted(secteurs_inconnus)),
+        )
     return pd.DataFrame(results)
 
 
