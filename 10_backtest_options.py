@@ -72,6 +72,7 @@ ENGINE_SETTING_FALLBACKS = {
     "exit_when_signal_lost": False,
     "roll_when_days_left": None,
     "vol_mode": "frozen",
+    "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
 }
 
 
@@ -146,6 +147,13 @@ def main() -> None:
     )
     parser.add_argument("--real-snapshot-tolerance-days", type=int, default=config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS)
     parser.add_argument(
+        "--min-resize-relative-pct", type=float, default=None,
+        help="Une position déjà ouverte n'est resize que si le changement dépasse ce %% de sa "
+             "valeur actuelle (défaut de la stratégie, sinon config.OPTIONS_MIN_RESIZE_RELATIVE_PCT "
+             "= 15). Ex: --min-resize-relative-pct 5 (plus réactif) ou 25 (moins de friction). "
+             "0 désactive le filtre (comportement historique : tout changement déclenche un ordre).",
+    )
+    parser.add_argument(
         "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
         help="Momentum 12-1 minimal (en %%), ORIENTÉ dans le sens de la position (un titre en "
              "forte hausse est écarté côté put). Ex: -10. --no-momentum-filter pour désactiver.",
@@ -213,6 +221,7 @@ def main() -> None:
         target_tenor_days=engine_settings["target_tenor_days"],
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
+        min_resize_relative_pct=engine_settings["min_resize_relative_pct"],
         material_events_8k=material_events,
         stop_basis=engine_settings["stop_basis"],
         exit_when_signal_lost=engine_settings["exit_when_signal_lost"],

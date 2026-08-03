@@ -186,6 +186,7 @@ class OptionsBacktestEngine:
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
         momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
+        min_resize_relative_pct: Optional[float] = config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
         stop_basis: str = "premium",
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = None,
@@ -218,6 +219,7 @@ class OptionsBacktestEngine:
         self.signal_max_age_days = signal_max_age_days
         self.momentum_min_pct = momentum_min_pct
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
+        self.min_resize_relative_pct = min_resize_relative_pct
         if stop_basis not in ("premium", "underlying"):
             raise ValueError(f"stop_basis attend 'premium' ou 'underlying', reçu {stop_basis!r}.")
         self.stop_basis = stop_basis
@@ -523,6 +525,27 @@ class OptionsBacktestEngine:
                 return
             target_contracts = target_dollar / (abs(existing_delta) * spot * multiplier)
             delta_contracts = target_contracts - existing.contracts
+
+            # Chaque dépôt de filing (10-K/10-Q) de N'IMPORTE LAQUELLE des
+            # ~500 entreprises suivies déclenche un rebalancement qui
+            # recalcule les poids de TOUTES les positions détenues (cf.
+            # _rebalance) : un changement minime sur une ligne renormalise
+            # aussi marginalement toutes les autres, ce qui met en file un
+            # micro-ajustement à chaque événement -- des centaines de trades
+            # par an qui ne font que payer commission + slippage sans changer
+            # la thèse. MIN_TRADE_DOLLAR (1$) ne bloque que les montants
+            # absolument négligeables, pas ces resizes proportionnellement
+            # mineurs. Comparaison en NOMBRE DE CONTRATS (même unité des deux
+            # côtés) plutôt qu'en dollars : target_dollar est une exposition
+            # NOTIONNELLE delta-équivalente, alors que la valeur de marché de
+            # la position (prime x contrats) en est une fraction systématique
+            # (effet de levier) -- comparer les deux directement aurait rendu
+            # le seuil inopérant (l'écart de levier domine toujours l'écart
+            # réel de resize, quelle que soit sa taille).
+            if self.min_resize_relative_pct and existing.contracts > 0:
+                if abs(delta_contracts) / existing.contracts < self.min_resize_relative_pct / 100:
+                    return
+
             if abs(delta_contracts) * multiplier * spot < MIN_TRADE_DOLLAR:
                 return
             if delta_contracts > 0:
