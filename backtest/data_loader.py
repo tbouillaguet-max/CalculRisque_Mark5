@@ -222,8 +222,15 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     """Un événement par (symbol, filed_date) -- la date à laquelle ce
     signal devient publiquement connu. Colonnes : symbol, published_date,
     fiscal_year, sector, close_at_filing, valuation_dcf_per_share, gap_pct."""
+    # Ne renomme PAS "year" -> "fiscal_year" : dcf_history a les deux colonnes
+    # depuis l'empilement FY+TTM (07_calcul_dcf.py), toujours égales par
+    # construction (05_calcul_multiples.load_financials_with_periods pose déjà
+    # year=fiscal_year pour les lignes TTM). Les renommer produirait deux
+    # colonnes "fiscal_year" -- pandas droppe alors l'une des deux SANS
+    # erreur au premier .to_dict("records") (engine.py), juste un UserWarning
+    # "columns are not unique" facile à manquer dans les logs.
     return dcf_history.rename(columns={
-        "filed_date": "published_date", "year": "fiscal_year", "close": "close_at_filing",
+        "filed_date": "published_date", "close": "close_at_filing",
     })[["symbol", "published_date", "fiscal_year", "sector", "close_at_filing", "valuation_dcf_per_share", "gap_pct"]]
 
 
