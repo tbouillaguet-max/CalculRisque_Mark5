@@ -308,6 +308,21 @@ OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
 # quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
 OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
+# Chaque dépôt de filing (10-K/10-Q) d'UNE entreprise déclenche un rebalancement
+# qui recalcule les poids de TOUTES les positions détenues (renormalisation à
+# somme=1 après plafonnement, cf. options_engine._rebalance). Sur 503
+# entreprises et des filings trimestriels, ça met en file un micro-ajustement
+# de resize sur chaque position ouverte à chaque événement -- des centaines
+# par an -- alors que MIN_TRADE_DOLLAR (1$) ne bloque que les montants
+# absolument négligeables, pas les resizes proportionnellement mineurs sur
+# des positions de plusieurs milliers de dollars.
+# Une position déjà ouverte n'est resize QUE si le changement dépasse ce
+# pourcentage de sa valeur actuelle ; en dessous, elle reste gelée à sa taille
+# actuelle (comme si le rebalancement n'avait pas eu lieu pour elle -- une
+# NOUVELLE position n'est jamais concernée). None ou 0 désactive le filtre
+# (comportement historique : tout changement, même infime, déclenche un ordre).
+OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
+
 # ----------------------------------------------------------------------------
 # Stratégie options "multiples" (backtest/strategies/valuation_gap_multiples_options.py)
 # ----------------------------------------------------------------------------
