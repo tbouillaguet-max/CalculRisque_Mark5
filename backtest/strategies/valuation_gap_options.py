@@ -16,6 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
+from backtest.strategies.base import capped_weights
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 
@@ -39,11 +40,14 @@ class ValuationGapOptionsStrategy(OptionsStrategy):
         candidates["_abs_gap"] = candidates["gap_pct"].abs()
         candidates = candidates.sort_values("_abs_gap", ascending=False).head(self.max_positions)
 
-        total_abs_gap = candidates["_abs_gap"].sum()
+        # Poids plafonnés (cf. base.capped_weights) : sans plafond, un écart
+        # aberrant capte à lui seul l'essentiel du capital. Le classement,
+        # lui, reste fait sur l'écart brut.
+        candidates["_weight"] = capped_weights(candidates["_abs_gap"])
         return {
             row["symbol"]: {
                 "option_type": "CALL" if row["gap_pct"] > 0 else "PUT",
-                "weight": row["_abs_gap"] / total_abs_gap,
+                "weight": row["_weight"],
             }
             for _, row in candidates.iterrows()
         }

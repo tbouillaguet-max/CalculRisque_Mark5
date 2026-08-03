@@ -52,7 +52,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 MULTIPLE_COLUMNS = ["EV/EBITDA", "EV/Sales", "P/E"]
-MIN_PEERS_PER_SECTOR_YEAR = 3  # en dessous, la médiane sectorielle n'est pas jugée assez robuste
+# En dessous, la médiane sectorielle n'est pas jugée assez robuste. À 3 pairs,
+# la "médiane" est la valeur du milieu d'un trio : aucune robustesse à un
+# outlier, alors que c'est précisément ce qu'on lui demande.
+MIN_PEERS_PER_SECTOR_YEAR = 5
 
 # Délai de dépôt SEC par défaut (~2-3 mois après la clôture d'exercice),
 # utilisé UNIQUEMENT en repli quand filed_date est introuvable (cache
@@ -116,6 +119,11 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
         for col in MULTIPLE_COLUMNS:
             vals = group[col].replace([np.inf, -np.inf], np.nan).dropna()
             vals = vals[vals > 0]
+            # Valeurs aberrantes écartées AVANT la médiane (cf.
+            # config.MULTIPLE_PLAUSIBLE_RANGE) : un P/E à 800x (sortie de
+            # perte) déplace la médiane d'un secteur peu peuplé.
+            lo, hi = config.MULTIPLE_PLAUSIBLE_RANGE.get(col, (0.0, float("inf")))
+            vals = vals[(vals >= lo) & (vals <= hi)]
             row[f"{col}_median"] = vals.median() if len(vals) >= MIN_PEERS_PER_SECTOR_YEAR else None
             row[f"{col}_n_peers"] = len(vals)
         rows.append(row)
@@ -145,6 +153,18 @@ def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataF
     price_from_ebitda = implied_price(ev_ebitda_med * ebitda).where(ebitda > 0)
     price_from_sales = implied_price(ev_sales_med * revenue).where(revenue > 0)
     price_from_pe = (pe_med * (net_income / shares)).where((net_income > 0) & (shares > 0))
+
+    # Chaque multiple n'est retenu que s'il a un sens pour le secteur de la
+    # ligne (config.SECTOR_MULTIPLES) : sinon la médiane des trois valeurs
+    # implicites mélange, pour une banque, un P/E pertinent et un EV/EBITDA
+    # qui ne veut rien dire.
+    for col, series in (("EV/EBITDA", price_from_ebitda), ("EV/Sales", price_from_sales), ("P/E", price_from_pe)):
+        applicable = df["sector"].map(
+            lambda s: col in config.SECTOR_MULTIPLES.get(
+                s if isinstance(s, str) else "", config.SECTOR_MULTIPLES["_default"],
+            )
+        )
+        series.where(applicable, inplace=True)
 
     implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
     df["valuation_multiples_per_share"] = implied.median(axis=1, skipna=True)

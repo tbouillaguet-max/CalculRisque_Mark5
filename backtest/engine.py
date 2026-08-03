@@ -70,6 +70,8 @@ class BacktestEngine:
         take_profit_pct: float,
         max_positions: int,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
+        momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
+        material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
@@ -91,6 +93,8 @@ class BacktestEngine:
         self.take_profit_pct = take_profit_pct
         self.max_positions = max_positions
         self.signal_max_age_days = signal_max_age_days
+        self.momentum_min_pct = momentum_min_pct
+        self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
         self.positions: dict[str, Position] = {}
@@ -149,7 +153,12 @@ class BacktestEngine:
             return
 
         still_pending: dict[str, _PendingOrder] = {}
-        for symbol, order in self.pending_orders.items():
+        # Ventes d'abord, achats ensuite : le produit d'une sortie finance les
+        # achats du même jour (cf. _rebalance, qui raisonne en NAV). Sans cet
+        # ordre, la garde de cash de _execute_trade tronquerait des achats
+        # pourtant couverts, selon le seul ordre d'insertion du dictionnaire.
+        ordered = sorted(self.pending_orders.items(), key=lambda kv: kv[1].target_dollar > 0)
+        for symbol, order in ordered:
             price = self.prices.open_at(symbol, today)
             if price is None:
                 if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
@@ -180,7 +189,18 @@ class BacktestEngine:
 
         if shares_delta > 0:  # achat (nouvelle position ou renforcement)
             effective_price = price * (1 + cost_rate)
-            self.cash -= shares_delta * effective_price
+            # Backtest NON margé : on n'achète jamais à crédit. Le budget vient
+            # du NAV (_rebalance), dont une partie est immobilisée dans les
+            # positions conservées -- sans cette borne, le cash passait
+            # négatif et l'exposition dépassait 100% du portefeuille.
+            cost = shares_delta * effective_price
+            if cost > self.cash:
+                if self.cash <= 0:
+                    return
+                shares_delta, cost = shares_delta * (self.cash / cost), self.cash
+                if cost < MIN_TRADE_DOLLAR:
+                    return
+            self.cash -= cost
             if pos is None:
                 self.positions[symbol] = Position(symbol, shares_delta, effective_price, today)
             else:
@@ -270,6 +290,16 @@ class BacktestEngine:
                 "valuation_dcf_per_share": row.get("valuation_dcf_per_share"),
             })
 
+    def _momentum_ok(self, symbol: str, today: pd.Timestamp) -> bool:
+        """Filtre "value trap" : écarte une NOUVELLE entrée sur un titre en
+        tendance nettement baissière (cf. config.BACKTEST_MOMENTUM_MIN_PCT).
+        Un titre dont l'historique est trop court pour mesurer le momentum
+        n'est PAS écarté : l'absence de mesure n'est pas un signal négatif."""
+        if self.momentum_min_pct is None:
+            return True
+        momentum = self.prices.momentum_12_1(symbol, today)
+        return momentum is None or momentum * 100 >= self.momentum_min_pct
+
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
         universe_today = self.universe.asof(today)
         # Un signal périmé (pas de 10-K plus récent que signal_max_age_days)
@@ -280,7 +310,18 @@ class BacktestEngine:
         eligible_signals = pd.DataFrame([
             s for sym, s in self.known_signals.items()
             if sym in universe_today
-            and (sym in self.positions or (today - s["published_date"]).days <= self.signal_max_age_days)
+            and (
+                sym in self.positions
+                or (
+                    (today - s["published_date"]).days
+                    <= data_loader.signal_max_age_for(s, self.signal_max_age_days)
+                    and self._momentum_ok(sym, today)
+                    # Un 8-K matériel déposé depuis la publication du signal
+                    # (04c) rend celui-ci périmé : les fondamentaux sur
+                    # lesquels il repose ont bougé depuis.
+                    and not self.material_events.has_event_between(sym, s["published_date"], today)
+                )
+            )
         ])
         if eligible_signals.empty:
             return

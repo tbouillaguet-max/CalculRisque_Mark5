@@ -26,7 +26,48 @@ from abc import ABC, abstractmethod
 
 import pandas as pd
 
+import config
+
 STRATEGY_REGISTRY: dict[str, type["Strategy"]] = {}
+
+
+def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter: int = 20) -> pd.Series:
+    """Poids proportionnels à `conviction`, aucun ne dépassant cap_pct % du
+    portefeuille (config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT par défaut).
+
+    Pondérer au prorata de l'écart de valorisation SANS plafond laisse une
+    seule ligne capter la quasi-totalité du capital dès qu'un écart est
+    aberrant -- et l'historique en contient (écarts à plusieurs milliers de %
+    produits par une valeur théorique proche de zéro).
+
+    L'excédent des lignes plafonnées est redistribué aux autres au prorata,
+    en répétant l'opération : une simple renormalisation après écrêtage
+    remonterait mécaniquement certaines lignes au-dessus du plafond."""
+    cap = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT if cap_pct is None else cap_pct
+    total = conviction.sum()
+    if total <= 0:
+        return conviction
+    weights = conviction / total
+    if not cap or cap <= 0:
+        return weights
+
+    cap = cap / 100
+    # Plafond inatteignable (trop peu de candidats) : équipondération.
+    if cap * len(weights) <= 1:
+        return pd.Series(1 / len(weights), index=weights.index)
+
+    for _ in range(max_iter):
+        over = weights > cap
+        if not over.any():
+            break
+        excess = float((weights[over] - cap).sum())
+        weights = weights.where(~over, cap)
+        under = ~over
+        room = float(weights[under].sum())
+        if room <= 0:
+            break
+        weights = weights.where(over, weights + excess * weights / room)
+    return weights
 
 
 def register_strategy(name: str):

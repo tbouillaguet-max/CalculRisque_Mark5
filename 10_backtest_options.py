@@ -145,6 +145,15 @@ def main() -> None:
              "(volatilité réalisée courante remise à l'échelle de l'entrée).",
     )
     parser.add_argument("--real-snapshot-tolerance-days", type=int, default=config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS)
+    parser.add_argument(
+        "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
+        help="Momentum 12-1 minimal (en %%), ORIENTÉ dans le sens de la position (un titre en "
+             "forte hausse est écarté côté put). Ex: -10. --no-momentum-filter pour désactiver.",
+    )
+    parser.add_argument(
+        "--no-momentum-filter", dest="momentum_min_pct", action="store_const", const=None,
+        help="Désactive le filtre momentum.",
+    )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
@@ -168,6 +177,7 @@ def main() -> None:
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
     option_snapshots = data_loader.load_option_snapshots_history()
+    material_events = data_loader.load_material_events_8k()
 
     strategy_cls = OPTIONS_STRATEGY_REGISTRY[args.strategy]
     engine_settings, imposed = resolve_engine_settings(strategy_cls, args)
@@ -202,6 +212,8 @@ def main() -> None:
         max_positions=engine_settings["max_positions"],
         target_tenor_days=engine_settings["target_tenor_days"],
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
+        momentum_min_pct=args.momentum_min_pct,
+        material_events_8k=material_events,
         stop_basis=engine_settings["stop_basis"],
         exit_when_signal_lost=engine_settings["exit_when_signal_lost"],
         roll_when_days_left=engine_settings["roll_when_days_left"],

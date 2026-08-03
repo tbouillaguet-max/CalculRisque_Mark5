@@ -184,6 +184,8 @@ class OptionsBacktestEngine:
         real_snapshot_tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
         realized_vol_lookback_days: int = config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
+        momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
+        material_events_8k: Optional[pd.DataFrame] = None,
         stop_basis: str = "premium",
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = None,
@@ -214,6 +216,8 @@ class OptionsBacktestEngine:
         self.real_snapshot_tolerance_days = real_snapshot_tolerance_days
         self.realized_vol_lookback_days = realized_vol_lookback_days
         self.signal_max_age_days = signal_max_age_days
+        self.momentum_min_pct = momentum_min_pct
+        self.material_events = data_loader.MaterialEventResolver(material_events_8k)
         if stop_basis not in ("premium", "underlying"):
             raise ValueError(f"stop_basis attend 'premium' ou 'underlying', reçu {stop_basis!r}.")
         self.stop_basis = stop_basis
@@ -333,7 +337,13 @@ class OptionsBacktestEngine:
             return
 
         still_pending: dict[str, _PendingOrder] = {}
-        for symbol, order in self.pending_orders.items():
+        # Ventes d'abord, achats ensuite : leur produit finance les achats du
+        # même jour (le capital libéré par une sortie est immédiatement
+        # réinvestissable, cf. _rebalance). Sans cet ordre, la garde de cash
+        # de _affordable tronquerait des achats pourtant couverts par une
+        # vente déjà décidée, en fonction du seul ordre d'insertion.
+        ordered = sorted(self.pending_orders.items(), key=lambda kv: kv[1].target_dollar > 0)
+        for symbol, order in ordered:
             spot = self.prices.open_at(symbol, today)
             if spot is None:
                 if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
@@ -422,6 +432,32 @@ class OptionsBacktestEngine:
             return None
         return entry_vol / realized
 
+    def _position_delta(self, pos: OptionPosition, today: pd.Timestamp, spot: float) -> Optional[float]:
+        """Delta du contrat DÉTENU (son strike, son échéance, sa volatilité de
+        repricing) au spot du jour -- et non celui d'un contrat qu'on
+        choisirait aujourd'hui."""
+        t_years = max((pos.expiry - today).days, 0) / 365.0
+        if t_years <= 0 or spot <= 0:
+            return None
+        return options_pricing.bs_greeks(
+            spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type,
+        )["delta"]
+
+    def _affordable(self, contracts: float, cost: float) -> tuple[float, float]:
+        """Ramène un achat au cash réellement disponible : ce backtest est
+        NON margé (pas de vente à découvert ni d'achat à crédit), or rien
+        n'empêchait jusqu'ici une file d'ordres de dépenser plusieurs fois le
+        capital -- le cash passait négatif et le NAV avec lui, d'où des
+        drawdowns inférieurs à -100%, impossibles sur un portefeuille réel.
+        Les ventes du jour ayant déjà été exécutées (cf. _execute_pending_orders),
+        leur produit est bien inclus dans ce cash."""
+        if cost <= self.cash:
+            return contracts, cost
+        if self.cash <= 0:
+            return 0.0, 0.0
+        ratio = self.cash / cost
+        return contracts * ratio, self.cash
+
     def _open_or_resize(
         self,
         symbol: str,
@@ -452,11 +488,14 @@ class OptionsBacktestEngine:
             return
 
         multiplier = contract["multiplier"]
-        target_contracts = target_dollar / (abs(delta) * spot * multiplier)
 
         if existing is None:
+            target_contracts = target_dollar / (abs(delta) * spot * multiplier)
             effective_premium = contract["premium"] * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
             cost = target_contracts * multiplier * effective_premium
+            if cost < MIN_TRADE_DOLLAR:
+                return
+            target_contracts, cost = self._affordable(target_contracts, cost)
             if cost < MIN_TRADE_DOLLAR:
                 return
             self.cash -= cost
@@ -473,6 +512,16 @@ class OptionsBacktestEngine:
             # Renforcement d'une position existante (même sens) : moyenne
             # pondérée du prix d'entrée. Strike/échéance/vol restent ceux du
             # contrat déjà détenu (pas de re-sélection de contrat en cours de vie).
+            # Le dimensionnement doit donc utiliser le delta du contrat DÉTENU,
+            # pas celui du contrat qu'on aurait choisi aujourd'hui : les deux
+            # n'ont ni le même strike ni la même échéance. Mélanger le delta de
+            # l'un et la prime de l'autre rend le coût sans rapport avec
+            # l'exposition visée (une position très hors de la monnaie se
+            # faisait renforcer de plusieurs fois le NAV).
+            existing_delta = self._position_delta(existing, today, spot)
+            if existing_delta is None or abs(existing_delta) < 1e-6:
+                return
+            target_contracts = target_dollar / (abs(existing_delta) * spot * multiplier)
             delta_contracts = target_contracts - existing.contracts
             if abs(delta_contracts) * multiplier * spot < MIN_TRADE_DOLLAR:
                 return
@@ -480,6 +529,9 @@ class OptionsBacktestEngine:
                 current_premium = self._current_premium(existing, today, spot=spot) or contract["premium"]
                 effective_premium = current_premium * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
                 cost = delta_contracts * multiplier * effective_premium
+                delta_contracts, cost = self._affordable(delta_contracts, cost)
+                if cost < MIN_TRADE_DOLLAR:
+                    return
                 self.cash -= cost
                 new_contracts = existing.contracts + delta_contracts
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
@@ -494,7 +546,15 @@ class OptionsBacktestEngine:
         current_premium = self._current_premium(pos, today, spot=spot)
         if current_premium is None:
             return
-        effective_premium = current_premium * (1 - self.slippage_rate) - self.commission_per_contract / pos.multiplier
+        # Plancher à 0 : quand la commission dépasse ce que vaut encore
+        # l'option (prime quasi nulle), on ne PAIE pas pour vendre -- on laisse
+        # expirer sans valeur. Sans ce plancher, la sortie encaissait un
+        # produit négatif : le trade perdait plus que la prime investie
+        # (return_pct < -100%) et le cash fuyait à chaque clôture.
+        effective_premium = max(
+            current_premium * (1 - self.slippage_rate) - self.commission_per_contract / pos.multiplier,
+            0.0,
+        )
         proceeds = contracts_to_sell * pos.multiplier * effective_premium
         self.cash += proceeds
         pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
@@ -642,12 +702,41 @@ class OptionsBacktestEngine:
                 "source": row.get("source"),
             })
 
+    def _momentum_ok(self, signal: dict, today: pd.Timestamp) -> bool:
+        """Filtre "value trap", ORIENTÉ dans le sens de la position que le
+        signal justifie (cf. config.BACKTEST_MOMENTUM_MIN_PCT) : un titre en
+        forte baisse disqualifie un CALL (l'écart s'élargit parce que le
+        marché intègre une dégradation), mais c'est au contraire la thèse
+        d'un PUT -- côté vendeur, c'est donc un titre en forte HAUSSE qui
+        est écarté. Historique trop court = pas de mesure, donc pas d'exclusion."""
+        if self.momentum_min_pct is None:
+            return True
+        gap = signal.get("gap_pct")
+        if gap is None or pd.isna(gap) or gap == 0:
+            return True
+        momentum = self.prices.momentum_12_1(signal["symbol"], today)
+        if momentum is None:
+            return True
+        # Momentum réorienté : positif = "va dans le sens de la position".
+        oriented = momentum if gap > 0 else -momentum
+        return oriented * 100 >= self.momentum_min_pct
+
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
         universe_today = self.universe.asof(today)
         eligible_signals = pd.DataFrame([
             s for sym, s in self.known_signals.items()
             if sym in universe_today
-            and (sym in self.positions or (today - s["published_date"]).days <= self.signal_max_age_days)
+            and (
+                sym in self.positions
+                or (
+                    (today - s["published_date"]).days
+                    <= data_loader.signal_max_age_for(s, self.signal_max_age_days)
+                    and self._momentum_ok(s, today)
+                    # Cf. backtest/engine.py : un 8-K matériel (04c) déposé
+                    # depuis la publication du signal le rend périmé.
+                    and not self.material_events.has_event_between(sym, s["published_date"], today)
+                )
+            )
         ])
         if eligible_signals.empty:
             return
