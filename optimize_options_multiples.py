@@ -3,19 +3,29 @@ Recherche aléatoire des hyperparamètres de la stratégie options
 'valuation_gap_multiples_options' (backtest/strategies/valuation_gap_multiples_options.py),
 sur le moteur backtest/options_engine.py.
 
-Portée VOLONTAIREMENT limitée aux paramètres qui ne changent que le
-BACKTEST (stratégie + moteur) : les faire varier ne coûte qu'un run, de
-l'ordre de quelques secondes sur l'univers complet. Les paramètres qui
-façonnent le SIGNAL en amont (MIN_PEERS_PER_SECTOR_YEAR, MULTIPLE_PLAUSIBLE_
-RANGE, SECTOR_MULTIPLES dans 06b_calcul_valorisation_combinee.py) en sont
-délibérément exclus : les faire varier exigerait de régénérer
-valorisation_combinee_historique.parquet à chaque essai (minutes, pas
-secondes) -- un script séparé, plus lent, serait nécessaire pour ceux-là.
+Portée VOLONTAIREMENT restreinte à 3 paramètres (SEARCH_SPACE ci-dessous) :
+entry_threshold_pct, stop_loss_pct, take_profit_pct -- pour en isoler
+l'effet sans le bruit des 14 autres réglages possibles. Tous les autres
+(FIXED_PARAMS) sont FIGÉS à la valeur actuelle de config.py, à UNE exception
+près : min_deployment_pct est figé à 0 (désactivé), pas à sa valeur de
+config.py (90). Il dominait le classement précédent (corrélation -0,88 au
+Calmar sur un sweep à 17 paramètres) au point de masquer l'effet de tout le
+reste -- le laisser à 90 aurait rendu ce sweep ciblé inexploitable, chaque
+essai restant dominé par ce seul réglage plutôt que par les 3 qu'on regarde
+ici. Reviens dessus séparément une fois entry/stop/take-profit calibrés.
 
-Méthode : ÉCHANTILLONNAGE ALÉATOIRE, pas un quadrillage complet -- 17
-dimensions rendent un quadrillage exhaustif impraticable (des milliards de
-combinaisons). Un tirage aléatoire couvre l'espace de recherche de façon
-représentative avec un nombre de runs raisonnable (--trials, 300 par défaut).
+Les paramètres qui façonnent le SIGNAL en amont (MIN_PEERS_PER_SECTOR_YEAR,
+MULTIPLE_PLAUSIBLE_RANGE, SECTOR_MULTIPLES dans
+06b_calcul_valorisation_combinee.py) restent hors périmètre : les faire
+varier exigerait de régénérer valorisation_combinee_historique.parquet à
+chaque essai (minutes, pas secondes).
+
+Méthode : ÉCHANTILLONNAGE ALÉATOIRE, pas un quadrillage complet -- même à 3
+paramètres, un tirage aléatoire couvre l'espace au moins aussi bien qu'un
+quadrillage régulier pour un budget d'essais donné, et le code reste
+identique si tu élargis SEARCH_SPACE plus tard. Un tirage aléatoire couvre
+l'espace de recherche de façon représentative avec un nombre de runs
+raisonnable (--trials, 300 par défaut).
 
 Classement : RATIO DE CALMAR (CAGR / |drawdown max|) par défaut -- mesure
 directe du compromis rendement/risque demandé. --objectif permet de changer
@@ -63,7 +73,7 @@ logger = logging.getLogger("optimize_options_multiples")
 
 
 # ----------------------------------------------------------------------------
-# Espace de recherche
+# Espace de recherche -- SEULS ces paramètres varient d'un essai à l'autre.
 # ----------------------------------------------------------------------------
 # (nom du paramètre, borne basse, borne haute, "int"/"float"/liste de choix).
 # Bornes choisies comme un voisinage DÉFENDABLE de la valeur actuelle (cf.
@@ -71,25 +81,34 @@ logger = logging.getLogger("optimize_options_multiples")
 # surapprentissage en explorant des réglages économiquement incohérents
 # (un stop-loss à -90% ou un take-profit à 2% n'ont pas de sens réel).
 SEARCH_SPACE: dict[str, tuple] = {
-    # --- stratégie (ValuationGapMultiplesOptionsStrategy) ---
-    "entry_threshold_pct":        (10.0, 50.0, "float"),
-    "weight_cap_pct":              (20.0, 150.0, "float"),
-    "gap_basis":                   (["theoretical", "close"], None, "choice"),
-    "max_positions":                (10, 30, "int"),
-    "min_positions":                 (3, 20, "int"),
-    "tenor_days":                  (365, 1095, "int"),
-    # --- moteur (OptionsBacktestEngine) ---
-    "stop_loss_pct":               (-45.0, -10.0, "float"),   # négatif : mouvement du sous-jacent
-    "take_profit_pct":             (15.0, 60.0, "float"),
-    "roll_when_days_left":          (90, 400, "int"),
-    "min_deployment_pct":          (0.0, 90.0, "float"),
-    "min_resize_relative_pct":     (0.0, 30.0, "float"),
-    "momentum_min_pct":            (-25.0, 0.0, "float"),
-    "slippage_pct_of_premium":     (1.0, 10.0, "float"),
-    "fee_bump_max_extra_pct":      (0.0, 50.0, "float"),
-    "max_fee_pct_of_trade":        (0.25, 3.0, "float"),
-    "realized_vol_lookback_days":   (20, 120, "int"),
-    "inflation_adjust":            ([True, False], None, "choice"),
+    "entry_threshold_pct":  (10.0, 50.0, "float"),
+    "stop_loss_pct":        (-45.0, -10.0, "float"),   # négatif : mouvement du sous-jacent
+    "take_profit_pct":      (15.0, 60.0, "float"),
+}
+
+# ----------------------------------------------------------------------------
+# Paramètres FIGÉS -- valeur actuelle de config.py pour tous, à UNE exception
+# près : min_deployment_pct est figé à 0 (désactivé), pas à sa valeur de
+# config.py (90). Sur le sweep précédent à 17 paramètres, il dominait le
+# classement (corrélation -0,88 au Calmar) au point de masquer l'effet de
+# tout le reste -- le laisser actif ici rendrait ce sweep ciblé inexploitable.
+# Reviens dessus séparément une fois entry/stop/take-profit calibrés.
+# ----------------------------------------------------------------------------
+FIXED_PARAMS: dict = {
+    "weight_cap_pct": config.OPTIONS_MULTIPLES_WEIGHT_CAP_PCT,
+    "gap_basis": config.OPTIONS_MULTIPLES_GAP_BASIS,
+    "max_positions": config.OPTIONS_MAX_POSITIONS,
+    "min_positions": config.BACKTEST_MIN_POSITIONS,
+    "tenor_days": config.OPTIONS_MULTIPLES_TENOR_DAYS,
+    "roll_when_days_left": config.OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT,
+    "min_deployment_pct": 0.0,  # cf. note ci-dessus -- PAS config.OPTIONS_MIN_DEPLOYMENT_PCT
+    "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
+    "momentum_min_pct": config.BACKTEST_MOMENTUM_MIN_PCT,
+    "slippage_pct_of_premium": config.OPTIONS_SLIPPAGE_PCT_OF_PREMIUM,
+    "fee_bump_max_extra_pct": config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
+    "max_fee_pct_of_trade": config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
+    "realized_vol_lookback_days": config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
+    "inflation_adjust": config.INFLATION_ADJUST_GAP,
 }
 
 # Colonnes de metrics.compute_metrics affichées dans le classement.
@@ -100,18 +119,24 @@ REPORT_COLUMNS = [
 
 
 def sample_params(rng: np.random.Generator) -> dict:
-    """Un tirage respectant les contraintes de cohérence entre paramètres --
-    un tirage indépendant par paramètre en violerait certaines (ex: roulement
-    à 400 jours de l'échéance sur un contrat de 365 jours n'a pas de sens)."""
+    """Un tirage sur SEARCH_SPACE, complété par FIXED_PARAMS, respectant les
+    contraintes de cohérence entre paramètres -- un tirage indépendant par
+    paramètre en violerait certaines si SEARCH_SPACE est élargi plus tard
+    (ex: roulement à 400 jours de l'échéance sur un contrat de 365 jours
+    n'a pas de sens). Avec seulement 3 paramètres sans contrainte entre eux,
+    la boucle de rejet réussit systématiquement au premier tirage ici -- elle
+    reste générique pour un SEARCH_SPACE élargi sans rien changer au reste
+    du script."""
     for _ in range(200):  # rejet-échantillonnage : quelques tentatives suffisent
-        params = {}
+        sampled = {}
         for name, (lo, hi, kind) in SEARCH_SPACE.items():
             if kind == "choice":
-                params[name] = lo[rng.integers(0, len(lo))]
+                sampled[name] = lo[rng.integers(0, len(lo))]
             elif kind == "int":
-                params[name] = int(rng.integers(lo, hi + 1))
+                sampled[name] = int(rng.integers(lo, hi + 1))
             else:
-                params[name] = float(rng.uniform(lo, hi))
+                sampled[name] = float(rng.uniform(lo, hi))
+        params = {**FIXED_PARAMS, **sampled}
 
         if params["min_positions"] > params["max_positions"]:
             continue
@@ -298,25 +323,16 @@ def main() -> None:
     cols = list(SEARCH_SPACE.keys()) + REPORT_COLUMNS
     print(ranked[cols].head(args.top).to_string(index=False))
 
-    print(f"\n=== Référence : réglages actuels de config.py (pour comparaison) ===")
+    print(f"\n=== Référence : réglages actuels de config.py pour les 3 paramètres balayés "
+          f"(le reste = FIXED_PARAMS, dont min_deployment_pct désactivé) ===")
+    # Construit à partir de FIXED_PARAMS (même source que les essais, aucune
+    # duplication) : seuls les 3 paramètres balayés prennent leur valeur
+    # actuelle de config.py plutôt que la valeur figée.
     baseline = {
+        **FIXED_PARAMS,
         "entry_threshold_pct": config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT,
-        "weight_cap_pct": config.OPTIONS_MULTIPLES_WEIGHT_CAP_PCT,
-        "gap_basis": config.OPTIONS_MULTIPLES_GAP_BASIS,
-        "max_positions": config.OPTIONS_MAX_POSITIONS,
-        "min_positions": config.BACKTEST_MIN_POSITIONS,
-        "tenor_days": config.OPTIONS_MULTIPLES_TENOR_DAYS,
         "stop_loss_pct": config.OPTIONS_MULTIPLES_STOP_LOSS_PCT,
         "take_profit_pct": config.OPTIONS_MULTIPLES_TAKE_PROFIT_PCT,
-        "roll_when_days_left": config.OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT,
-        "min_deployment_pct": config.OPTIONS_MIN_DEPLOYMENT_PCT,
-        "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
-        "momentum_min_pct": config.BACKTEST_MOMENTUM_MIN_PCT,
-        "slippage_pct_of_premium": config.OPTIONS_SLIPPAGE_PCT_OF_PREMIUM,
-        "fee_bump_max_extra_pct": config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
-        "max_fee_pct_of_trade": config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
-        "realized_vol_lookback_days": config.OPTIONS_REALIZED_VOL_LOOKBACK_DAYS,
-        "inflation_adjust": config.INFLATION_ADJUST_GAP,
     }
     baseline_result = run_trial(baseline, data, args.initial_capital, start_date, end_date)
     if baseline_result:
