@@ -16,7 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import capped_weights
+from backtest.strategies.base import capped_weights, fill_to_min_positions
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 
@@ -26,18 +26,31 @@ class ValuationGapOptionsStrategy(OptionsStrategy):
         self,
         entry_threshold_pct: float = config.OPTIONS_ENTRY_THRESHOLD_PCT,
         max_positions: int = config.OPTIONS_MAX_POSITIONS,
+        min_positions: int = config.BACKTEST_MIN_POSITIONS,
         **kwargs,
     ):
-        super().__init__(entry_threshold_pct=entry_threshold_pct, max_positions=max_positions, **kwargs)
+        super().__init__(
+            entry_threshold_pct=entry_threshold_pct, max_positions=max_positions,
+            min_positions=min_positions, **kwargs,
+        )
         self.entry_threshold_pct = entry_threshold_pct
         self.max_positions = max_positions
+        self.min_positions = min_positions
 
     def generate_option_targets(self, signals: pd.DataFrame, current_positions: dict[str, str]) -> dict[str, dict]:
-        candidates = signals[signals["gap_pct"].abs() >= self.entry_threshold_pct].copy()
+        pool = signals.assign(_abs_gap=signals["gap_pct"].abs())
+        candidates = pool[pool["_abs_gap"] >= self.entry_threshold_pct]
+        # Trop peu d'entreprises au-dessus du seuil : on complète avec celles
+        # dont le cours est le plus proche de la valeur théorique parmi les
+        # recalées. Pas de plancher ici, contrairement à la stratégie actions :
+        # le SENS de la position suit le signe de l'écart, donc une entreprise
+        # à peine survalorisée reste jouable (en put).
+        candidates = fill_to_min_positions(
+            candidates, pool, "_abs_gap", min_positions=self.min_positions,
+        ).copy()
         if candidates.empty:
             return {}
 
-        candidates["_abs_gap"] = candidates["gap_pct"].abs()
         candidates = candidates.sort_values("_abs_gap", ascending=False).head(self.max_positions)
 
         # Poids plafonnés (cf. base.capped_weights) : sans plafond, un écart

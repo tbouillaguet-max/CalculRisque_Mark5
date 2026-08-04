@@ -223,6 +223,18 @@ BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 
 BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
 BACKTEST_MAX_POSITIONS = 20        # nombre de lignes simultanées max dans le portefeuille
 
+# Nombre MINIMAL d'entreprises différentes visées. Si trop peu d'entreprises
+# passent le seuil d'entrée, les stratégies complètent avec les meilleures
+# candidates SOUS le seuil (celles dont le cours et la valeur théorique sont
+# les plus proches) plutôt que de laisser le portefeuille concentré sur
+# quelques lignes. Le classement reste fait sur l'écart : ce sont bien les
+# convictions les plus fortes disponibles qui sont retenues.
+# La stratégie actions étant long-only, elle ne descend jamais sous un écart
+# positif : compléter avec une entreprise que le modèle juge SURVALORISÉE
+# serait acheter contre son propre signal.
+# 0 ou None désactive ce plancher (comportement d'avant : seuil strict).
+BACKTEST_MIN_POSITIONS = 10
+
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
 # de l'écart ; sans plafond, un écart aberrant (valeur théorique proche de
@@ -343,6 +355,16 @@ OPTIONS_FEE_OCC_PER_CONTRACT = 0.025     # compensation OCC
 # À la VENTE uniquement (frais réglementaires sur les cessions).
 OPTIONS_FEE_FINRA_TAF_PER_CONTRACT = 0.00329   # FINRA Trading Activity Fee
 OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
+
+# Part MINIMALE du portefeuille investie en primes, en % du NAV. En dessous,
+# le moteur renforce les positions déjà ouvertes (au prorata de leur taille)
+# pour remettre le capital au travail plutôt que de le laisser dormir.
+#
+# ATTENTION : contrairement à une action, une option peut valoir ZÉRO à
+# l'échéance. Immobiliser 90% du capital en primes n'a donc pas le même sens
+# que 90% investi en actions -- c'est un plancher d'exposition délibérément
+# agressif, à confronter au drawdown qu'il produit. 0 ou None le désactive.
+OPTIONS_MIN_DEPLOYMENT_PCT = 90.0
 
 # Optimisation de taille au regard des frais.
 #

@@ -184,6 +184,7 @@ class OptionsBacktestEngine:
         commission_tiers: tuple = config.OPTIONS_COMMISSION_TIERS,
         fee_bump_max_extra_pct: Optional[float] = config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
         max_fee_pct_of_trade: Optional[float] = config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
+        min_deployment_pct: Optional[float] = config.OPTIONS_MIN_DEPLOYMENT_PCT,
         whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
         contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
@@ -218,6 +219,7 @@ class OptionsBacktestEngine:
         self.commission_tiers = commission_tiers
         self.fee_bump_max_extra_pct = fee_bump_max_extra_pct
         self.max_fee_pct_of_trade = max_fee_pct_of_trade
+        self.min_deployment_pct = min_deployment_pct
         self.whole_contracts = whole_contracts
         # Contrats négociés par mois civil : détermine le palier dégressif.
         self._monthly_contracts: dict[tuple[int, int], float] = {}
@@ -385,6 +387,75 @@ class OptionsBacktestEngine:
                 )
             self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
+        # Une fois les ordres du jour passés, le cash resté oisif est remis
+        # au travail sur les positions ouvertes (cf. _deploy_idle_cash).
+        self._deploy_idle_cash(today)
+
+    def _deploy_idle_cash(self, today: pd.Timestamp) -> None:
+        """Renforce les positions ouvertes tant que la part du NAV investie en
+        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT.
+
+        Le dimensionnement du moteur vise une exposition NOTIONNELLE
+        delta-équivalente ; la prime effectivement décaissée n'en représente
+        qu'une fraction (l'effet de levier de l'option), si bien qu'allouer
+        100% du budget laissait en pratique l'essentiel du capital en cash.
+        Ce complément remet ce cash au travail sur les convictions DÉJÀ
+        retenues -- au prorata de leur taille actuelle, donc sans modifier la
+        hiérarchie décidée par la stratégie, et sans ouvrir de ligne que la
+        stratégie n'a pas choisie.
+
+        Renforcer une position se fait sur SON contrat (strike et échéance
+        inchangés), au prix d'ouverture du jour, comme n'importe quel
+        renforcement."""
+        if not self.min_deployment_pct or not self.positions:
+            return
+
+        for _ in range(8):  # quelques passes suffisent ; borne dure anti-boucle
+            invested = sum(self._position_value(pos, today) for pos in self.positions.values())
+            nav = self.cash + invested
+            if nav <= 0 or invested >= nav * self.min_deployment_pct / 100:
+                return
+            missing = nav * self.min_deployment_pct / 100 - invested
+            if missing < MIN_TRADE_DOLLAR or self.cash < MIN_TRADE_DOLLAR:
+                return
+
+            values = {sym: self._position_value(pos, today) for sym, pos in self.positions.items()}
+            total_value = sum(values.values())
+            if total_value <= 0:
+                return
+
+            progressed = False
+            for symbol, value in sorted(values.items(), key=lambda kv: kv[1], reverse=True):
+                pos = self.positions.get(symbol)
+                spot = self.prices.open_at(symbol, today)
+                if pos is None or spot is None:
+                    continue
+                premium = self._current_premium(pos, today, spot=spot)
+                if premium is None or premium <= 0:
+                    continue
+
+                gross_premium = premium * (1 + self.slippage_rate)
+                share = missing * (value / total_value)
+                extra = self._round_contracts(share / (pos.multiplier * gross_premium))
+                if extra <= 0:
+                    continue
+
+                def cost_of(n: float, _p=gross_premium, _m=pos.multiplier) -> float:
+                    return n * _m * _p + self._order_commission(n, _p, _m, today, "buy")
+
+                extra, cost = self._affordable(extra, cost_of)
+                if extra <= 0 or cost < MIN_TRADE_DOLLAR:
+                    continue
+                self.cash -= cost
+                self._record_contract_volume(extra, today)
+                effective_premium = cost / (extra * pos.multiplier)
+                new_contracts = pos.contracts + extra
+                pos.entry_premium = (pos.entry_premium * pos.contracts + effective_premium * extra) / new_contracts
+                pos.contracts = new_contracts
+                progressed = True
+
+            if not progressed:
+                return
 
     def _select_contract(
         self,

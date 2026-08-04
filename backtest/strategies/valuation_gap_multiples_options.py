@@ -49,6 +49,7 @@ import logging
 import pandas as pd
 
 import config
+from backtest.strategies.base import fill_to_min_positions
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 logger = logging.getLogger("backtest.strategies.valuation_gap_multiples_options")
@@ -77,6 +78,7 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         self,
         entry_threshold_pct: float = config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT,
         max_positions: int = config.OPTIONS_MAX_POSITIONS,
+        min_positions: int = config.BACKTEST_MIN_POSITIONS,
         tenor_days: int = config.OPTIONS_MULTIPLES_TENOR_DAYS,
         gap_basis: str = config.OPTIONS_MULTIPLES_GAP_BASIS,
         multiples_only: bool = True,
@@ -85,6 +87,7 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
     ):
         super().__init__(
             entry_threshold_pct=entry_threshold_pct, max_positions=max_positions,
+            min_positions=min_positions,
             tenor_days=tenor_days, gap_basis=gap_basis, multiples_only=multiples_only,
             weight_cap_pct=weight_cap_pct, **kwargs,
         )
@@ -92,6 +95,7 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             raise ValueError(f"gap_basis attend 'theoretical' ou 'close', reçu {gap_basis!r}.")
         self.entry_threshold_pct = entry_threshold_pct
         self.max_positions = max_positions
+        self.min_positions = min_positions
         self.tenor_days = int(tenor_days)
         self.gap_basis = gap_basis
         self.multiples_only = bool(multiples_only)
@@ -134,7 +138,13 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         # AU DIMENSIONNEMENT, sans toucher à l'ordre de sélection.
         conviction = df["_abs_gap"] if self.weight_cap_pct is None else df["_abs_gap"].clip(upper=self.weight_cap_pct)
         df = df.assign(_conviction=conviction)
-        return df[df["_abs_gap"] >= self.entry_threshold_pct]
+        selected = df[df["_abs_gap"] >= self.entry_threshold_pct]
+        # Complète avec les entreprises dont le cours est le plus proche de
+        # la valeur théorique parmi les recalées, pour ne pas laisser le
+        # portefeuille sur trop peu de lignes (cf. base.fill_to_min_positions).
+        return fill_to_min_positions(
+            selected, df, "_abs_gap", min_positions=self.min_positions,
+        )
 
     @staticmethod
     def _direction(gap: float) -> str:

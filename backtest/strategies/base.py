@@ -31,6 +31,41 @@ import config
 STRATEGY_REGISTRY: dict[str, type["Strategy"]] = {}
 
 
+def fill_to_min_positions(
+    selected: pd.DataFrame,
+    pool: pd.DataFrame,
+    rank_column: str,
+    min_positions: int | None = None,
+    floor: float | None = None,
+) -> pd.DataFrame:
+    """Complète `selected` avec les meilleures candidates de `pool` restées
+    sous le seuil d'entrée, jusqu'à atteindre `min_positions` entreprises.
+
+    Un seuil d'entrée strict laisse le portefeuille très concentré (voire
+    vide) dès que peu d'entreprises s'écartent nettement de leur valeur
+    théorique : on préfère détenir les N meilleures convictions DISPONIBLES
+    plutôt que trois lignes et du cash. Le classement reste fait sur
+    `rank_column`, donc les lignes ajoutées sont bien celles dont le cours est
+    le plus proche de la valeur théorique parmi les recalées -- pas des
+    lignes prises au hasard.
+
+    `floor` borne la relaxation (la stratégie actions, long-only, ne descend
+    pas sous un écart positif : compléter avec une entreprise jugée
+    survalorisée reviendrait à acheter contre son propre signal)."""
+    if not min_positions or len(selected) >= min_positions:
+        return selected
+
+    extra = pool.drop(index=selected.index, errors="ignore")
+    if floor is not None:
+        extra = extra[extra[rank_column] > floor]
+    if extra.empty:
+        return selected
+
+    needed = min_positions - len(selected)
+    extra = extra.sort_values(rank_column, ascending=False).head(needed)
+    return pd.concat([selected, extra])
+
+
 def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter: int = 20) -> pd.Series:
     """Poids proportionnels à `conviction`, aucun ne dépassant cap_pct % du
     portefeuille (config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT par défaut).
