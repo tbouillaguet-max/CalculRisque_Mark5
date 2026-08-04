@@ -238,7 +238,10 @@ BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
 # états financiers publiés ne montrent pas encore.
 # None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
-BACKTEST_INITIAL_CAPITAL = 100_000.0
+# Capital simulé au départ des backtests (actions et options : voir
+# OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
+# portefeuille selon qu'on l'investit en actions ou en options).
+BACKTEST_INITIAL_CAPITAL = 1_000_000.0
 BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
 BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
 
@@ -288,7 +291,17 @@ OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (con
 OPTIONS_STOP_LOSS_PCT = -50.0
 OPTIONS_TAKE_PROFIT_PCT = 100.0
 OPTIONS_MAX_POSITIONS = 20
-OPTIONS_INITIAL_CAPITAL = 100_000.0
+# Même capital que le backtest actions. Cette valeur n'est PAS neutre pour la
+# stratégie options depuis le passage aux contrats entiers
+# (OPTIONS_WHOLE_CONTRACTS) : un contrat vaut 100 x la prime, soit ~1 000$ pour
+# une option à 10$, et une position visée plus petite que cela n'est tout
+# simplement pas prenable. Mesuré sur 20 positions simultanées : à 100 000$,
+# 41% des positions visées tombaient sous le contrat unique et étaient
+# abandonnées, et celles qui passaient étaient déformées de ~80% par l'arrondi
+# -- le backtest mesurait alors la stratégie bridée par la taille minimale,
+# pas la stratégie. À 1 000 000$, plus aucune position n'est perdue et l'écart
+# d'arrondi médian tombe à ~4%.
+OPTIONS_INITIAL_CAPITAL = 1_000_000.0
 
 # Coûts par contrat (pas en bps du notionnel comme les actions : une option a
 # un notionnel qui ne reflète pas son coût de transaction réel). ~0.65$/contrat
