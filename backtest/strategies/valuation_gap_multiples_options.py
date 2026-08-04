@@ -49,7 +49,7 @@ import logging
 import pandas as pd
 
 import config
-from backtest.strategies.base import fill_to_min_positions, inflation_adjusted_gap
+from backtest.strategies.base import capped_weights, inflation_adjusted_gap
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 logger = logging.getLogger("backtest.strategies.valuation_gap_multiples_options")
@@ -78,7 +78,6 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         self,
         entry_threshold_pct: float = config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT,
         max_positions: int = config.OPTIONS_MAX_POSITIONS,
-        min_positions: int = config.BACKTEST_MIN_POSITIONS,
         tenor_days: int = config.OPTIONS_MULTIPLES_TENOR_DAYS,
         gap_basis: str = config.OPTIONS_MULTIPLES_GAP_BASIS,
         multiples_only: bool = True,
@@ -87,7 +86,6 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
     ):
         super().__init__(
             entry_threshold_pct=entry_threshold_pct, max_positions=max_positions,
-            min_positions=min_positions,
             tenor_days=tenor_days, gap_basis=gap_basis, multiples_only=multiples_only,
             weight_cap_pct=weight_cap_pct, **kwargs,
         )
@@ -95,7 +93,6 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             raise ValueError(f"gap_basis attend 'theoretical' ou 'close', reçu {gap_basis!r}.")
         self.entry_threshold_pct = entry_threshold_pct
         self.max_positions = max_positions
-        self.min_positions = min_positions
         self.tenor_days = int(tenor_days)
         self.gap_basis = gap_basis
         self.multiples_only = bool(multiples_only)
@@ -134,24 +131,21 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             self.tenor_days / 365.0,
         ))
         df = df.assign(_abs_gap=df["_gap"].abs())
-        # Poids plafonné : en base "theoretical", l'écart est BORNÉ à +100% du
-        # côté sous-évalué (le cours ne peut pas descendre sous zéro) mais NON
-        # BORNÉ du côté survalorisé -- une valeur théorique proche de zéro
-        # donne un écart de plusieurs milliers de %. Sans plafond, une seule
-        # ligne survalorisée capte l'essentiel du capital (mesuré : 92% du
-        # portefeuille pour une théorique à 5$ contre un cours à 100$) alors
-        # que le classement, lui, reste légitime -- une survalorisation
-        # extrême est bien une forte conviction. On plafonne donc ce qui SERT
-        # AU DIMENSIONNEMENT, sans toucher à l'ordre de sélection.
+        # Score de conviction plafonné en ENTRÉE : en base "theoretical",
+        # l'écart est BORNÉ à +100% du côté sous-évalué (le cours ne peut pas
+        # descendre sous zéro) mais NON BORNÉ du côté survalorisé -- une
+        # valeur théorique proche de zéro donne un écart de plusieurs
+        # milliers de %. On écrête donc ce score AVANT pondération pour
+        # qu'une seule ligne aberrante ne domine pas le calcul du poids,
+        # sans toucher à l'ordre de sélection (fait sur l'écart brut).
+        # Ce plafond sur le score d'ENTRÉE ne borne pas à lui seul le poids
+        # final (clipper puis normaliser ne garantit aucun pourcentage
+        # précis) -- c'est capped_weights, plus bas, qui plafonne réellement
+        # le poids résultant à BACKTEST_MAX_WEIGHT_PER_POSITION_PCT, comme
+        # pour valuation_gap_options.
         conviction = df["_abs_gap"] if self.weight_cap_pct is None else df["_abs_gap"].clip(upper=self.weight_cap_pct)
         df = df.assign(_conviction=conviction)
-        selected = df[df["_abs_gap"] >= self.entry_threshold_pct]
-        # Complète avec les entreprises dont le cours est le plus proche de
-        # la valeur théorique parmi les recalées, pour ne pas laisser le
-        # portefeuille sur trop peu de lignes (cf. base.fill_to_min_positions).
-        return fill_to_min_positions(
-            selected, df, "_abs_gap", min_positions=self.min_positions,
-        )
+        return df[df["_abs_gap"] >= self.entry_threshold_pct]
 
     @staticmethod
     def _direction(gap: float) -> str:
@@ -167,14 +161,22 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         # Classement par l'écart BRUT (conviction), dimensionnement par
         # l'écart PLAFONNÉ (cf. _candidates).
         candidates = candidates.sort_values("_abs_gap", ascending=False).head(self.max_positions)
-        total_conviction = candidates["_conviction"].sum()
-        if total_conviction <= 0:
+        if candidates["_conviction"].sum() <= 0:
             return {}
+
+        # Poids réellement plafonné à BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
+        # (cf. base.capped_weights) : sans ce second plafond -- sur le poids
+        # lui-même, pas seulement sur le score d'entrée -- une seule ligne
+        # pouvait encore capter la majorité du capital (mesuré : 92% du
+        # portefeuille pour une théorique à 5$ contre un cours à 100$),
+        # exactement le scénario de concentration à l'origine des drawdowns
+        # impossibles corrigés ailleurs (cf. options_engine._affordable).
+        candidates = candidates.assign(_weight=capped_weights(candidates["_conviction"]))
 
         return {
             row["symbol"]: {
                 "option_type": self._direction(row["_gap"]),
-                "weight": row["_conviction"] / total_conviction,
+                "weight": row["_weight"],
                 # Strike à mi-chemin théorique/cours : c'est le moteur qui fait
                 # la moyenne, avec le spot du jour d'EXÉCUTION plutôt que le
                 # cours du signal (les deux diffèrent après un roulement, où le
