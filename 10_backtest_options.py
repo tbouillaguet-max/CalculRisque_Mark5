@@ -124,8 +124,14 @@ def main() -> None:
         help="Minimum facturé PAR ORDRE (IBKR : 1,00$), pas par contrat. 0 pour désactiver.",
     )
     parser.add_argument(
-        "--commission-max-pct-of-trade", type=float, default=config.OPTIONS_COMMISSION_MAX_PCT_OF_TRADE,
-        help="Plafond de commission par ordre, en %% de la valeur négociée. 0 pour désactiver.",
+        "--max-fee-pct-of-trade", type=float, default=config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
+        help="Abandonne un ordre d'ENTRÉE/renforcement dont les frais dépassent ce %% de sa "
+             "valeur (jamais appliqué aux sorties). 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--fee-bump-max-extra-pct", type=float, default=config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
+        help="Tolérance d'exposition supplémentaire pour remonter un ordre à la taille où le "
+             "minimum par ordre cesse de mordre. 0 pour désactiver la remontée.",
     )
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
@@ -230,7 +236,8 @@ def main() -> None:
         commission_per_contract=args.commission_per_contract,
         slippage_pct_of_premium=args.slippage_pct_of_premium,
         commission_min_per_order=args.commission_min_per_order,
-        commission_max_pct_of_trade=args.commission_max_pct_of_trade,
+        max_fee_pct_of_trade=args.max_fee_pct_of_trade,
+        fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
         take_profit_pct=engine_settings["take_profit_pct"],

@@ -297,22 +297,60 @@ OPTIONS_INITIAL_CAPITAL = 100_000.0
 OPTIONS_COMMISSION_PER_CONTRACT = 0.65
 OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 5.0
 
-# Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique 0,65$/contrat
-# mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat coûte donc
-# 1,00$, pas 0,65$ -- et une stratégie qui multiplie les petits ordres paie
-# nettement plus que "nb_contrats x 0,65$". Modéliser la commission comme un
+# Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique un taux par
+# contrat mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat
+# coûte donc 1,00$ -- et une stratégie qui multiplie les petits ordres paie
+# nettement plus que "nb_contrats x taux". Modéliser la commission comme un
 # simple taux par contrat sous-estimait donc structurellement les frais.
+# Ce minimum porte sur la COMMISSION seule ; les frais tiers ci-dessous
+# s'ajoutent par-dessus.
 OPTIONS_COMMISSION_MIN_PER_ORDER = 1.0
 
-# Plafond par ordre, en % de la valeur négociée (prime x contrats x
-# multiplicateur) : protège les ordres sur options très bon marché, où le
-# minimum par ordre dépasserait la valeur échangée. Ce plafond prime sur le
-# minimum ci-dessus.
-# ATTENTION : contrairement au 0,65$/contrat et au minimum de 1,00$ (confirmés),
-# cette valeur n'a PAS pu être vérifiée sur la grille officielle IBKR
-# (interactivebrokers.com renvoie 403 aux requêtes automatisées). Recoupe-la
-# avec tes propres relevés de compte. 0 ou None désactive le plafond.
-OPTIONS_COMMISSION_MAX_PCT_OF_TRADE = 1.0
+# Grille dégressive IBKR (options US), relevée sur la tarification officielle.
+# Le taux dépend du VOLUME MENSUEL cumulé en contrats ET du niveau de PRIME.
+#   (volume_mensuel_max, ((prime_max, taux), ...))
+# volume_mensuel_max=None -> dernier palier ; prime_max=None -> "toutes les
+# primes au-dessus". Une prime STRICTEMENT inférieure à prime_max prend ce taux.
+#
+# Note : contrairement aux actions, cette grille n'a PAS de plafond en % de la
+# valeur négociée -- vérifié sur les exemples officiels (5 contrats à 0,03$ de
+# prime = 15$ de valeur, facturés 1,25$, soit 8,3% de la valeur).
+OPTIONS_COMMISSION_TIERS = (
+    (10_000,  ((0.05, 0.25), (0.10, 0.50), (None, 0.65))),
+    (50_000,  ((0.05, 0.25), (None, 0.50))),
+    (100_000, ((None, 0.25),)),
+    (None,    ((None, 0.15),)),
+)
+
+# Frais tiers, facturés EN PLUS de la commission (non soumis au minimum par
+# ordre). Par contrat, des deux côtés (achat comme vente).
+OPTIONS_FEE_ORF_PER_CONTRACT = 0.02295   # Options Regulatory Fee
+OPTIONS_FEE_CAT_PER_CONTRACT = 0.0003    # FINRA Consolidated Audit Trail
+OPTIONS_FEE_OCC_PER_CONTRACT = 0.025     # compensation OCC
+# À la VENTE uniquement (frais réglementaires sur les cessions).
+OPTIONS_FEE_FINRA_TAF_PER_CONTRACT = 0.00329   # FINRA Trading Activity Fee
+OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
+
+# Optimisation de taille au regard des frais.
+#
+# Le minimum PAR ORDRE fait qu'un tout petit ordre paie un tarif par contrat
+# bien supérieur au tarif affiché : à 0,65$/contrat, 1 contrat coûte 1,00$
+# (soit 1,00$/contrat) alors que 2 contrats coûtent 1,30$ (0,65$/contrat).
+# Monter à la taille où le minimum cesse de mordre améliore donc le coût
+# unitaire -- mais au prix d'une exposition en plus, et l'arithmétique est
+# brutale : +100% d'exposition (1 -> 2 contrats) pour économiser 0,35$, jusqu'à
+# +600% au palier 0,15$/contrat. Cette remontée n'est donc appliquée que si
+# l'écart à l'exposition VISÉE reste sous la tolérance ci-dessous. 0 la
+# désactive complètement.
+OPTIONS_FEE_BUMP_MAX_EXTRA_PCT = 20.0
+
+# Garde-fou inverse, et de loin le plus rentable : un ordre d'ENTRÉE ou de
+# renforcement dont les frais dépassent ce pourcentage de sa propre valeur
+# est purement abandonné -- il détruit plus de valeur qu'il n'en apporte.
+# Ne s'applique JAMAIS aux sorties (stop-loss, take-profit, expiration,
+# roulement) : une position doit pouvoir être fermée quel qu'en soit le coût.
+# 0 ou None désactive le garde-fou.
+OPTIONS_MAX_FEE_PCT_OF_TRADE = 1.0
 
 # Les options se négocient par contrats ENTIERS. Le moteur dimensionnait en
 # contrats fractionnaires (0,931 contrat...), ce qui n'existe pas et fausse
