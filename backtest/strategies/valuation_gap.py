@@ -14,7 +14,9 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import Strategy, capped_weights, register_strategy
+from backtest.strategies.base import (
+    Strategy, capped_weights, fill_to_min_positions, inflation_adjusted_gap, register_strategy,
+)
 
 
 @register_strategy("valuation_gap_dcf")
@@ -23,14 +25,34 @@ class ValuationGapDCFStrategy(Strategy):
         self,
         entry_threshold_pct: float = config.BACKTEST_ENTRY_THRESHOLD_PCT,
         max_positions: int = config.BACKTEST_MAX_POSITIONS,
+        min_positions: int = config.BACKTEST_MIN_POSITIONS,
         **kwargs,
     ):
-        super().__init__(entry_threshold_pct=entry_threshold_pct, max_positions=max_positions, **kwargs)
+        super().__init__(
+            entry_threshold_pct=entry_threshold_pct, max_positions=max_positions,
+            min_positions=min_positions, **kwargs,
+        )
         self.entry_threshold_pct = entry_threshold_pct
         self.max_positions = max_positions
+        self.min_positions = min_positions
 
     def generate_target_weights(self, signals: pd.DataFrame, current_positions: set[str]) -> dict[str, float]:
+        # Écart corrigé de l'inflation attendue sur l'horizon de convergence
+        # (cf. base.inflation_adjusted_gap). Stratégie long-only : le décalage
+        # est uniforme, il ne change donc pas le CLASSEMENT, seulement le
+        # franchissement du seuil d'entrée.
+        signals = signals.assign(gap_pct=inflation_adjusted_gap(
+            signals["gap_pct"], signals["published_date"],
+            config.INFLATION_HORIZON_YEARS_STOCKS,
+        ))
         candidates = signals[signals["gap_pct"] >= self.entry_threshold_pct]
+        # Trop peu d'entreprises au-dessus du seuil : on complète avec les
+        # plus proches de leur valeur théorique, sans jamais descendre sous un
+        # écart POSITIF (stratégie long-only : acheter une entreprise que le
+        # modèle juge survalorisée serait acheter contre son propre signal).
+        candidates = fill_to_min_positions(
+            candidates, signals, "gap_pct", min_positions=self.min_positions, floor=0.0,
+        )
         if candidates.empty:
             return {}
 

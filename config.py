@@ -223,6 +223,18 @@ BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 
 BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
 BACKTEST_MAX_POSITIONS = 20        # nombre de lignes simultanées max dans le portefeuille
 
+# Nombre MINIMAL d'entreprises différentes visées. Si trop peu d'entreprises
+# passent le seuil d'entrée, les stratégies complètent avec les meilleures
+# candidates SOUS le seuil (celles dont le cours et la valeur théorique sont
+# les plus proches) plutôt que de laisser le portefeuille concentré sur
+# quelques lignes. Le classement reste fait sur l'écart : ce sont bien les
+# convictions les plus fortes disponibles qui sont retenues.
+# La stratégie actions étant long-only, elle ne descend jamais sous un écart
+# positif : compléter avec une entreprise que le modèle juge SURVALORISÉE
+# serait acheter contre son propre signal.
+# 0 ou None désactive ce plancher (comportement d'avant : seuil strict).
+BACKTEST_MIN_POSITIONS = 10
+
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
 # de l'écart ; sans plafond, un écart aberrant (valeur théorique proche de
@@ -238,7 +250,10 @@ BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
 # états financiers publiés ne montrent pas encore.
 # None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
-BACKTEST_INITIAL_CAPITAL = 100_000.0
+# Capital simulé au départ des backtests (actions et options : voir
+# OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
+# portefeuille selon qu'on l'investit en actions ou en options).
+BACKTEST_INITIAL_CAPITAL = 1_000_000.0
 BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
 BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
 
@@ -288,7 +303,17 @@ OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (con
 OPTIONS_STOP_LOSS_PCT = -50.0
 OPTIONS_TAKE_PROFIT_PCT = 100.0
 OPTIONS_MAX_POSITIONS = 20
-OPTIONS_INITIAL_CAPITAL = 100_000.0
+# Même capital que le backtest actions. Cette valeur n'est PAS neutre pour la
+# stratégie options depuis le passage aux contrats entiers
+# (OPTIONS_WHOLE_CONTRACTS) : un contrat vaut 100 x la prime, soit ~1 000$ pour
+# une option à 10$, et une position visée plus petite que cela n'est tout
+# simplement pas prenable. Mesuré sur 20 positions simultanées : à 100 000$,
+# 41% des positions visées tombaient sous le contrat unique et étaient
+# abandonnées, et celles qui passaient étaient déformées de ~80% par l'arrondi
+# -- le backtest mesurait alors la stratégie bridée par la taille minimale,
+# pas la stratégie. À 1 000 000$, plus aucune position n'est perdue et l'écart
+# d'arrondi médian tombe à ~4%.
+OPTIONS_INITIAL_CAPITAL = 1_000_000.0
 
 # Coûts par contrat (pas en bps du notionnel comme les actions : une option a
 # un notionnel qui ne reflète pas son coût de transaction réel). ~0.65$/contrat
@@ -296,6 +321,78 @@ OPTIONS_INITIAL_CAPITAL = 100_000.0
 # de la prime (les spreads bid/ask sur options sont larges, surtout hors ATM).
 OPTIONS_COMMISSION_PER_CONTRACT = 0.65
 OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 5.0
+
+# Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique un taux par
+# contrat mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat
+# coûte donc 1,00$ -- et une stratégie qui multiplie les petits ordres paie
+# nettement plus que "nb_contrats x taux". Modéliser la commission comme un
+# simple taux par contrat sous-estimait donc structurellement les frais.
+# Ce minimum porte sur la COMMISSION seule ; les frais tiers ci-dessous
+# s'ajoutent par-dessus.
+OPTIONS_COMMISSION_MIN_PER_ORDER = 1.0
+
+# Grille dégressive IBKR (options US), relevée sur la tarification officielle.
+# Le taux dépend du VOLUME MENSUEL cumulé en contrats ET du niveau de PRIME.
+#   (volume_mensuel_max, ((prime_max, taux), ...))
+# volume_mensuel_max=None -> dernier palier ; prime_max=None -> "toutes les
+# primes au-dessus". Une prime STRICTEMENT inférieure à prime_max prend ce taux.
+#
+# Note : contrairement aux actions, cette grille n'a PAS de plafond en % de la
+# valeur négociée -- vérifié sur les exemples officiels (5 contrats à 0,03$ de
+# prime = 15$ de valeur, facturés 1,25$, soit 8,3% de la valeur).
+OPTIONS_COMMISSION_TIERS = (
+    (10_000,  ((0.05, 0.25), (0.10, 0.50), (None, 0.65))),
+    (50_000,  ((0.05, 0.25), (None, 0.50))),
+    (100_000, ((None, 0.25),)),
+    (None,    ((None, 0.15),)),
+)
+
+# Frais tiers, facturés EN PLUS de la commission (non soumis au minimum par
+# ordre). Par contrat, des deux côtés (achat comme vente).
+OPTIONS_FEE_ORF_PER_CONTRACT = 0.02295   # Options Regulatory Fee
+OPTIONS_FEE_CAT_PER_CONTRACT = 0.0003    # FINRA Consolidated Audit Trail
+OPTIONS_FEE_OCC_PER_CONTRACT = 0.025     # compensation OCC
+# À la VENTE uniquement (frais réglementaires sur les cessions).
+OPTIONS_FEE_FINRA_TAF_PER_CONTRACT = 0.00329   # FINRA Trading Activity Fee
+OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
+
+# Part MINIMALE du portefeuille investie en primes, en % du NAV. En dessous,
+# le moteur renforce les positions déjà ouvertes (au prorata de leur taille)
+# pour remettre le capital au travail plutôt que de le laisser dormir.
+#
+# ATTENTION : contrairement à une action, une option peut valoir ZÉRO à
+# l'échéance. Immobiliser 90% du capital en primes n'a donc pas le même sens
+# que 90% investi en actions -- c'est un plancher d'exposition délibérément
+# agressif, à confronter au drawdown qu'il produit. 0 ou None le désactive.
+OPTIONS_MIN_DEPLOYMENT_PCT = 90.0
+
+# Optimisation de taille au regard des frais.
+#
+# Le minimum PAR ORDRE fait qu'un tout petit ordre paie un tarif par contrat
+# bien supérieur au tarif affiché : à 0,65$/contrat, 1 contrat coûte 1,00$
+# (soit 1,00$/contrat) alors que 2 contrats coûtent 1,30$ (0,65$/contrat).
+# Monter à la taille où le minimum cesse de mordre améliore donc le coût
+# unitaire -- mais au prix d'une exposition en plus, et l'arithmétique est
+# brutale : +100% d'exposition (1 -> 2 contrats) pour économiser 0,35$, jusqu'à
+# +600% au palier 0,15$/contrat. Cette remontée n'est donc appliquée que si
+# l'écart à l'exposition VISÉE reste sous la tolérance ci-dessous. 0 la
+# désactive complètement.
+OPTIONS_FEE_BUMP_MAX_EXTRA_PCT = 20.0
+
+# Garde-fou inverse, et de loin le plus rentable : un ordre d'ENTRÉE ou de
+# renforcement dont les frais dépassent ce pourcentage de sa propre valeur
+# est purement abandonné -- il détruit plus de valeur qu'il n'en apporte.
+# Ne s'applique JAMAIS aux sorties (stop-loss, take-profit, expiration,
+# roulement) : une position doit pouvoir être fermée quel qu'en soit le coût.
+# 0 ou None désactive le garde-fou.
+OPTIONS_MAX_FEE_PCT_OF_TRADE = 1.0
+
+# Les options se négocient par contrats ENTIERS. Le moteur dimensionnait en
+# contrats fractionnaires (0,931 contrat...), ce qui n'existe pas et fausse
+# doublement les frais : la commission par contrat était appliquée au prorata,
+# et le minimum par ordre n'existait pas. False rétablit l'ancien
+# comportement fractionnaire (utile seulement pour comparer).
+OPTIONS_WHOLE_CONTRACTS = True
 
 # Fenêtre de tolérance (en jours) pour rattacher un signal à un VRAI snapshot
 # archivé par 08_recuperation_options.py (data/options/history/) plutôt que
@@ -447,6 +544,53 @@ def to_ib_symbol(ric: str) -> str:
     pour les tickers à classes d'actions (ex: "BRK.B" -> "BRK B").
     """
     return SYMBOL_OVERRIDES.get(ric, ric.split(".")[0])
+
+
+# ----------------------------------------------------------------------------
+# Inflation (ajustement des écarts de valorisation)
+# ----------------------------------------------------------------------------
+# Inflation annuelle US (CPI-U, moyenne annuelle), en %.
+#
+# SOURCES : 2020-2025 recoupés en ligne (macrotrends, usinflationcalculator) ;
+# les années antérieures viennent des moyennes annuelles BLS bien établies mais
+# n'ont PAS pu être re-vérifiées automatiquement (bls.gov et les agrégateurs
+# renvoient 403 aux requêtes automatisées). Recoupe-les si un chiffre te paraît
+# douteux : https://www.bls.gov/cpi/ -> "Historical CPI-U".
+INFLATION_BY_YEAR: dict[int, float] = {
+    2005: 3.39, 2006: 3.23, 2007: 2.85, 2008: 3.84, 2009: -0.36,
+    2010: 1.64, 2011: 3.16, 2012: 2.07, 2013: 1.46, 2014: 1.62,
+    2015: 0.12, 2016: 1.26, 2017: 2.13, 2018: 2.44, 2019: 1.81,
+    2020: 1.23, 2021: 4.70, 2022: 8.00, 2023: 4.12, 2024: 2.95,
+    2025: 2.70,
+}
+# Année absente de la table (avant 2005, ou plus récente que la dernière mise
+# à jour) : valeur de repli, proche de la cible de la Fed.
+INFLATION_DEFAULT_PCT = 2.0
+
+# Ajuste l'écart de valorisation de l'inflation ANTICIPÉE sur l'horizon de
+# convergence de la stratégie. Voir backtest/strategies/base.inflation_adjusted_gap
+# pour le raisonnement : la valeur théorique est une grandeur NOMINALE, elle
+# inflate donc avec le temps, et la convergence se fait vers cette valeur
+# inflatée -- ce qui aide une position acheteuse et pénalise une vendeuse.
+INFLATION_ADJUST_GAP = True
+
+# Horizon de convergence retenu pour la stratégie ACTIONS (les stratégies
+# options utilisent leur propre échéance de contrat, qui est leur horizon réel).
+INFLATION_HORIZON_YEARS_STOCKS = 1.0
+
+
+def inflation_known_at(date) -> float:
+    """Inflation annuelle (en %) CONNUE à cette date, donc celle de l'année
+    civile PRÉCÉDENTE : la moyenne annuelle d'une année n'est publiée qu'une
+    fois l'année terminée. Utiliser l'inflation de l'année en cours
+    introduirait un look-ahead -- exactement le biais que tout le reste du
+    pipeline s'attache à éviter."""
+    import pandas as pd  # local : garde config.py importable sans pandas
+
+    timestamp = pd.Timestamp(date)
+    if pd.isna(timestamp):
+        return INFLATION_DEFAULT_PCT
+    return INFLATION_BY_YEAR.get(timestamp.year - 1, INFLATION_DEFAULT_PCT)
 
 
 def to_naive_day(values):

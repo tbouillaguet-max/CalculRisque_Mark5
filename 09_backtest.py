@@ -75,6 +75,11 @@ def main() -> None:
     parser.add_argument("--take-profit-pct", type=float, default=config.BACKTEST_TAKE_PROFIT_PCT)
     parser.add_argument("--max-positions", type=int, default=config.BACKTEST_MAX_POSITIONS)
     parser.add_argument("--entry-threshold-pct", type=float, default=config.BACKTEST_ENTRY_THRESHOLD_PCT, help="Passé à la stratégie si elle accepte ce paramètre.")
+    parser.add_argument(
+        "--min-positions", type=int, default=config.BACKTEST_MIN_POSITIONS,
+        help="Nombre minimal d'entreprises visées : si trop peu passent le seuil d'entrée, "
+             "on complète avec les plus proches de leur valeur théorique. 0 pour désactiver.",
+    )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE", help="Paramètre supplémentaire spécifique à la stratégie (répétable).")
     parser.add_argument(
         "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
@@ -110,7 +115,8 @@ def main() -> None:
     material_events = data_loader.load_material_events_8k()
 
     strategy_cls = STRATEGY_REGISTRY[args.strategy]
-    strategy_params = {"entry_threshold_pct": args.entry_threshold_pct, "max_positions": args.max_positions}
+    strategy_params = {"entry_threshold_pct": args.entry_threshold_pct, "max_positions": args.max_positions,
+                       "min_positions": args.min_positions}
     strategy_params.update(parse_strategy_params(args.strategy_param))
     strategy = strategy_cls(**strategy_params)
 

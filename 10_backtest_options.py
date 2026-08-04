@@ -119,6 +119,31 @@ def main() -> None:
     parser.add_argument("--initial-capital", type=float, default=config.OPTIONS_INITIAL_CAPITAL)
     parser.add_argument("--commission-per-contract", type=float, default=config.OPTIONS_COMMISSION_PER_CONTRACT)
     parser.add_argument("--slippage-pct-of-premium", type=float, default=config.OPTIONS_SLIPPAGE_PCT_OF_PREMIUM)
+    parser.add_argument(
+        "--commission-min-per-order", type=float, default=config.OPTIONS_COMMISSION_MIN_PER_ORDER,
+        help="Minimum facturé PAR ORDRE (IBKR : 1,00$), pas par contrat. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--max-fee-pct-of-trade", type=float, default=config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
+        help="Abandonne un ordre d'ENTRÉE/renforcement dont les frais dépassent ce %% de sa "
+             "valeur (jamais appliqué aux sorties). 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--fee-bump-max-extra-pct", type=float, default=config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
+        help="Tolérance d'exposition supplémentaire pour remonter un ordre à la taille où le "
+             "minimum par ordre cesse de mordre. 0 pour désactiver la remontée.",
+    )
+    parser.add_argument(
+        "--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT,
+        help="Part minimale du NAV investie en primes : en dessous, les positions ouvertes "
+             "sont renforcées au prorata. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--fractional-contracts", dest="whole_contracts", action="store_false",
+        default=config.OPTIONS_WHOLE_CONTRACTS,
+        help="Autorise des contrats fractionnaires (irréaliste : les options se négocient "
+             "par contrats entiers). À n'utiliser que pour comparer avec l'ancien comportement.",
+    )
     # default=None sur les réglages qu'une stratégie peut imposer : distingue
     # "non demandé" (la stratégie décide) de "demandé explicitement" (priorité
     # à la ligne de commande). Voir resolve_engine_settings.
@@ -162,6 +187,11 @@ def main() -> None:
         "--no-momentum-filter", dest="momentum_min_pct", action="store_const", const=None,
         help="Désactive le filtre momentum.",
     )
+    parser.add_argument(
+        "--min-positions", type=int, default=config.BACKTEST_MIN_POSITIONS,
+        help="Nombre minimal d'entreprises visées : si trop peu passent le seuil d'entrée, "
+             "on complète avec les plus proches de leur valeur théorique. 0 pour désactiver.",
+    )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
     args = parser.parse_args()
@@ -196,7 +226,7 @@ def main() -> None:
     # stratégie recevrait les valeurs par défaut d'une autre, au lieu des
     # siennes (les deux stratégies options n'ont ni le même seuil ni la même
     # base de calcul de l'écart).
-    strategy_params = {"max_positions": engine_settings["max_positions"]}
+    strategy_params = {"max_positions": engine_settings["max_positions"], "min_positions": args.min_positions}
     if args.entry_threshold_pct is not None:
         strategy_params["entry_threshold_pct"] = args.entry_threshold_pct
     strategy_params.update(parse_strategy_params(args.strategy_param))
@@ -215,6 +245,11 @@ def main() -> None:
         initial_capital=args.initial_capital,
         commission_per_contract=args.commission_per_contract,
         slippage_pct_of_premium=args.slippage_pct_of_premium,
+        commission_min_per_order=args.commission_min_per_order,
+        max_fee_pct_of_trade=args.max_fee_pct_of_trade,
+        min_deployment_pct=args.min_deployment_pct,
+        fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
+        whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
         take_profit_pct=engine_settings["take_profit_pct"],
         max_positions=engine_settings["max_positions"],

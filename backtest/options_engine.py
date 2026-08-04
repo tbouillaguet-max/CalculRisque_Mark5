@@ -85,6 +85,7 @@ choix utilisateur que la stratégie actions.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -179,6 +180,12 @@ class OptionsBacktestEngine:
         stop_loss_pct: float,
         take_profit_pct: float,
         max_positions: int,
+        commission_min_per_order: float = config.OPTIONS_COMMISSION_MIN_PER_ORDER,
+        commission_tiers: tuple = config.OPTIONS_COMMISSION_TIERS,
+        fee_bump_max_extra_pct: Optional[float] = config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
+        max_fee_pct_of_trade: Optional[float] = config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
+        min_deployment_pct: Optional[float] = config.OPTIONS_MIN_DEPLOYMENT_PCT,
+        whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
         contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
         real_snapshot_tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
@@ -208,6 +215,14 @@ class OptionsBacktestEngine:
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.commission_per_contract = commission_per_contract
+        self.commission_min_per_order = commission_min_per_order
+        self.commission_tiers = commission_tiers
+        self.fee_bump_max_extra_pct = fee_bump_max_extra_pct
+        self.max_fee_pct_of_trade = max_fee_pct_of_trade
+        self.min_deployment_pct = min_deployment_pct
+        self.whole_contracts = whole_contracts
+        # Contrats négociés par mois civil : détermine le palier dégressif.
+        self._monthly_contracts: dict[tuple[int, int], float] = {}
         self.slippage_rate = slippage_pct_of_premium / 100
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
@@ -372,6 +387,75 @@ class OptionsBacktestEngine:
                 )
             self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
+        # Une fois les ordres du jour passés, le cash resté oisif est remis
+        # au travail sur les positions ouvertes (cf. _deploy_idle_cash).
+        self._deploy_idle_cash(today)
+
+    def _deploy_idle_cash(self, today: pd.Timestamp) -> None:
+        """Renforce les positions ouvertes tant que la part du NAV investie en
+        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT.
+
+        Le dimensionnement du moteur vise une exposition NOTIONNELLE
+        delta-équivalente ; la prime effectivement décaissée n'en représente
+        qu'une fraction (l'effet de levier de l'option), si bien qu'allouer
+        100% du budget laissait en pratique l'essentiel du capital en cash.
+        Ce complément remet ce cash au travail sur les convictions DÉJÀ
+        retenues -- au prorata de leur taille actuelle, donc sans modifier la
+        hiérarchie décidée par la stratégie, et sans ouvrir de ligne que la
+        stratégie n'a pas choisie.
+
+        Renforcer une position se fait sur SON contrat (strike et échéance
+        inchangés), au prix d'ouverture du jour, comme n'importe quel
+        renforcement."""
+        if not self.min_deployment_pct or not self.positions:
+            return
+
+        for _ in range(8):  # quelques passes suffisent ; borne dure anti-boucle
+            invested = sum(self._position_value(pos, today) for pos in self.positions.values())
+            nav = self.cash + invested
+            if nav <= 0 or invested >= nav * self.min_deployment_pct / 100:
+                return
+            missing = nav * self.min_deployment_pct / 100 - invested
+            if missing < MIN_TRADE_DOLLAR or self.cash < MIN_TRADE_DOLLAR:
+                return
+
+            values = {sym: self._position_value(pos, today) for sym, pos in self.positions.items()}
+            total_value = sum(values.values())
+            if total_value <= 0:
+                return
+
+            progressed = False
+            for symbol, value in sorted(values.items(), key=lambda kv: kv[1], reverse=True):
+                pos = self.positions.get(symbol)
+                spot = self.prices.open_at(symbol, today)
+                if pos is None or spot is None:
+                    continue
+                premium = self._current_premium(pos, today, spot=spot)
+                if premium is None or premium <= 0:
+                    continue
+
+                gross_premium = premium * (1 + self.slippage_rate)
+                share = missing * (value / total_value)
+                extra = self._round_contracts(share / (pos.multiplier * gross_premium))
+                if extra <= 0:
+                    continue
+
+                def cost_of(n: float, _p=gross_premium, _m=pos.multiplier) -> float:
+                    return n * _m * _p + self._order_commission(n, _p, _m, today, "buy")
+
+                extra, cost = self._affordable(extra, cost_of)
+                if extra <= 0 or cost < MIN_TRADE_DOLLAR:
+                    continue
+                self.cash -= cost
+                self._record_contract_volume(extra, today)
+                effective_premium = cost / (extra * pos.multiplier)
+                new_contracts = pos.contracts + extra
+                pos.entry_premium = (pos.entry_premium * pos.contracts + effective_premium * extra) / new_contracts
+                pos.contracts = new_contracts
+                progressed = True
+
+            if not progressed:
+                return
 
     def _select_contract(
         self,
@@ -445,20 +529,149 @@ class OptionsBacktestEngine:
             spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type,
         )["delta"]
 
-    def _affordable(self, contracts: float, cost: float) -> tuple[float, float]:
+    def _round_contracts(self, contracts: float) -> float:
+        """Une option se négocie par contrats ENTIERS (cf.
+        config.OPTIONS_WHOLE_CONTRACTS). Arrondi au plus proche : c'est la
+        taille réalisable la plus proche de l'exposition visée. Une cible
+        sous un demi-contrat donne 0, donc pas d'ordre -- une position trop
+        petite pour un seul contrat n'est tout simplement pas prenable."""
+        if not self.whole_contracts:
+            return contracts
+        return float(int(contracts + 0.5)) if contracts > 0 else 0.0
+
+    def _size_contracts(self, raw_contracts: float, premium_per_share: float, today: pd.Timestamp) -> float:
+        """Taille d'ordre retenue : arrondi aux contrats entiers, puis
+        remontée éventuelle à la taille où le minimum par ordre cesse de
+        gaspiller (cf. config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT).
+
+        L'écart de la remontée est mesuré par rapport à l'exposition VISÉE
+        (`raw_contracts`, fractionnaire), pas à la taille déjà arrondie :
+        c'est bien de la cible que l'on s'écarte, et arrondir puis comparer à
+        l'arrondi exagérerait l'écart d'un demi-contrat."""
+        contracts = self._round_contracts(raw_contracts)
+        if contracts <= 0 or not self.whole_contracts or not self.fee_bump_max_extra_pct:
+            return contracts
+
+        rate = self._commission_rate(max(premium_per_share, 0.0), today)
+        if rate <= 0:
+            return contracts
+        # Première taille où nb_contrats x taux atteint le minimum par ordre :
+        # en dessous, on paie le minimum sans en avoir "pour son argent".
+        efficient = math.ceil(self.commission_min_per_order / rate)
+        if contracts >= efficient or raw_contracts <= 0:
+            return contracts
+        if (efficient - raw_contracts) / raw_contracts * 100 > self.fee_bump_max_extra_pct:
+            return contracts
+        return float(efficient)
+
+    def _fee_ratio_ok(
+        self, contracts: float, premium_per_share: float, multiplier: float,
+        today: pd.Timestamp, side: str,
+    ) -> bool:
+        """Un ordre discrétionnaire (entrée/renforcement) dont les frais
+        pèsent plus que config.OPTIONS_MAX_FEE_PCT_OF_TRADE de sa propre
+        valeur détruit plus qu'il n'apporte : on ne le passe pas. Jamais
+        appliqué à une SORTIE -- refuser de clôturer une position parce que
+        les frais sont élevés reviendrait à désactiver le stop-loss sur les
+        positions devenues quasi sans valeur, exactement là où il protège."""
+        if not self.max_fee_pct_of_trade:
+            return True
+        trade_value = contracts * multiplier * max(premium_per_share, 0.0)
+        if trade_value <= 0:
+            return False
+        fees = self._order_commission(contracts, premium_per_share, multiplier, today, side)
+        return fees <= trade_value * self.max_fee_pct_of_trade / 100
+
+    def _commission_rate(self, premium_per_share: float, today: pd.Timestamp) -> float:
+        """Taux par contrat de la grille dégressive IBKR
+        (config.OPTIONS_COMMISSION_TIERS) : dépend du VOLUME MENSUEL cumulé
+        et du niveau de PRIME (une option quasi sans valeur est facturée
+        0,25$/contrat au lieu de 0,65$).
+
+        Simplification assumée : le palier de volume est celui atteint AVANT
+        l'ordre, appliqué à l'ordre entier. IBKR facture par tranches
+        (les 10 000 premiers contrats du mois au plein tarif, les suivants au
+        tarif réduit) ; découper un même ordre entre deux tranches ne change
+        rien tant que le volume mensuel reste loin du premier seuil, ce qui
+        est le cas d'un portefeuille de cette taille."""
+        volume = self._monthly_contracts.get((today.year, today.month), 0.0)
+        for volume_max, premium_bands in self.commission_tiers:
+            if volume_max is None or volume <= volume_max:
+                for premium_max, rate in premium_bands:
+                    if premium_max is None or premium_per_share < premium_max:
+                        return rate
+        return self.commission_per_contract  # grille vide/mal formée : repli
+
+    def _order_commission(
+        self, contracts: float, premium_per_share: float, multiplier: float,
+        today: pd.Timestamp, side: str,
+    ) -> float:
+        """Coût total facturé sur UN ordre d'options US : commission IBKR
+        (grille dégressive, jamais moins que le minimum PAR ORDRE) + frais
+        tiers (ORF, CAT, compensation OCC des deux côtés ; TAF FINRA et frais
+        de transaction SEC à la vente seulement).
+
+        Le minimum étant PAR ORDRE et les frais tiers PAR CONTRAT, le coût
+        n'est pas proportionnel au nombre de contrats : il ne peut donc pas
+        être replié dans un prix unitaire avant de connaître la taille de
+        l'ordre, contrairement à ce que faisait le moteur jusqu'ici."""
+        contracts = abs(contracts)
+        if contracts <= 0:
+            return 0.0
+
+        premium = max(premium_per_share, 0.0)
+        # Le minimum par ordre porte sur la COMMISSION seule ; les frais tiers
+        # s'ajoutent par-dessus (cf. "Frais tiers" dans la grille IBKR).
+        commission = max(contracts * self._commission_rate(premium, today), self.commission_min_per_order)
+
+        fees = contracts * (
+            config.OPTIONS_FEE_ORF_PER_CONTRACT
+            + config.OPTIONS_FEE_CAT_PER_CONTRACT
+            + config.OPTIONS_FEE_OCC_PER_CONTRACT
+        )
+        if side == "sell":
+            fees += contracts * config.OPTIONS_FEE_FINRA_TAF_PER_CONTRACT
+            fees += contracts * multiplier * premium * config.OPTIONS_FEE_SEC_PCT_OF_SALE
+        return commission + fees
+
+    def _record_contract_volume(self, contracts: float, today: pd.Timestamp) -> None:
+        """Volume mensuel cumulé, qui détermine le palier dégressif (IBKR
+        raisonne en contrats négociés dans le MOIS, achats et ventes
+        confondus)."""
+        key = (today.year, today.month)
+        self._monthly_contracts[key] = self._monthly_contracts.get(key, 0.0) + abs(contracts)
+
+    def _affordable(self, contracts: float, cost_of) -> tuple[float, float]:
         """Ramène un achat au cash réellement disponible : ce backtest est
         NON margé (pas de vente à découvert ni d'achat à crédit), or rien
         n'empêchait jusqu'ici une file d'ordres de dépenser plusieurs fois le
         capital -- le cash passait négatif et le NAV avec lui, d'où des
         drawdowns inférieurs à -100%, impossibles sur un portefeuille réel.
         Les ventes du jour ayant déjà été exécutées (cf. _execute_pending_orders),
-        leur produit est bien inclus dans ce cash."""
+        leur produit est bien inclus dans ce cash.
+
+        `cost_of(contracts) -> coût total` est une fonction (et non un montant)
+        parce que la commission n'est plus proportionnelle au nombre de
+        contrats : avec un minimum par ordre, réduire la taille de moitié ne
+        réduit pas le coût de moitié. Le coût est donc REcalculé après chaque
+        réduction, au lieu d'être mis à l'échelle."""
+        cost = cost_of(contracts)
         if cost <= self.cash:
             return contracts, cost
         if self.cash <= 0:
             return 0.0, 0.0
-        ratio = self.cash / cost
-        return contracts * ratio, self.cash
+
+        scaled = contracts * (self.cash / cost)
+        if self.whole_contracts:
+            scaled = float(int(scaled))  # troncature : jamais au-dessus du cash
+        for _ in range(64):
+            if scaled <= 0:
+                return 0.0, 0.0
+            cost = cost_of(scaled)
+            if cost <= self.cash:
+                return scaled, cost
+            scaled = scaled - 1.0 if self.whole_contracts else scaled * 0.95
+        return 0.0, 0.0
 
     def _open_or_resize(
         self,
@@ -492,15 +705,32 @@ class OptionsBacktestEngine:
         multiplier = contract["multiplier"]
 
         if existing is None:
-            target_contracts = target_dollar / (abs(delta) * spot * multiplier)
-            effective_premium = contract["premium"] * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
-            cost = target_contracts * multiplier * effective_premium
-            if cost < MIN_TRADE_DOLLAR:
+            # Prime brute (slippage inclus) : la commission est ajoutée à part,
+            # au niveau de l'ORDRE, puisqu'elle a un minimum forfaitaire.
+            gross_premium = contract["premium"] * (1 + self.slippage_rate)
+            target_contracts = self._size_contracts(
+                target_dollar / (abs(delta) * spot * multiplier), gross_premium, today,
+            )
+            if target_contracts <= 0 or not self._fee_ratio_ok(
+                target_contracts, gross_premium, multiplier, today, "buy"
+            ):
                 return
-            target_contracts, cost = self._affordable(target_contracts, cost)
-            if cost < MIN_TRADE_DOLLAR:
+
+            def cost_of(n: float) -> float:
+                return n * multiplier * gross_premium + self._order_commission(n, gross_premium, multiplier, today, "buy")
+
+            if cost_of(target_contracts) < MIN_TRADE_DOLLAR:
+                return
+            target_contracts, cost = self._affordable(target_contracts, cost_of)
+            if target_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                 return
             self.cash -= cost
+            self._record_contract_volume(target_contracts, today)
+            # Prix de revient TOUT COMPRIS par action (commission d'ordre
+            # répartie sur les contrats effectivement achetés) : conserve la
+            # sémantique de OptionPosition.entry_premium et donc le return_pct
+            # des trades.
+            effective_premium = cost / (target_contracts * multiplier)
             self.positions[symbol] = OptionPosition(
                 symbol=symbol, option_type=option_type, strike=contract["strike"], expiry=contract["expiry"],
                 contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
@@ -523,7 +753,10 @@ class OptionsBacktestEngine:
             existing_delta = self._position_delta(existing, today, spot)
             if existing_delta is None or abs(existing_delta) < 1e-6:
                 return
-            target_contracts = target_dollar / (abs(existing_delta) * spot * multiplier)
+            target_contracts = self._size_contracts(
+                target_dollar / (abs(existing_delta) * spot * multiplier),
+                self._current_premium(existing, today, spot=spot) or contract["premium"], today,
+            )
             delta_contracts = target_contracts - existing.contracts
 
             # Chaque dépôt de filing (10-K/10-Q) de N'IMPORTE LAQUELLE des
@@ -550,12 +783,19 @@ class OptionsBacktestEngine:
                 return
             if delta_contracts > 0:
                 current_premium = self._current_premium(existing, today, spot=spot) or contract["premium"]
-                effective_premium = current_premium * (1 + self.slippage_rate) + self.commission_per_contract / multiplier
-                cost = delta_contracts * multiplier * effective_premium
-                delta_contracts, cost = self._affordable(delta_contracts, cost)
-                if cost < MIN_TRADE_DOLLAR:
+                gross_premium = current_premium * (1 + self.slippage_rate)
+
+                def cost_of(n: float) -> float:
+                    return n * multiplier * gross_premium + self._order_commission(n, gross_premium, multiplier, today, "buy")
+
+                if not self._fee_ratio_ok(delta_contracts, gross_premium, multiplier, today, "buy"):
+                    return
+                delta_contracts, cost = self._affordable(delta_contracts, cost_of)
+                if delta_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                     return
                 self.cash -= cost
+                self._record_contract_volume(delta_contracts, today)
+                effective_premium = cost / (delta_contracts * multiplier)
                 new_contracts = existing.contracts + delta_contracts
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
                 existing.contracts = new_contracts
@@ -574,12 +814,15 @@ class OptionsBacktestEngine:
         # expirer sans valeur. Sans ce plancher, la sortie encaissait un
         # produit négatif : le trade perdait plus que la prime investie
         # (return_pct < -100%) et le cash fuyait à chaque clôture.
-        effective_premium = max(
-            current_premium * (1 - self.slippage_rate) - self.commission_per_contract / pos.multiplier,
-            0.0,
-        )
-        proceeds = contracts_to_sell * pos.multiplier * effective_premium
+        # Commission retranchée au niveau de l'ORDRE (minimum forfaitaire),
+        # pas au prorata de chaque contrat.
+        gross_premium = current_premium * (1 - self.slippage_rate)
+        gross_value = contracts_to_sell * pos.multiplier * gross_premium
+        commission = self._order_commission(contracts_to_sell, gross_premium, pos.multiplier, today, "sell")
+        proceeds = max(gross_value - commission, 0.0)
+        effective_premium = proceeds / (contracts_to_sell * pos.multiplier)
         self.cash += proceeds
+        self._record_contract_volume(contracts_to_sell, today)
         pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
         self.trades.append({
             "symbol": pos.symbol, "entry_date": pos.entry_date, "exit_date": today,

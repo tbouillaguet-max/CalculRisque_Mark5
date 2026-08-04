@@ -31,6 +31,90 @@ import config
 STRATEGY_REGISTRY: dict[str, type["Strategy"]] = {}
 
 
+def inflation_adjusted_gap(
+    gap_pct: pd.Series,
+    published_date: pd.Series,
+    horizon_years: float,
+    enabled: bool | None = None,
+) -> pd.Series:
+    """Écart de valorisation corrigé de l'inflation attendue sur l'horizon de
+    convergence.
+
+    RAISONNEMENT. L'écart g = (théorique - cours)/cours est un RATIO : à
+    première vue l'inflation ne l'érode pas, et lui soustraire l'inflation
+    serait faux. Mais la valeur théorique est une grandeur NOMINALE (chiffre
+    d'affaires, résultats et flux futurs sont libellés en monnaie courante) :
+    elle croît donc mécaniquement avec l'inflation. La convergence ne se fait
+    pas vers V mais vers V x (1+pi)^T, et le mouvement NOMINAL attendu du
+    titre devient :
+
+        mouvement = (1 + g) x (1 + pi)^T - 1   ~=   g + pi x T
+
+    L'inflation s'AJOUTE au mouvement attendu. C'est une asymétrie, pas un
+    décalage uniforme, parce que les deux sens de position n'attendent pas le
+    même mouvement :
+
+        sous-évaluée (CALL) g=+20%, pi=5%, T=1 an  ->  +26%  (plus attractive)
+        survalorisée (PUT)  g=-20%, pi=5%, T=1 an  ->  -16%  (moins attractive)
+
+    Une entreprise survalorisée de 20% dans un régime à 5% d'inflation exige
+    donc que le titre baisse de 20% alors que la dérive nominale le pousse à
+    la hausse : sa thèse est plus fragile qu'un écart brut de -20% ne le
+    laisse croire. C'est exactement le cas visé.
+
+    NOTE pour une stratégie LONG-ONLY : n'ayant que des positions acheteuses,
+    elle subit un décalage UNIFORME (+pi x T sur toutes ses candidates). Le
+    classement est donc inchangé ; seul le franchissement du seuil d'entrée
+    bouge. L'effet de re-classement n'existe que pour une stratégie
+    directionnelle (call ET put).
+
+    L'inflation retenue est celle CONNUE à la date de publication du signal
+    (config.inflation_known_at), pas celle de l'année en cours : la moyenne
+    annuelle n'est publiée qu'une fois l'année terminée."""
+    if enabled is None:
+        enabled = config.INFLATION_ADJUST_GAP
+    if not enabled or horizon_years <= 0:
+        return gap_pct
+
+    inflation = published_date.map(config.inflation_known_at) / 100
+    return ((1 + gap_pct / 100) * (1 + inflation) ** horizon_years - 1) * 100
+
+
+def fill_to_min_positions(
+    selected: pd.DataFrame,
+    pool: pd.DataFrame,
+    rank_column: str,
+    min_positions: int | None = None,
+    floor: float | None = None,
+) -> pd.DataFrame:
+    """Complète `selected` avec les meilleures candidates de `pool` restées
+    sous le seuil d'entrée, jusqu'à atteindre `min_positions` entreprises.
+
+    Un seuil d'entrée strict laisse le portefeuille très concentré (voire
+    vide) dès que peu d'entreprises s'écartent nettement de leur valeur
+    théorique : on préfère détenir les N meilleures convictions DISPONIBLES
+    plutôt que trois lignes et du cash. Le classement reste fait sur
+    `rank_column`, donc les lignes ajoutées sont bien celles dont le cours est
+    le plus proche de la valeur théorique parmi les recalées -- pas des
+    lignes prises au hasard.
+
+    `floor` borne la relaxation (la stratégie actions, long-only, ne descend
+    pas sous un écart positif : compléter avec une entreprise jugée
+    survalorisée reviendrait à acheter contre son propre signal)."""
+    if not min_positions or len(selected) >= min_positions:
+        return selected
+
+    extra = pool.drop(index=selected.index, errors="ignore")
+    if floor is not None:
+        extra = extra[extra[rank_column] > floor]
+    if extra.empty:
+        return selected
+
+    needed = min_positions - len(selected)
+    extra = extra.sort_values(rank_column, ascending=False).head(needed)
+    return pd.concat([selected, extra])
+
+
 def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter: int = 20) -> pd.Series:
     """Poids proportionnels à `conviction`, aucun ne dépassant cap_pct % du
     portefeuille (config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT par défaut).
