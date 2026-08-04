@@ -49,7 +49,7 @@ import logging
 import pandas as pd
 
 import config
-from backtest.strategies.base import fill_to_min_positions
+from backtest.strategies.base import fill_to_min_positions, inflation_adjusted_gap
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 logger = logging.getLogger("backtest.strategies.valuation_gap_multiples_options")
@@ -125,7 +125,14 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
 
         theoretical, close = df["valuation_theoretical_per_share"], df["close"]
         base = theoretical if self.gap_basis == "theoretical" else close
-        df = df.assign(_gap=(theoretical - close) / base * 100)
+        # Écart corrigé de l'inflation sur l'horizon du contrat (2 ans par
+        # défaut, donc un effet marqué) : la valeur théorique étant nominale,
+        # la convergence se fait vers une valeur inflatée -- ce qui aide un
+        # call et pénalise un put (cf. base.inflation_adjusted_gap).
+        df = df.assign(_gap=inflation_adjusted_gap(
+            (theoretical - close) / base * 100, df["published_date"],
+            self.tenor_days / 365.0,
+        ))
         df = df.assign(_abs_gap=df["_gap"].abs())
         # Poids plafonné : en base "theoretical", l'écart est BORNÉ à +100% du
         # côté sous-évalué (le cours ne peut pas descendre sous zéro) mais NON

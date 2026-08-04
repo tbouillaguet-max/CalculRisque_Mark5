@@ -16,7 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import capped_weights, fill_to_min_positions
+from backtest.strategies.base import capped_weights, fill_to_min_positions, inflation_adjusted_gap
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 
@@ -38,7 +38,14 @@ class ValuationGapOptionsStrategy(OptionsStrategy):
         self.min_positions = min_positions
 
     def generate_option_targets(self, signals: pd.DataFrame, current_positions: dict[str, str]) -> dict[str, dict]:
-        pool = signals.assign(_abs_gap=signals["gap_pct"].abs())
+        # Écart corrigé de l'inflation sur l'horizon du contrat : ici le
+        # re-classement est RÉEL, la stratégie étant directionnelle (l'inflation
+        # aide un call et pénalise un put -- cf. base.inflation_adjusted_gap).
+        gap = inflation_adjusted_gap(
+            signals["gap_pct"], signals["published_date"],
+            config.OPTIONS_TARGET_TENOR_DAYS / 365.0,
+        )
+        pool = signals.assign(gap_pct=gap, _abs_gap=gap.abs())
         candidates = pool[pool["_abs_gap"] >= self.entry_threshold_pct]
         # Trop peu d'entreprises au-dessus du seuil : on complète avec celles
         # dont le cours est le plus proche de la valeur théorique parmi les

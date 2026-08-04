@@ -546,6 +546,53 @@ def to_ib_symbol(ric: str) -> str:
     return SYMBOL_OVERRIDES.get(ric, ric.split(".")[0])
 
 
+# ----------------------------------------------------------------------------
+# Inflation (ajustement des écarts de valorisation)
+# ----------------------------------------------------------------------------
+# Inflation annuelle US (CPI-U, moyenne annuelle), en %.
+#
+# SOURCES : 2020-2025 recoupés en ligne (macrotrends, usinflationcalculator) ;
+# les années antérieures viennent des moyennes annuelles BLS bien établies mais
+# n'ont PAS pu être re-vérifiées automatiquement (bls.gov et les agrégateurs
+# renvoient 403 aux requêtes automatisées). Recoupe-les si un chiffre te paraît
+# douteux : https://www.bls.gov/cpi/ -> "Historical CPI-U".
+INFLATION_BY_YEAR: dict[int, float] = {
+    2005: 3.39, 2006: 3.23, 2007: 2.85, 2008: 3.84, 2009: -0.36,
+    2010: 1.64, 2011: 3.16, 2012: 2.07, 2013: 1.46, 2014: 1.62,
+    2015: 0.12, 2016: 1.26, 2017: 2.13, 2018: 2.44, 2019: 1.81,
+    2020: 1.23, 2021: 4.70, 2022: 8.00, 2023: 4.12, 2024: 2.95,
+    2025: 2.70,
+}
+# Année absente de la table (avant 2005, ou plus récente que la dernière mise
+# à jour) : valeur de repli, proche de la cible de la Fed.
+INFLATION_DEFAULT_PCT = 2.0
+
+# Ajuste l'écart de valorisation de l'inflation ANTICIPÉE sur l'horizon de
+# convergence de la stratégie. Voir backtest/strategies/base.inflation_adjusted_gap
+# pour le raisonnement : la valeur théorique est une grandeur NOMINALE, elle
+# inflate donc avec le temps, et la convergence se fait vers cette valeur
+# inflatée -- ce qui aide une position acheteuse et pénalise une vendeuse.
+INFLATION_ADJUST_GAP = True
+
+# Horizon de convergence retenu pour la stratégie ACTIONS (les stratégies
+# options utilisent leur propre échéance de contrat, qui est leur horizon réel).
+INFLATION_HORIZON_YEARS_STOCKS = 1.0
+
+
+def inflation_known_at(date) -> float:
+    """Inflation annuelle (en %) CONNUE à cette date, donc celle de l'année
+    civile PRÉCÉDENTE : la moyenne annuelle d'une année n'est publiée qu'une
+    fois l'année terminée. Utiliser l'inflation de l'année en cours
+    introduirait un look-ahead -- exactement le biais que tout le reste du
+    pipeline s'attache à éviter."""
+    import pandas as pd  # local : garde config.py importable sans pandas
+
+    timestamp = pd.Timestamp(date)
+    if pd.isna(timestamp):
+        return INFLATION_DEFAULT_PCT
+    return INFLATION_BY_YEAR.get(timestamp.year - 1, INFLATION_DEFAULT_PCT)
+
+
 def to_naive_day(values):
     """Normalise une colonne de dates en datetime64[us] naïf, tronqué au jour.
 
