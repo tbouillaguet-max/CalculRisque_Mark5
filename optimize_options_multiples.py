@@ -82,7 +82,7 @@ logger = logging.getLogger("optimize_options_multiples")
 # (un stop-loss à -90% ou un take-profit à 2% n'ont pas de sens réel).
 SEARCH_SPACE: dict[str, tuple] = {
     "entry_threshold_pct":     (15.0, 40.0, "float"),
-    "stop_loss_pct":           (-60.0, -30.0, "float"),   # négatif : variation de la prime
+    "stop_loss_pct":           (-60.0, -30.0, "float"),   # négatif : mouvement du sous-jacent
     "take_profit_pct":         (50.0, 200.0, "float"),
     "min_resize_relative_pct": (60.0, 99.0, "float"),
 }
@@ -216,7 +216,7 @@ def run_trial(
             momentum_min_pct=params["momentum_min_pct"],
             min_resize_relative_pct=params["min_resize_relative_pct"],
             material_events_8k=data.material_events,
-            stop_basis="premium",
+            stop_basis="underlying",
             exit_when_signal_lost=True,
             roll_when_days_left=params["roll_when_days_left"],
             vol_mode="rolling",
