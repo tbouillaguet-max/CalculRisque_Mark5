@@ -71,6 +71,7 @@ ENGINE_SETTING_FALLBACKS = {
     "stop_basis": "premium",
     "exit_when_signal_lost": False,
     "roll_when_days_left": None,
+    "daily_rebalance": False,
     "vol_mode": "frozen",
     "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
 }
@@ -165,6 +166,12 @@ def main() -> None:
         "--roll-when-days-left", type=int, default=None,
         help="Roule la position sur une échéance pleine à N jours de l'expiration (0 = jamais).",
     )
+    parser.add_argument(
+        "--daily-rebalance", dest="daily_rebalance", action="store_true", default=None,
+        help="Réévalue l'éligibilité tous les jours de bourse (cours du jour), pas seulement "
+             "aux dates de dépôt SEC.",
+    )
+    parser.add_argument("--no-daily-rebalance", dest="daily_rebalance", action="store_false")
     parser.add_argument(
         "--vol-mode", choices=("frozen", "rolling"), default=None,
         help="Volatilité de repricing : figée à l'entrée, ou suivie au jour le jour "
@@ -261,6 +268,7 @@ def main() -> None:
         stop_basis=engine_settings["stop_basis"],
         exit_when_signal_lost=engine_settings["exit_when_signal_lost"],
         roll_when_days_left=engine_settings["roll_when_days_left"],
+        daily_rebalance=engine_settings["daily_rebalance"],
         vol_mode=engine_settings["vol_mode"],
         start_date=start_date,
         end_date=end_date,

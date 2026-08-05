@@ -76,7 +76,27 @@ défaut -- le moteur se comporte exactement comme avant si aucun n'est activé
                                 inchangée. Évite de subir l'accélération de la
                                 perte de valeur temps en fin de vie du contrat.
 
-Par défaut (aucune des trois options), une position n'est JAMAIS fermée parce
+    daily_rebalance=True        Le rebalancement (choix des candidats et de
+                                leurs poids) est réévalué CHAQUE jour de
+                                bourse, pas seulement les jours où un nouveau
+                                signal (10-Q/10-K) tombe. L'écart utilisé pour
+                                juger de l'éligibilité d'une entreprise est
+                                alors recalculé avec son COURS DU JOUR plutôt
+                                qu'avec le cours figé à la date du dernier
+                                dépôt -- une opportunité (ou une sortie de
+                                seuil) créée par le seul mouvement du titre
+                                entre deux publications est ainsi détectée
+                                sans attendre le prochain trimestre. La
+                                valorisation théorique, elle, reste celle du
+                                dernier signal connu (inchangée tant qu'aucun
+                                nouveau dépôt n'arrive -- ce n'est pas une
+                                fuite d'information future). Par défaut
+                                (False), seuls les jours d'événement
+                                déclenchent un rebalancement, et l'écart y est
+                                calculé avec le cours DU DÉPÔT (comportement
+                                historique, inchangé).
+
+Par défaut (aucune des quatre options), une position n'est JAMAIS fermée parce
 que son écart de valorisation s'est refermé : elle reste "gelée" jusqu'au
 stop-loss/take-profit, à l'expiration ou à la disparition des données -- même
 choix utilisateur que la stratégie actions.
@@ -197,6 +217,7 @@ class OptionsBacktestEngine:
         stop_basis: str = "premium",
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = None,
+        daily_rebalance: bool = False,
         vol_mode: str = "frozen",
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
@@ -240,6 +261,7 @@ class OptionsBacktestEngine:
         self.stop_basis = stop_basis
         self.exit_when_signal_lost = exit_when_signal_lost
         self.roll_when_days_left = roll_when_days_left
+        self.daily_rebalance = daily_rebalance
         if vol_mode not in ("frozen", "rolling"):
             raise ValueError(f"vol_mode attend 'frozen' ou 'rolling', reçu {vol_mode!r}.")
         self.vol_mode = vol_mode
@@ -295,6 +317,10 @@ class OptionsBacktestEngine:
             todays_events = self.events_by_date.get(today)
             if todays_events:
                 self._update_known_signals(todays_events, today)
+            # En mode daily_rebalance, on réévalue tous les jours dès qu'il
+            # existe au moins un signal connu -- pas seulement les jours
+            # d'événement (cf. docstring du module).
+            if todays_events or (self.daily_rebalance and self.known_signals):
                 self._rebalance(today, exclude=exited_today)
 
             self._mark_to_market(today)
@@ -987,10 +1013,24 @@ class OptionsBacktestEngine:
         oriented = momentum if gap > 0 else -momentum
         return oriented * 100 >= self.momentum_min_pct
 
+    def _signal_row_for_rebalance(self, sym: str, s: dict, today: pd.Timestamp) -> dict:
+        """La ligne de signal telle quelle, sauf en daily_rebalance : le
+        `close` y est alors remplacé par le cours du JOUR (au lieu du cours
+        figé à la date du dernier dépôt), pour que l'écart de valorisation
+        reflète le mouvement du titre depuis la dernière publication -- sinon
+        réévaluer tous les jours ne changerait rien (cf. docstring du
+        module). La valorisation théorique, elle, n'est pas touchée : elle ne
+        bouge qu'au prochain signal, comme avant."""
+        if not self.daily_rebalance:
+            return s
+        close_today = self.prices.close_at(sym, today)
+        return {**s, "close": close_today} if close_today is not None else s
+
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
         universe_today = self.universe.asof(today)
         eligible_signals = pd.DataFrame([
-            s for sym, s in self.known_signals.items()
+            self._signal_row_for_rebalance(sym, s, today)
+            for sym, s in self.known_signals.items()
             if sym in universe_today
             and (
                 sym in self.positions

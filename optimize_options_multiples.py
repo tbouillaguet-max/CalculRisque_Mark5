@@ -219,6 +219,7 @@ def run_trial(
             stop_basis="underlying",
             exit_when_signal_lost=True,
             roll_when_days_left=params["roll_when_days_left"],
+            daily_rebalance=True,
             vol_mode="rolling",
             start_date=start_date,
             end_date=end_date,
