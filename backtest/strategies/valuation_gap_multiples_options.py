@@ -31,15 +31,23 @@ inchangée) :
        marché ne suffit pas.
     4. SORTIES pilotées par le signal (le moteur est configuré en
        exit_when_signal_lost + roulement, cf. engine_defaults) : une position
-       dont l'écart est repassé sous le seuil est VENDUE au trimestre suivant,
-       contrairement au comportement "position gelée" de l'autre stratégie.
+       dont l'écart est repassé sous le seuil est VENDUE au rebalancement
+       suivant, contrairement au comportement "position gelée" de l'autre
+       stratégie.
+    5. RÉÉVALUATION QUOTIDIENNE (daily_rebalance=True, cf. engine_defaults et
+       la docstring de options_engine.py) : l'éligibilité est recalculée
+       chaque jour de bourse avec le cours DU JOUR, pas seulement aux dates
+       de dépôt SEC -- une entreprise dont l'écart franchit le seuil entre
+       deux publications (mouvement de cours pur, sans nouveau 10-Q/10-K) est
+       donc détectée sans attendre le trimestre suivant. La valeur théorique,
+       elle, ne bouge qu'au prochain dépôt (comme avant) : seul le cours
+       comparé à cette valeur est mis à jour au jour le jour.
 
 Le signal étant recalculé à chaque publication trimestrielle (10-Q via
 04b_recuperation_10q.py, 10-K via 04) et daté de sa date de dépôt SEC réelle,
-la réévaluation demandée "tous les trimestres" est automatique : chaque
-nouveau dépôt produit un événement de signal, qui déclenche à la fois les
-achats des entreprises passant le seuil et les ventes de celles qui le
-repassent en sens inverse.
+chaque nouveau dépôt met à jour la valorisation théorique de l'entreprise
+concernée ; entre deux dépôts, c'est le rebalancement quotidien (point 5
+ci-dessus) qui capte les mouvements de cours purs.
 """
 
 from __future__ import annotations
@@ -67,6 +75,12 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         "stop_basis": "underlying",
         "exit_when_signal_lost": True,
         "roll_when_days_left": config.OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT,
+        # Réévalue l'éligibilité tous les jours de bourse (avec le cours du
+        # jour), pas seulement aux dates de dépôt SEC : une opportunité (ou
+        # une sortie de seuil) créée par le seul mouvement du titre entre
+        # deux publications trimestrielles est sinon invisible jusqu'au
+        # prochain 10-Q/10-K -- voir la docstring d'options_engine.py.
+        "daily_rebalance": True,
         # Volatilité de repricing suivie au jour le jour plutôt que figée à
         # l'entrée : sur une échéance 2 ans, figer la volatilité pendant toute
         # la vie de la position est une approximation nettement plus forte que
