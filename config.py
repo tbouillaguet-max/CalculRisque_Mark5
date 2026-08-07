@@ -264,6 +264,13 @@ BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simp
 # tolérer le glissement habituel de quelques semaines de la date de dépôt
 # d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
 # restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
+# Indice de référence auquel 09/10 comparent la stratégie (metrics.py). Doit
+# être un symbole présent dans DAILY_PRICES_FILE (03b) : à défaut, un indice
+# ÉQUIPONDÉRÉ de l'univers point-in-time est reconstruit à la volée, repère
+# utile mais différent du S&P 500 pondéré (voir
+# backtest/data_loader.build_benchmark_series).
+BENCHMARK_SYMBOL = "SPY"
+
 BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
 
 # Durée de vie d'un signal selon le type de période qui l'a produit : un TTM

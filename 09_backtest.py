@@ -92,6 +92,11 @@ def main() -> None:
     )
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de sortie (défaut: horodatage).")
     parser.add_argument("--risk-free-rate", type=float, default=config.RISK_FREE_RATE)
+    parser.add_argument(
+        "--benchmark-symbol", default=config.BENCHMARK_SYMBOL,
+        help="Indice de référence (défaut: %(default)s). Doit être présent dans les cours "
+             "quotidiens ; sinon un indice équipondéré de l'univers point-in-time est reconstruit.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -145,7 +150,15 @@ def main() -> None:
         args.strategy, engine.calendar[0].date(), engine.calendar[-1].date(), len(engine.calendar),
     )
     equity_curve, positions_history, trades, signals_history = engine.run()
-    run_metrics = metrics_mod.compute_metrics(equity_curve, trades, risk_free_rate=args.risk_free_rate)
+    benchmark_prices, benchmark_label = data_loader.build_benchmark_series(
+        price_panel, engine.universe, symbol=args.benchmark_symbol,
+    )
+    run_metrics = metrics_mod.compute_metrics(
+        equity_curve, trades,
+        risk_free_rate=args.risk_free_rate,
+        benchmark_prices=benchmark_prices,
+    )
+    run_metrics["benchmark_label"] = benchmark_label
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = config.DIR_BACKTEST / run_id
@@ -163,6 +176,7 @@ def main() -> None:
         "take_profit_pct": args.take_profit_pct, "max_positions": args.max_positions,
         "start_date": str(engine.calendar[0].date()), "end_date": str(engine.calendar[-1].date()),
         "risk_free_rate": args.risk_free_rate, "has_pit_universe": universe_history is not None,
+        "benchmark_symbol": args.benchmark_symbol, "benchmark_label": benchmark_label,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.info("Résultats sauvegardés dans %s", out_dir)
@@ -173,6 +187,7 @@ def main() -> None:
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])
+    logger.info("%s", metrics_mod.format_benchmark_summary(run_metrics, benchmark_label))
 
 
 if __name__ == "__main__":

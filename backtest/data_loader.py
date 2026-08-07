@@ -446,6 +446,74 @@ def load_current_universe_symbols() -> set[str]:
     return set(universe["RIC"].dropna().map(config.to_ib_symbol))
 
 
+def build_benchmark_series(
+    price_panel: PricePanel, universe: UniverseResolver, symbol: Optional[str] = None,
+) -> tuple[Optional[pd.Series], str]:
+    """Indice de référence auquel comparer la stratégie (cf. metrics.py), et
+    son libellé.
+
+    1. `symbol` (config.BENCHMARK_SYMBOL, SPY par défaut) s'il est présent
+       dans les cours quotidiens : c'est le meilleur repère, celui que
+       l'utilisateur aurait effectivement pu acheter.
+    2. Sinon, indice ÉQUIPONDÉRÉ de l'univers point-in-time : moyenne des
+       rendements quotidiens des seules entreprises membres de l'indice ce
+       jour-là, capitalisée. Équipondéré et non pondéré par la
+       capitalisation, faute de flottant historique -- c'est donc un repère
+       proche d'un S&P 500 Equal Weight, pas du S&P 500 lui-même : il
+       surpondère structurellement les petites capitalisations de l'indice.
+       Le libellé retourné le dit, pour qu'aucun alpha ne soit lu contre le
+       mauvais repère.
+    3. (None, libellé) si même ça n'est pas calculable.
+
+    Point-in-time par construction dans les deux cas : le repli n'utilise à
+    chaque date que la composition de l'indice À cette date (UniverseResolver),
+    jamais la composition d'aujourd'hui appliquée au passé."""
+    symbol = symbol or config.BENCHMARK_SYMBOL
+    close = price_panel.close
+
+    if symbol in close.columns:
+        series = close[symbol].dropna()
+        if len(series) > 1:
+            return series, symbol
+        logger.warning(
+            "%s est présent dans les cours quotidiens mais sans historique exploitable : "
+            "repli sur un indice équipondéré de l'univers.", symbol,
+        )
+    else:
+        logger.info(
+            "%s absent de %s : l'indice de référence est reconstruit en équipondéré à partir "
+            "de l'univers point-in-time. Ajoute %s à 03b_recuperation_cours_quotidiens.py pour "
+            "une comparaison au S&P 500 lui-même.", symbol, config.DAILY_PRICES_FILE, symbol,
+        )
+
+    returns = close.pct_change()
+    columns = np.asarray(close.columns)
+    daily_mean = np.full(len(close.index), np.nan)
+    returns_values = returns.to_numpy(dtype=float)
+    for row, date in enumerate(close.index):
+        if row == 0:
+            continue
+        members = universe.asof(date)
+        if not members:
+            continue
+        selected = returns_values[row, np.isin(columns, list(members))]
+        selected = selected[~np.isnan(selected)]
+        if len(selected):
+            daily_mean[row] = selected.mean()
+
+    valid = ~np.isnan(daily_mean)
+    if valid.sum() < 2:
+        logger.warning(
+            "Indice de référence équipondéré non calculable (aucun rendement exploitable) : "
+            "le run n'aura pas de point de comparaison."
+        )
+        return None, "aucun"
+
+    daily_mean[~valid] = 0.0
+    index = pd.Series(np.cumprod(1.0 + daily_mean), index=close.index)
+    return index, "univers S&P 500 équipondéré (point-in-time)"
+
+
 def load_option_snapshots_history(directory=None) -> pd.DataFrame:
     """Concatène TOUS les snapshots archivés par 08_recuperation_options.py
     (data/options/history/option_chains_*.parquet, un fichier par run,
