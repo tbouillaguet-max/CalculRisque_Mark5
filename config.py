@@ -396,6 +396,13 @@ OPTIONS_MIN_DEPLOYMENT_PCT = 25.0
 # investie en primes reste sous OPTIONS_MIN_DEPLOYMENT_PCT : c'est le plafond
 # qui prime, le plancher n'étant qu'une préférence. 0 ou None le désactive
 # (comportement d'avant : levier non borné).
+#
+# PORTÉE : ce plafond contraint l'ORDRE au moment où il est passé, pas la
+# position dans la durée. Entre deux renforcements, le delta du contrat dérive
+# avec le sous-jacent (gamma) et le moteur ne vend JAMAIS pour se désendetter
+# -- le levier réalisé peut donc dépasser le plafond de quelques dizaines de
+# points de NAV. Suivre la colonne delta_notional_pct de l'equity_curve pour
+# le constater sur un run donné.
 OPTIONS_MAX_DELTA_NOTIONAL_PCT = 100.0
 
 # Optimisation de taille au regard des frais.

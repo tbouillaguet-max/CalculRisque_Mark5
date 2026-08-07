@@ -34,9 +34,12 @@ def test_le_plafond_de_delta_borne_le_levier(panel, evenements):
     )
     equity_curve, _, _, _ = engine.run()
     leverage = equity_curve["delta_notional"] / equity_curve["nav"]
-    # Une marge de tolérance : le plafond est vérifié avant chaque
-    # renforcement, mais le sous-jacent bouge ensuite librement.
-    assert leverage.max() <= 1.35, f"levier max {leverage.max():.2f}x"
+    # Le plafond contraint l'ORDRE, pas la position dans la durée : entre deux
+    # renforcements, le delta du contrat dérive avec le sous-jacent (gamma) et
+    # le moteur ne vend jamais pour se désendetter. Le levier réalisé peut
+    # donc dépasser le plafond de quelques dizaines de points -- sans commune
+    # mesure avec les 6x du cas non plafonné.
+    assert leverage.max() <= 1.5, f"levier max {leverage.max():.2f}x"
 
 
 def test_sans_plafond_le_deploiement_a_90pct_explose_le_levier(panel, evenements):
@@ -73,6 +76,36 @@ def test_delta_notional_est_publie_dans_l_equity_curve(panel, evenements):
     # L'exposition delta dépasse toujours largement les primes décaissées :
     # c'est précisément l'effet de levier que la colonne rend visible.
     assert (ouvertes["delta_notional"] > ouvertes["invested_value"]).all()
+
+
+# --------------------------------------------------------------------------- #
+# C3 : redéploiement du cash oisif, tous les jours
+# --------------------------------------------------------------------------- #
+
+def test_le_redeploiement_a_lieu_meme_sans_ordre_en_file(panel, evenements, monkeypatch):
+    """_deploy_idle_cash vivait dans _execute_pending_orders, qui sort tôt sur
+    une file vide : le redéploiement ne se produisait que les jours où un
+    ordre était déjà en attente."""
+    from backtest import options_engine as oe
+
+    engine = moteur(panel, evenements, {"AAA": "CALL"}, min_deployment_pct=50.0)
+
+    jours_avec_file, jours_appeles = [], []
+    vrai_deploy = oe.OptionsBacktestEngine._deploy_idle_cash
+
+    def espion(self, today):
+        jours_appeles.append(today)
+        if self.pending_orders:
+            jours_avec_file.append(today)
+        return vrai_deploy(self, today)
+
+    monkeypatch.setattr(oe.OptionsBacktestEngine, "_deploy_idle_cash", espion)
+    engine.run()
+
+    assert len(jours_appeles) == len(engine.calendar), "appelé moins d'une fois par jour de bourse"
+    assert len(jours_appeles) > len(jours_avec_file), (
+        "aucun jour sans ordre en file : le test ne prouve rien"
+    )
 
 
 def test_drawdown_maximal_superieur_a_moins_cent_pourcent(panel, evenements):

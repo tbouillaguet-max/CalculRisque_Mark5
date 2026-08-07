@@ -344,6 +344,21 @@ class OptionsBacktestEngine:
     def run(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         for today in self.calendar:
             self._execute_pending_orders(today)
+            # Le cash resté oisif est remis au travail sur les positions
+            # ouvertes, TOUS LES JOURS. Cet appel vivait dans
+            # _execute_pending_orders, qui sort tôt sur
+            # `if not self.pending_orders: return` : le redéploiement n'avait
+            # donc lieu que les jours où un ordre était déjà en file -- une
+            # intermittence involontaire, qui laissait dormir des mois durant
+            # le cash libéré par une expiration ou un stop, jusqu'à ce qu'un
+            # ordre sans rapport le réveille.
+            #
+            # Placé juste après l'exécution des ordres (et non en fin de
+            # journée simulée) pour conserver l'ordre intra-journalier
+            # d'origine : le renforcement s'exécute au prix d'OUVERTURE, il ne
+            # doit donc pas être décidé après des étapes qui, elles, lisent la
+            # clôture du jour (expiration, stops, rebalancement).
+            self._deploy_idle_cash(today)
             exited_today = self._settle_expired_positions(today)
             exited_today |= self._handle_stale_underlyings(today)
             exited_today |= self._check_stop_loss_take_profit(today)
@@ -448,9 +463,6 @@ class OptionsBacktestEngine:
                 )
             self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
-        # Une fois les ordres du jour passés, le cash resté oisif est remis
-        # au travail sur les positions ouvertes (cf. _deploy_idle_cash).
-        self._deploy_idle_cash(today)
 
     def _spot_for_execution(self, symbol: str, today: pd.Timestamp) -> Optional[float]:
         """Prix d'ouverture du jour (celui auquel un ordre s'exécute), à
