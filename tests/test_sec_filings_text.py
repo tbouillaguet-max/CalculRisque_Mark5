@@ -118,3 +118,78 @@ def test_blocs_de_longueurs_inegales_ne_plantent_pas():
 def test_submissions_introuvable_donne_une_liste_vide(monkeypatch):
     monkeypatch.setattr(sft, "_get_json", lambda url: None)
     assert sft.fetch_submissions("0000000009") == []
+
+
+# --------------------------------------------------------------------------- #
+# D2 : historique complet (filings.files)
+# --------------------------------------------------------------------------- #
+
+ANCIENS = [
+    ("10-K", "2011-02-20", "0001-11-000001", "vieux.htm"),
+    ("10-Q", "2012-05-10", "0001-12-000002", "vieux2.htm"),
+]
+
+
+def _routeur(recent, pages: dict, cik: str = "0000000001"):
+    """Sert le document principal du CIK, puis les pages d'historique
+    référencées -- les pages portent leurs listes colonnaires à la RACINE,
+    sans enveloppe "filings", comme l'API réelle."""
+    url_principale = sft.SUBMISSIONS_URL.format(cik=cik)
+
+    def faux_get(url):
+        if url == url_principale:
+            return submissions_json(recent, files=[{"name": nom} for nom in pages])
+        for nom, entrees in pages.items():
+            if url == sft.SUBMISSIONS_PAGE_URL.format(name=nom):
+                return submissions_json(entrees)["filings"]["recent"]
+        return None
+    return faux_get
+
+
+def test_les_pages_anciennes_sont_suivies(monkeypatch):
+    """recent ne couvre que les ~1000 derniers dépôts, tous formulaires
+    confondus : sans les pages anciennes, un backtest 2010-2026 n'a aucun
+    filing sur sa première moitié."""
+    monkeypatch.setattr(sft, "_get_json", _routeur(ENTREES, {"CIK0000000001-submissions-001.json": ANCIENS}))
+    filings = sft.fetch_submissions("0000000001")
+    accessions = {f["accession_number"] for f in filings}
+    assert "0001-11-000001" in accessions
+    assert "0001-22-000002" in accessions
+
+
+def test_un_filing_ancien_devient_retrouvable(monkeypatch):
+    monkeypatch.setattr(sft, "_get_json", _routeur(ENTREES, {"page.json": ANCIENS}))
+    trouves = sft.list_company_filings(
+        "0000000001", forms=("10-K",), start_date="2011-02-20", end_date="2011-02-20",
+    )
+    assert [f["accession_number"] for f in trouves] == ["0001-11-000001"]
+
+
+def test_les_doublons_entre_pages_sont_ecartes(monkeypatch):
+    """Les pages et `recent` se recouvrent sur leur borne : un même 8-K ne
+    doit pas être classifié deux fois par 04c."""
+    monkeypatch.setattr(sft, "_get_json", _routeur(ENTREES, {"page.json": ENTREES[:2] + ANCIENS}))
+    filings = sft.fetch_submissions("0000000001")
+    accessions = [f["accession_number"] for f in filings]
+    assert len(accessions) == len(set(accessions))
+
+
+def test_page_inaccessible_ne_perd_pas_le_reste(monkeypatch, caplog):
+    url_principale = sft.SUBMISSIONS_URL.format(cik="0000000001")
+
+    def faux_get(url):
+        if url == url_principale:
+            return submissions_json(ENTREES, files=[{"name": "page-cassee.json"}])
+        return None   # la page d'historique est indisponible
+
+    monkeypatch.setattr(sft, "_get_json", faux_get)
+    with caplog.at_level("WARNING"):
+        filings = sft.fetch_submissions("0000000001")
+    assert len(filings) == len(ENTREES)
+    assert any("Page d'historique" in m for m in caplog.messages)
+
+
+def test_les_filings_sont_tries_par_date(monkeypatch):
+    monkeypatch.setattr(sft, "_get_json", _routeur(ENTREES, {"page.json": ANCIENS}))
+    dates = [f["filing_date"] for f in sft.fetch_submissions("0000000001")]
+    assert dates == sorted(dates)

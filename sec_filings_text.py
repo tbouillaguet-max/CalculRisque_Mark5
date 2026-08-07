@@ -15,10 +15,14 @@ recherche par MOT-CLÉ dans le contenu (moins adaptée à une énumération
 exhaustive par formulaire/date, et sujette à un classement par pertinence qui
 peut faire manquer des filings).
 
-Limite connue : seule filings.recent est consultée (les ~1000 dépôts les plus
-récents par CIK, largement suffisant pour du 10-K/10-Q/8-K sur quelques
-années) -- l'historique très ancien au-delà (filings.files, paginé côté SEC)
-n'est pas couvert par ce module.
+L'historique COMPLET est couvert : filings.recent (les ~1000 dépôts les plus
+récents) ET les pages anciennes référencées par filings.files. La distinction
+compte, parce que `recent` compte tous formulaires confondus et que les
+submissions d'un émetteur incluent tous les Form 3/4/5 de ses dirigeants --
+une grande capitalisation en dépose plusieurs centaines par an, si bien que
+`recent` ne couvre parfois que trois à cinq ans. S'en tenir là faisait
+renvoyer None à get_filing_text_asof sur toute la partie ancienne d'un
+backtest 2010-2026.
 
 Contrainte anti-anticipation (utilisée par 07b et 04c)
 --------------------------------------------------------
@@ -51,6 +55,8 @@ import config
 import sec_http
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+# Pages d'historique ancien, référencées par nom dans filings.files.
+SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik_nolead}/{accession_nodash}/{document}"
 
 # Cache des submissions : mémoire pour un run, disque pour les runs suivants.
@@ -155,12 +161,55 @@ def fetch_submissions(cik: str, use_cache: bool = True) -> List[Dict]:
     if not data:
         return []
 
-    filings = _normalize_filing_block(data.get("filings", {}).get("recent", {}))
+    blocks = data.get("filings", {})
+    filings = _normalize_filing_block(blocks.get("recent", {}))
+    filings.extend(_fetch_older_filings(cik, blocks.get("files", [])))
+
+    # Dédoublonnage par accession : les pages anciennes et `recent` peuvent se
+    # recouvrir sur leur borne, et un même filing ne doit pas être classifié
+    # deux fois par 04c.
+    unique: Dict[str, Dict] = {}
+    for filing in filings:
+        accession = filing.get("accession_number")
+        if accession and accession not in unique:
+            unique[accession] = filing
+    filings = sorted(unique.values(), key=lambda f: f.get("filing_date") or "")
 
     if use_cache:
         _submissions_memory_cache[cik] = filings
         _write_submissions_cache(cik, filings)
     return filings
+
+
+def _fetch_older_filings(cik: str, files: List[dict]) -> List[Dict]:
+    """Pages d'historique ancien référencées par data["filings"]["files"].
+
+    `recent` ne contient que les ~1000 derniers dépôts, TOUS FORMULAIRES
+    CONFONDUS. Or les submissions d'un émetteur incluent tous les Form 3/4/5
+    de ses dirigeants : une grande capitalisation en dépose plusieurs
+    centaines par an, si bien que `recent` ne couvre parfois que trois à cinq
+    ans. Sur un backtest 2010-2026, get_filing_text_asof renvoyait donc None
+    pour toute la partie ancienne -- et 07b journalisait "non_evalue" sans
+    distinguer ce cas d'un vrai manque de verdict.
+
+    Une page qu'on ne sait pas récupérer est journalisée et sautée : mieux
+    vaut un historique partiel signalé qu'un échec de tout le ticker."""
+    older: List[Dict] = []
+    for page in files or []:
+        name = page.get("name") if isinstance(page, dict) else None
+        if not name:
+            continue
+        data = _get_json(SUBMISSIONS_PAGE_URL.format(name=name))
+        if not data:
+            logger.warning(
+                "Page d'historique %s inaccessible pour CIK %s : les filings qu'elle contient "
+                "resteront introuvables (verdicts 'non_evalue_filing_introuvable').", name, cik,
+            )
+            continue
+        # Les pages anciennes portent les mêmes listes colonnaires que
+        # `recent`, mais à la RACINE du document, sans enveloppe "filings".
+        older.extend(_normalize_filing_block(data))
+    return older
 
 
 def filter_filings(

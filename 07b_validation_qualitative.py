@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -127,12 +128,37 @@ def evaluate_period(row: pd.Series) -> dict:
 
     filing = sft.get_filing_text_asof(cik, filed_date, forms=forms)
     if filing is None:
-        return {"verdict": "non_evalue", "justification": "Filing introuvable à cette date exacte.", "risques_cites": None}
+        # Distingué de "pas de clé API" ci-dessous : les deux produisaient le
+        # même "non_evalue", si bien qu'un trou de couverture SEC et une
+        # absence de configuration se lisaient pareil dans le parquet de
+        # sortie -- impossible de savoir laquelle des deux corriger.
+        return {
+            "verdict": "non_evalue_filing_introuvable",
+            "justification": "Aucun 10-K/10-Q trouvé à cette date de dépôt exacte.",
+            "risques_cites": None,
+        }
+
+    if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
+        return {
+            "verdict": "non_evalue_pas_de_cle_api",
+            "justification": f"{sft.MISTRAL_API_KEY_ENV} non définie : aucun appel au modèle.",
+            "risques_cites": None,
+            "accession_number": filing["accession_number"],
+            "form": filing["form"],
+            "extraction_mode": filing.get("extraction_mode"),
+        }
 
     prompt = build_prompt(symbol, filing["form"], filed_date, float(row["gap_pct"]), filing["text"])
     result = sft.analyser_texte_mistral(prompt)
     if result is None or "verdict" not in result:
-        return {"verdict": "non_evalue", "justification": "Réponse Mistral indisponible ou invalide.", "risques_cites": None}
+        return {
+            "verdict": "non_evalue_reponse_invalide",
+            "justification": "Réponse Mistral indisponible ou invalide.",
+            "risques_cites": None,
+            "accession_number": filing["accession_number"],
+            "form": filing["form"],
+            "extraction_mode": filing.get("extraction_mode"),
+        }
 
     return {
         "verdict": result.get("verdict"),
@@ -140,6 +166,10 @@ def evaluate_period(row: pd.Series) -> dict:
         "risques_cites": json.dumps(result.get("risques_cites"), ensure_ascii=False) if result.get("risques_cites") is not None else None,
         "accession_number": filing["accession_number"],
         "form": filing["form"],
+        # Qualité de l'extraction, remontée jusqu'au parquet : un verdict
+        # rendu sur le début du document ne porte pas sur la même chose qu'un
+        # verdict rendu sur les Items 1A/3/7 (cf. sec_filings_text.MAX_TEXT_CHARS).
+        "extraction_mode": filing.get("extraction_mode"),
     }
 
 
@@ -200,12 +230,11 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    import os
     if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
         logger.warning(
             "MISTRAL_API_KEY non définie : toutes les périodes seront journalisées comme "
-            "'non_evalue' (pas d'appel Mistral). export MISTRAL_API_KEY=... pour activer "
-            "la validation qualitative."
+            "'non_evalue_pas_de_cle_api' (pas d'appel Mistral). export MISTRAL_API_KEY=... "
+            "pour activer la validation qualitative."
         )
 
     periods = load_signal_periods(limit=args.limit)
