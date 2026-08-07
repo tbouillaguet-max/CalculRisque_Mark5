@@ -102,8 +102,18 @@ MISTRAL_API_KEY_ENV = "MISTRAL_API_KEY"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = "mistral-large-latest"
 MISTRAL_MAX_RETRIES = 3
+# Reprises sur réponse NON PARSABLE (distinct des reprises réseau ci-dessus) :
+# une seule. L'ancienne version n'en faisait aucune (abandon immédiat), mais
+# insister sur un modèle qui vient de répondre hors format coûte des appels
+# payants pour un gain marginal.
+MISTRAL_MAX_PARSE_RETRIES = 2
 MISTRAL_RETRY_DELAY = 2
 MISTRAL_TEMPERATURE = 0.1
+
+# Délimiteurs de bloc de code Markdown, que les modèles ajoutent volontiers
+# autour d'un JSON ("```json\n{...}\n```") -- l'ancienne exigence
+# `content.startswith("{")` les rejetait purement et simplement.
+_CODE_FENCE = re.compile(r"^\s*```(?:json|JSON)?\s*|\s*```\s*$")
 
 logger = logging.getLogger("sec_filings_text")
 
@@ -465,6 +475,37 @@ def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-
     return {**filing, "text": text, "extraction_mode": extraction_mode}
 
 
+def _parse_json_reponse(content) -> Optional[dict]:
+    """Objet JSON contenu dans une réponse de modèle, ou None.
+
+    L'ancienne version exigeait `content.startswith("{")` et
+    `content.endswith("}")` : une réponse encadrée de ```json ... ``` -- ce
+    que les modèles produisent spontanément -- était rejetée sans réessai,
+    alors que le JSON attendu était bien là. Trois niveaux de tolérance, du
+    plus strict au plus permissif, pour ne jamais accepter autre chose qu'un
+    objet JSON complet."""
+    if not isinstance(content, str):
+        return None
+    texte = _CODE_FENCE.sub("", content.strip()).strip()
+
+    try:
+        parsed = json.loads(texte)
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        pass
+
+    # Dernier recours : le modèle a encadré son JSON de prose. On isole la
+    # première accolade ouvrante et la dernière fermante.
+    debut, fin = texte.find("{"), texte.rfind("}")
+    if debut == -1 or fin <= debut:
+        return None
+    try:
+        parsed = json.loads(texte[debut:fin + 1])
+        return parsed if isinstance(parsed, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
 def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     """Appelle Mistral avec un prompt demandant une réponse JSON stricte --
     même pattern que 02_categoriser_secteurs.py::appeler_mistral (retries
@@ -483,24 +524,40 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
         "messages": [{"role": "user", "content": prompt}],
         "temperature": MISTRAL_TEMPERATURE,
         "max_tokens": max_tokens,
+        # Mode JSON natif de l'API : le modèle ne peut plus encadrer sa
+        # réponse d'un bloc de code ni la préfixer d'une phrase. C'est la
+        # correction à la racine ; _parse_json_reponse reste en garde-fou.
+        "response_format": {"type": "json_object"},
     }
 
+    parse_failures = 0
     for attempt in range(MISTRAL_MAX_RETRIES):
         try:
             resp = requests.post(MISTRAL_URL, headers=headers, json=payload, timeout=45)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
-            if not content.startswith("{") or not content.endswith("}"):
-                logger.warning("Réponse Mistral non-JSON : %s", content[:200])
-                return None
-            return json.loads(content)
+            content = resp.json()["choices"][0]["message"]["content"]
         except requests.exceptions.RequestException as e:
             delay = MISTRAL_RETRY_DELAY * (2 ** attempt) + random.uniform(0, 1)
             logger.warning("Tentative Mistral %d échouée: %s. Nouvel essai dans %.1fs...", attempt + 1, e, delay)
             time.sleep(delay)
-        except (KeyError, json.JSONDecodeError) as e:
-            logger.error("Erreur de parsing de la réponse Mistral: %s", e)
+            continue
+        except (KeyError, ValueError) as e:
+            logger.error("Réponse Mistral inexploitable (enveloppe): %s", e)
             return None
+
+        parsed = _parse_json_reponse(content)
+        if parsed is not None:
+            return parsed
+
+        # Réponse non parsable : UNE seule reprise, pas trois. L'ancienne
+        # version abandonnait immédiatement (return None sans réessai), mais
+        # insister davantage sur un modèle qui vient de répondre hors format
+        # coûte trois appels payants pour un gain marginal.
+        parse_failures += 1
+        if parse_failures >= MISTRAL_MAX_PARSE_RETRIES:
+            logger.warning("Réponse Mistral non exploitable après %d essais : %s", parse_failures, str(content)[:200])
+            return None
+        logger.warning("Réponse Mistral non parsable, une nouvelle tentative : %s", str(content)[:200])
 
     logger.error("Échec après %d tentatives Mistral.", MISTRAL_MAX_RETRIES)
     return None
