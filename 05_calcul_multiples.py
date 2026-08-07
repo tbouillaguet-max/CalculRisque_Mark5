@@ -239,6 +239,16 @@ def main() -> None:
     # regroupement par secteur dans 06. On convertit le RIC au même format
     # de symbole que le reste du pipeline (config.to_ib_symbol) : sinon les
     # tickers à classes d'actions (BRK.B, BF.B) se retrouvent sans secteur.
+    #
+    # BIAIS CONNU (non corrigé, cf. README) : ce secteur est la classification
+    # d'AUJOURD'HUI, appliquée rétroactivement à tous les exercices, y compris
+    # 2012. Une entreprise reclassée depuis (les GICS ont notamment déplacé
+    # les télécoms et une partie de la tech vers "Services de communication"
+    # en 2018) est donc comparée aux mauvais pairs sur toute sa partie
+    # ancienne, et se voit appliquer les mauvaises hypothèses de DCF
+    # (config.SECTOR_DCF_PARAMS) et les mauvais multiples pertinents
+    # (config.SECTOR_MULTIPLES). L'historique GICS point-in-time n'est pas
+    # disponible gratuitement -- c'est un biais assumé, pas un oubli.
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
     if "sector" in universe.columns:
         universe = universe.copy()

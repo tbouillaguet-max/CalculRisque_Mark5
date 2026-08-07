@@ -133,6 +133,12 @@ logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
 
+# Sorties qui ont lieu QUOI QU'IL ARRIVE, même quand les frais dépassent la
+# valeur résiduelle du contrat : à l'échéance il n'y a plus rien à détenir (le
+# contrat est abandonné sans frais), et sur une disparition des cours du
+# sous-jacent il n'y a aucune cotation future à espérer. Voir _reduce_position.
+FORCED_EXIT_REASONS = frozenset({"expiry", "data_gap"})
+
 # Bornes de la volatilité de repricing en mode "rolling" : une volatilité
 # réalisée mesurée sur une fenêtre courte peut devenir aberrante (quasi nulle
 # sur un titre suspendu, ou plusieurs centaines de % après un saut isolé), et
@@ -988,16 +994,29 @@ class OptionsBacktestEngine:
         current_premium = self._current_premium(pos, today, spot=spot)
         if current_premium is None:
             return
-        # Plancher à 0 : quand la commission dépasse ce que vaut encore
-        # l'option (prime quasi nulle), on ne PAIE pas pour vendre -- on laisse
-        # expirer sans valeur. Sans ce plancher, la sortie encaissait un
-        # produit négatif : le trade perdait plus que la prime investie
-        # (return_pct < -100%) et le cash fuyait à chaque clôture.
-        # Commission retranchée au niveau de l'ORDRE (minimum forfaitaire),
-        # pas au prorata de chaque contrat.
         gross_premium = current_premium * (1 - self.slippage_rate)
         gross_value = contracts_to_sell * pos.multiplier * gross_premium
         commission = self._order_commission(contracts_to_sell, gross_premium, pos.multiplier, today, "sell")
+
+        # Quand la commission dépasse ce que vaut encore l'option (prime quasi
+        # nulle), on ne PAIE pas pour vendre : on laisse expirer. Le
+        # raisonnement est juste, mais l'ancien `max(gross_value - commission,
+        # 0.0)` en tirait la mauvaise conclusion -- il sortait la position à
+        # zéro tout en ne payant jamais la commission, c'est-à-dire qu'il
+        # comptabilisait une vente qui n'avait pas lieu.
+        #
+        # La position reste donc OUVERTE jusqu'à son échéance. Deux exceptions,
+        # où il n'y a rien à attendre : l'expiration elle-même (le contrat est
+        # abandonné sans frais, produit nul) et la disparition des données du
+        # sous-jacent (aucune cotation future à espérer).
+        if gross_value <= commission and reason not in FORCED_EXIT_REASONS:
+            logger.debug(
+                "%s : vente non passée (%s) -- valeur résiduelle %.2f$ inférieure aux frais "
+                "%.2f$. Position conservée jusqu'à l'échéance du %s.",
+                pos.symbol, reason, gross_value, commission, pos.expiry.date(),
+            )
+            return
+
         proceeds = max(gross_value - commission, 0.0)
         effective_premium = proceeds / (contracts_to_sell * pos.multiplier)
         self.cash += proceeds

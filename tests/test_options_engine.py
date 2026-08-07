@@ -108,6 +108,91 @@ def test_le_redeploiement_a_lieu_meme_sans_ordre_en_file(panel, evenements, monk
     )
 
 
+# --------------------------------------------------------------------------- #
+# E4 : commission de sortie
+# --------------------------------------------------------------------------- #
+
+def _position_sans_valeur(engine, panel, expiry_index=-1):
+    from backtest.options_engine import OptionPosition
+
+    pos = OptionPosition(
+        symbol="AAA", option_type="CALL",
+        strike=10_000.0,                       # très loin de la monnaie : prime ~0
+        expiry=panel.close.index[expiry_index],
+        contracts=1.0, entry_premium=5.0, entry_date=panel.close.index[0],
+        vol=0.25, multiplier=100.0, source="simulated",
+        entry_spot=100.0, stop_reference_premium=5.0, stop_reference_spot=100.0,
+    )
+    engine.positions["AAA"] = pos
+    return pos
+
+
+def test_une_vente_qui_couterait_plus_qu_elle_ne_rapporte_n_a_pas_lieu(panel, evenements):
+    """L'ancien `max(gross_value - commission, 0)` sortait la position à zéro
+    SANS jamais payer la commission : il comptabilisait une vente qui n'avait
+    pas lieu."""
+    engine = moteur(panel, evenements, {"AAA": "CALL"})
+    _position_sans_valeur(engine, panel)
+    cash_avant = engine.cash
+
+    engine._close_position("AAA", panel.close.index[10], "stop_loss")
+
+    assert "AAA" in engine.positions, "position sortie alors que la vente n'est pas passée"
+    assert engine.cash == pytest.approx(cash_avant)
+    assert engine.trades == []
+
+
+def test_l_expiration_reste_une_sortie_forcee(panel, evenements):
+    """À l'échéance il n'y a plus rien à détenir : le contrat est abandonné
+    sans frais, produit nul."""
+    engine = moteur(panel, evenements, {"AAA": "CALL"})
+    _position_sans_valeur(engine, panel)
+    cash_avant = engine.cash
+
+    engine._close_position("AAA", panel.close.index[-1], "expiry")
+
+    assert "AAA" not in engine.positions
+    assert engine.cash == pytest.approx(cash_avant)      # produit nul, pas de frais payés
+    assert engine.trades[-1]["exit_reason"] == "expiry"
+
+
+def test_la_disparition_des_cours_reste_une_sortie_forcee(panel, evenements):
+    """Aucune cotation future à espérer : conserver la position n'aurait
+    aucun sens."""
+    engine = moteur(panel, evenements, {"AAA": "CALL"})
+    _position_sans_valeur(engine, panel)
+    engine._close_position("AAA", panel.close.index[10], "data_gap")
+    assert "AAA" not in engine.positions
+
+
+def test_une_vente_rentable_se_fait_normalement(panel, evenements):
+    """Le garde-fou ne doit pas bloquer les sorties ordinaires."""
+    engine = moteur(panel, evenements, {"AAA": "CALL"})
+    from backtest.options_engine import OptionPosition
+
+    engine.positions["AAA"] = OptionPosition(
+        symbol="AAA", option_type="CALL", strike=50.0,    # dans la monnaie
+        expiry=panel.close.index[-1], contracts=10.0, entry_premium=5.0,
+        entry_date=panel.close.index[0], vol=0.25, multiplier=100.0,
+        source="simulated", entry_spot=100.0,
+        stop_reference_premium=5.0, stop_reference_spot=100.0,
+    )
+    cash_avant = engine.cash
+    engine._close_position("AAA", panel.close.index[10], "take_profit")
+
+    assert "AAA" not in engine.positions
+    assert engine.cash > cash_avant
+    assert engine.trades[-1]["exit_reason"] == "take_profit"
+
+
+def test_aucun_trade_ne_perd_plus_que_sa_prime(panel, evenements):
+    """Conséquence attendue du plancher : return_pct >= -100% partout."""
+    engine = moteur(panel, evenements, {"AAA": "CALL", "BBB": "PUT"}, min_deployment_pct=90.0)
+    _, _, trades, _ = engine.run()
+    if not trades.empty:
+        assert trades["return_pct"].min() >= -100.0
+
+
 def test_drawdown_maximal_superieur_a_moins_cent_pourcent(panel, evenements):
     """Critère d'acceptation : un portefeuille non margé ne peut pas perdre
     plus que son capital."""

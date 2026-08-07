@@ -150,6 +150,13 @@ def build_input_table(latest_only: bool = True) -> pd.DataFrame:
     aujourd'hui."""
     financials = load_financials_with_periods()
     financials = match_price_asof(financials)
+    # BIAIS CONNU (non corrigé, cf. README) : le secteur vient de
+    # config.UNIVERSE_FILE, soit la classification GICS d'AUJOURD'HUI,
+    # appliquée rétroactivement à des exercices de 2012. Il pilote le WACC et
+    # les deux taux de croissance du DCF (hypotheses_pour_secteur), donc une
+    # entreprise reclassée depuis est valorisée sur toute sa partie ancienne
+    # avec les hypothèses du mauvais secteur. L'historique GICS point-in-time
+    # n'est pas disponible gratuitement : biais assumé, pas un oubli.
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
 
     # 'working_capital' (produit par 04/04b) est un NIVEAU (current_assets -
