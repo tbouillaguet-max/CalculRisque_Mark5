@@ -299,6 +299,7 @@ def main() -> None:
         equity_curve, trades,
         risk_free_rate=config.RISK_FREE_RATE,
         benchmark_prices=benchmark_prices,
+        extra=engine.execution_diagnostics(),
     )
     run_metrics["benchmark_label"] = benchmark_label
 
@@ -329,6 +330,8 @@ def main() -> None:
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
+        "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "avg_delta_notional_pct", "max_delta_notional_pct_observed",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])

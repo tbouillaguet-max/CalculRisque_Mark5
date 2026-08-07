@@ -45,6 +45,11 @@ logger = logging.getLogger("backtest.engine")
 
 MIN_TRADE_DOLLAR = 1.0  # en dessous, un ordre de rebalancement est ignoré (évite le "churn" sur des écarts négligeables)
 
+# Au-delà de cette part d'ordres d'achat rognés faute de cash, le
+# sous-investissement n'est plus un accident isolé mais le régime normal du
+# run : il est signalé en fin de backtest (cf. execution_diagnostics).
+TRUNCATED_ORDERS_WARNING_PCT = 10.0
+
 
 @dataclass
 class Position:
@@ -123,6 +128,16 @@ class BacktestEngine:
         self.equity_curve_rows: list[dict] = []
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
+
+        # Diagnostics d'exécution (voir execution_diagnostics). _rebalance
+        # alloue un budget égal au NAV diminué des positions GELÉES, mais ces
+        # positions ne sont pas vendues : le cash réellement disponible est
+        # souvent inférieur au budget alloué, et _execute_trade tronquait
+        # l'achat en silence. Combiné à la règle "on ne sort jamais sur perte
+        # de signal", le portefeuille dérive alors vers un buy-and-hold de
+        # positions périmées sans que rien ne le signale.
+        self.buy_orders_count = 0
+        self.truncated_orders_count = 0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -212,7 +227,11 @@ class BacktestEngine:
             # positions conservées -- sans cette borne, le cash passait
             # négatif et l'exposition dépassait 100% du portefeuille.
             cost = shares_delta * effective_price
+            self.buy_orders_count += 1
             if cost > self.cash:
+                # Troncature COMPTÉE, plus silencieuse : c'est le symptôme
+                # observable du sous-investissement décrit dans __init__.
+                self.truncated_orders_count += 1
                 if self.cash <= 0:
                     return
                 shares_delta, cost = shares_delta * (self.cash / cost), self.cash
@@ -301,6 +320,50 @@ class BacktestEngine:
 
     def _queue_order(self, symbol: str, target_dollar: float, reason: str, today: pd.Timestamp) -> None:
         self.pending_orders[symbol] = _PendingOrder(target_dollar, reason, today)
+
+    # ------------------------------------------------------------------ #
+    def execution_diagnostics(self) -> dict:
+        """Écart entre ce que le rebalancement a DEMANDÉ et ce que le cash a
+        permis d'exécuter, à fusionner dans metrics.json.
+
+        La règle des positions gelées est un choix utilisateur assumé et n'est
+        pas remise en cause ici -- mais elle a une conséquence qui, elle, doit
+        être visible : _rebalance alloue un budget calculé sur le NAV
+        (positions gelées déduites) alors que ces positions restent détenues,
+        si bien que le cash disponible est souvent inférieur au budget. Les
+        achats étaient alors rognés sans que rien ne l'indique, et le
+        portefeuille glissait vers un buy-and-hold de lignes périmées.
+
+        avg_cash_pct mesure l'autre face du même phénomène : la part du
+        portefeuille restée en cash faute d'avoir pu exécuter les ordres."""
+        truncated_pct = (
+            self.truncated_orders_count / self.buy_orders_count * 100
+            if self.buy_orders_count else 0.0
+        )
+        cash_pct = [
+            row["cash"] / row["nav"] * 100
+            for row in self.equity_curve_rows if row["nav"] > 0
+        ]
+        avg_cash_pct = sum(cash_pct) / len(cash_pct) if cash_pct else None
+
+        if truncated_pct > TRUNCATED_ORDERS_WARNING_PCT:
+            logger.warning(
+                "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
+                "alloué par le rebalancement dépasse régulièrement le cash disponible, parce que "
+                "les positions gelées immobilisent du capital sans être vendues. Le portefeuille "
+                "est donc moins investi que la stratégie ne le demande (cash moyen %.1f%%). "
+                "Réduire --max-positions, ou accepter ce sous-investissement comme faisant "
+                "partie de la règle des positions gelées.",
+                truncated_pct, self.truncated_orders_count, self.buy_orders_count,
+                avg_cash_pct if avg_cash_pct is not None else float("nan"),
+            )
+
+        return {
+            "buy_orders_count": self.buy_orders_count,
+            "truncated_orders_count": self.truncated_orders_count,
+            "truncated_orders_pct": float(truncated_pct),
+            "avg_cash_pct": float(avg_cash_pct) if avg_cash_pct is not None else None,
+        }
 
     # ------------------------------------------------------------------ #
     # Signaux et rebalancement

@@ -126,6 +126,7 @@ import pandas as pd
 
 import config
 from backtest import data_loader, options_pricing
+from backtest import engine as engine_mod
 from backtest.strategies.options_base import OptionsStrategy
 
 logger = logging.getLogger("backtest.options_engine")
@@ -318,6 +319,10 @@ class OptionsBacktestEngine:
         self.equity_curve_rows: list[dict] = []
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
+
+        # Voir execution_diagnostics (même raisonnement que le moteur actions).
+        self.buy_orders_count = 0
+        self.truncated_orders_count = 0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -791,9 +796,14 @@ class OptionsBacktestEngine:
         contrats : avec un minimum par ordre, réduire la taille de moitié ne
         réduit pas le coût de moitié. Le coût est donc REcalculé après chaque
         réduction, au lieu d'être mis à l'échelle."""
+        self.buy_orders_count += 1
         cost = cost_of(contracts)
         if cost <= self.cash:
             return contracts, cost
+        # Même diagnostic que le moteur actions (cf. engine.execution_diagnostics) :
+        # le budget vient du NAV net des positions gelées, qui restent pourtant
+        # détenues -- le cash disponible est donc souvent inférieur.
+        self.truncated_orders_count += 1
         if self.cash <= 0:
             return 0.0, 0.0
 
@@ -1092,7 +1102,18 @@ class OptionsBacktestEngine:
                 "options clôturée à la dernière valorisation connue.",
                 symbol, last_valid.date(), data_loader.FORWARD_FILL_MAX_DAYS,
             )
-            self._close_position(symbol, last_valid, "data_gap")
+            # Valorisée à `last_valid` (dernier cours réel connu), mais DATÉE
+            # de `today` -- l'alignement sur backtest/engine.py, qui fait déjà
+            # _execute_trade(..., today, "data_gap") au dernier prix connu.
+            #
+            # L'appel d'origine passait `last_valid` comme date du trade : la
+            # sortie et holding_days étaient datées du dernier cours connu (des
+            # jours, parfois des semaines, avant la journée simulée) et surtout
+            # le cash était crédité à une date ANTÉRIEURE à celle où le moteur
+            # se trouve -- une position pouvait ainsi financer des achats déjà
+            # passés dans la simulation.
+            spot = self.prices.close_at(symbol, last_valid)
+            self._close_position(symbol, today, "data_gap", spot=spot)
             closed.add(symbol)
         return closed
 
@@ -1234,6 +1255,36 @@ class OptionsBacktestEngine:
             self.pending_orders[symbol] = _PendingOrder(0.0, reason, today)
             closed.add(symbol)
         return closed
+
+    # ------------------------------------------------------------------ #
+    def execution_diagnostics(self) -> dict:
+        """Mêmes diagnostics que backtest/engine.py::execution_diagnostics,
+        plus l'exposition delta moyenne et maximale -- le levier n'a pas à
+        être relu à la main dans l'equity_curve pour être constaté."""
+        truncated_pct = (
+            self.truncated_orders_count / self.buy_orders_count * 100
+            if self.buy_orders_count else 0.0
+        )
+        rows = [row for row in self.equity_curve_rows if row["nav"] > 0]
+        cash_pct = [row["cash"] / row["nav"] * 100 for row in rows]
+        delta_pct = [row["delta_notional"] / row["nav"] * 100 for row in rows]
+
+        if truncated_pct > engine_mod.TRUNCATED_ORDERS_WARNING_PCT:
+            logger.warning(
+                "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
+                "alloué dépasse régulièrement le cash disponible, les positions gelées "
+                "immobilisant du capital sans être vendues.",
+                truncated_pct, self.truncated_orders_count, self.buy_orders_count,
+            )
+
+        return {
+            "buy_orders_count": self.buy_orders_count,
+            "truncated_orders_count": self.truncated_orders_count,
+            "truncated_orders_pct": float(truncated_pct),
+            "avg_cash_pct": float(sum(cash_pct) / len(cash_pct)) if cash_pct else None,
+            "avg_delta_notional_pct": float(sum(delta_pct) / len(delta_pct)) if delta_pct else None,
+            "max_delta_notional_pct_observed": float(max(delta_pct)) if delta_pct else None,
+        }
 
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne
