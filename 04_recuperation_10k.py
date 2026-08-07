@@ -29,6 +29,14 @@ Corrections majeures par rapport à Recuperation10KMark2 :
       interest_expense, shares_outstanding) au lieu du mélange FR/EN
       d'origine ("CA", "Dette net", "Nombre d'action"...) qui empêchait
       06/07/08 de relire correctement les données produites par ce script.
+    - CORRIGÉ : extract_annual_values classait les faits par `v["fy"]`, qui
+      désigne l'exercice du RAPPORT et non la période décrite par le fait --
+      les trois exercices comparatifs d'un même 10-K atterrissaient sous la
+      même clé et c'est un fait arbitraire qui l'emportait. Le rattachement
+      se fait désormais sur `end`/`start` (voir sa docstring et le module
+      partagé sec_xbrl.py). CE CORRECTIF INVALIDE financials.parquet : il
+      faut relancer `04 --force-refresh`, puis 05, 07 et 06b avant tout
+      backtest.
     - NOUVEAU : throttle par ticker (data/financials/fetch_state.json) et
       fusion avec le fichier existant au lieu de tout réinterroger/écraser
       à chaque run. Un 10-K annuel ne sort qu'une fois par an : inutile
@@ -75,6 +83,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 import config
+import sec_xbrl
 
 FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state.json"
 REFRESH_DAYS_DEFAULT = 30
@@ -124,6 +133,15 @@ XBRL_TAGS: Dict[str, List[str]] = {
     "current_assets": ["AssetsCurrent"],
     "current_liabilities": ["LiabilitiesCurrent"],
 }
+
+# Chaque métrique doit être classée flux XOR stock : c'est cette
+# classification qui décide si un fait XBRL doit passer le filtre de durée
+# annuelle (voir sec_xbrl.collect_annual_entries). Une métrique ajoutée à
+# XBRL_TAGS sans être classée ferait échouer l'assertion au chargement du
+# module plutôt que d'être silencieusement traitée comme un poste de bilan.
+assert sec_xbrl.FLOW_METRICS | sec_xbrl.STOCK_METRICS == set(XBRL_TAGS), (
+    "Chaque tag XBRL doit être classé flux XOR stock dans sec_xbrl."
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -219,21 +237,53 @@ def get_cik_map(session: Optional[requests.Session] = None) -> Dict[str, str]:
     return {entry["ticker"].upper(): str(entry["cik_str"]).zfill(10) for entry in data.values()}
 
 
-def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float, str]]:
+def extract_annual_values(
+    facts: dict, tags: List[str], metric_is_flow: bool, period_ends: Optional[List[str]] = None,
+) -> Dict[int, Tuple[float, str]]:
     """
     Pour une métrique donnée (plusieurs tags candidats, dans l'ordre de
-    préférence), retourne {année_fiscale: (valeur, date_de_dépôt)} en ne
-    gardant que les faits associés à un 10-K annuel (form == "10-K",
-    fp == "FY"). La date de dépôt ("filed", format "YYYY-MM-DD") est
-    retournée en plus de la valeur (et non plus jetée après sélection) : le
-    backtest (09_backtest.py) en a besoin pour savoir à partir de quand cette
-    valeur était réellement publique -- l'utiliser dès le 31/12 de l'exercice
-    serait du look-ahead bias (un 10-K est déposé ~2-3 mois après la clôture).
+    préférence), retourne {exercice: (valeur, date_de_dépôt)}. La date de
+    dépôt ("filed", format "YYYY-MM-DD") est retournée en plus de la valeur :
+    le backtest (09_backtest.py) en a besoin pour savoir à partir de quand
+    cette valeur était réellement publique -- l'utiliser dès le 31/12 de
+    l'exercice serait du look-ahead bias (un 10-K est déposé ~2-3 mois après
+    la clôture).
+
+    CORRIGÉ : la période d'un fait se lit sur `start`/`end`, pas sur `fy`
+    ------------------------------------------------------------------------
+    L'ancienne version filtrait sur (form == "10-K", fp == "FY") puis classait
+    par `v["fy"]`. Or `fy`/`fp` décrivent LE RAPPORT dans lequel le fait
+    apparaît, pas la période qu'il mesure : les comparatifs FY2022 et FY2021
+    publiés dans un 10-K FY2023 sortent tous du JSON avec fy=2023, fp="FY",
+    form="10-K" et la MÊME date `filed`. Trois exercices atterrissaient donc
+    sous la même clé, et le départage `elif priority == current[0] and
+    filed > current[1]` ne pouvait pas les séparer (égalité stricte des
+    `filed`) : c'est le premier fait rencontré dans l'ordre du JSON qui
+    l'emportait, arbitrairement -- souvent la période la plus ancienne.
+
+    Le rattachement se fait désormais sur l'année de `end`, après un filtre de
+    durée pour les postes de flux (voir sec_xbrl, module partagé avec
+    04b_recuperation_10q.py qui applique la même mécanique à sa fenêtre
+    trimestrielle). `metric_is_flow` dit lequel des deux régimes appliquer :
+        - flux (revenue, ebit, net_income, capex, da, income_tax_expense,
+          interest_expense) : seuls les faits de 330 à 400 jours sont retenus,
+          ce qui écarte les cumuls 6/9 mois et les trimestres isolés ;
+        - bilan (total_assets, cash, dettes, current_assets,
+          current_liabilities, shares_outstanding) : pas de `start`, donc pas
+          de durée à vérifier.
+
+    La priorité entre tags candidats et la règle "dépôt le plus récent gagne"
+    (restatements) sont conservées, appliquées APRÈS ce filtre.
 
     Un tag "namespace:tag" (ex: "dei:EntityCommonStockSharesOutstanding")
     cherche dans cette taxonomie XBRL au lieu de "us-gaap" par défaut --
     nécessaire pour shares_outstanding, que beaucoup d'entreprises ne taguent
-    qu'en "dei" (page de garde du 10-K) et jamais en "us-gaap".
+    qu'en "dei" (page de garde du 10-K) et jamais en "us-gaap". Ces tags de
+    page de garde sont datés du jour où l'émetteur arrête le compte (quelques
+    semaines avant le dépôt, donc APRÈS la clôture de l'exercice décrit) :
+    `period_ends` sert alors à les recaler sur la dernière fin d'exercice
+    réellement observée, sans quoi le passage au rattachement par `end` les
+    aurait tous décalés d'un exercice.
 
     Tous les tags de la liste sont consultés (pas seulement le premier qui a
     des données) : le premier tag reste prioritaire pour une année donnée,
@@ -245,35 +295,26 @@ def extract_annual_values(facts: dict, tags: List[str]) -> Dict[int, Tuple[float
     tag non vide faisait perdre silencieusement toutes les années couvertes
     uniquement par un tag de repli.
     """
-    all_facts = facts.get("facts", {})
     by_year: Dict[int, tuple] = {}  # year -> (tag_priority, filed_date, value)
 
     for priority, tag_spec in enumerate(tags):
-        namespace, _, tag = tag_spec.rpartition(":") if ":" in tag_spec else ("us-gaap", "", tag_spec)
-        entry = all_facts.get(namespace, {}).get(tag)
-        if not entry:
-            continue
-        for unit_values in entry.get("units", {}).values():
-            for v in unit_values:
-                if v.get("form") != "10-K" or v.get("fp") != "FY":
-                    continue
-                fy = v.get("fy")
-                filed = v.get("filed", "")
-                val = v.get("val")
-                if fy is None or val is None:
-                    continue
-                current = by_year.get(fy)
-                if current is None:
-                    # Aucune valeur encore trouvée pour cette année (ni par un
-                    # tag mieux classé, ni par celui-ci) -> on la prend.
-                    by_year[fy] = (priority, filed, val)
-                elif priority == current[0] and filed > current[1]:
-                    # Même tag que la valeur déjà retenue pour cette année :
-                    # on garde le dépôt le plus récent (ex: restatement).
-                    by_year[fy] = (priority, filed, val)
-                # Si un tag mieux classé (priority plus petite) a déjà fourni
-                # une valeur pour cette année, on ne l'écrase pas avec un tag
-                # de repli moins prioritaire.
+        if tag_spec in sec_xbrl.COVER_PAGE_TAGS and period_ends:
+            per_year = sec_xbrl.collect_cover_page_entries(facts, tag_spec, period_ends)
+        else:
+            per_year = sec_xbrl.collect_annual_entries(facts, tag_spec, metric_is_flow)
+        for year, entries in per_year.items():
+            # Départage INTRA-tag : dépôt le plus récent (restatement gagnant).
+            # Il opère enfin, puisque les entrées regroupées ici décrivent
+            # toutes la même période -- ce sont bien des republications de la
+            # même valeur, pas trois exercices différents.
+            best = sec_xbrl.best_entry(entries)
+            if best is None:
+                continue
+            current = by_year.get(year)
+            # Un tag mieux classé (priority plus petite) qui a déjà fourni une
+            # valeur pour cette année n'est jamais écrasé par un tag de repli.
+            if current is None or priority < current[0]:
+                by_year[year] = (priority, best["filed"], best["val"])
 
     return {year: (val, filed) for year, (_, filed, val) in by_year.items()}
 
@@ -319,17 +360,30 @@ def compute_derived(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def extract_financials_for_ticker(ric: str, cik: str, session: Optional[requests.Session] = None) -> pd.DataFrame:
+def extract_financials_for_ticker(
+    ric: str, cik: str, session: Optional[requests.Session] = None, facts: Optional[dict] = None,
+) -> pd.DataFrame:
     """ric : ticker tel qu'utilisé par la SEC pour retrouver le CIK (peut
     contenir un point, ex "BRK.B"). La colonne 'symbol' du DataFrame de
     sortie utilise en revanche config.to_ib_symbol(ric), pour être
-    identique au 'symbol' produit par 03/04 (cf. erreur 2.1 du rapport)."""
-    facts = _get(COMPANYFACTS_URL.format(cik=cik), session=session)
+    identique au 'symbol' produit par 03/04 (cf. erreur 2.1 du rapport).
+
+    `facts` déjà chargé court-circuite l'appel réseau -- utilisé par les tests
+    pour rejouer un companyfacts figé (tests/fixtures/), sans quoi la
+    vérification du rattachement des exercices dépendrait de data.sec.gov."""
+    if facts is None:
+        facts = _get(COMPANYFACTS_URL.format(cik=cik), session=session)
     if not facts:
         logger.warning("Aucune donnée companyfacts pour %s (CIK %s)", ric, cik)
         return pd.DataFrame()
 
-    per_metric = {metric: extract_annual_values(facts, tags) for metric, tags in XBRL_TAGS.items()}
+    # Premier passage : les fins d'exercice réellement observées, nécessaires
+    # pour recaler les tags de page de garde (cf. extract_annual_values).
+    period_ends = sec_xbrl.collect_period_end_dates(facts, XBRL_TAGS)
+    per_metric = {
+        metric: extract_annual_values(facts, tags, metric in sec_xbrl.FLOW_METRICS, period_ends)
+        for metric, tags in XBRL_TAGS.items()
+    }
     all_years = sorted({year for values in per_metric.values() for year in values})
     if not all_years:
         logger.warning("Aucun exercice 10-K annuel trouvé pour %s", ric)
