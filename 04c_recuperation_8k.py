@@ -48,6 +48,7 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -61,6 +62,14 @@ logger = logging.getLogger("recuperation_8k")
 
 CHECKPOINT_EVERY = 10
 ITEM_CODE_PATTERN = re.compile(r"Item\s+\d+\.\d+", re.IGNORECASE)
+
+# Au-delà de cette part d'entreprises en échec RÉSEAU, le run échoue
+# bruyamment sans rien écrire. Un material_events_8k.parquet incomplet est
+# pire qu'absent : load_material_events_8k rend None sur un fichier vide (le
+# filtre reste alors sans effet, ce qui se voit), mais un fichier À MOITIÉ
+# rempli passe pour complet et laisse entrer des signaux que des 8-K matériels
+# auraient dû périmer.
+DEFAULT_MAX_FAILURE_RATIO = 0.10
 
 CATEGORIES = (
     "rachat_actions", "changement_guidance", "depart_dirigeant",
@@ -134,7 +143,7 @@ def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]
     # une entreprise avec 40 trimestres TTM connus téléchargeait 40 fois le
     # même JSON (~20 000 requêtes SEC pour ~500 nécessaires à l'échelle du
     # S&P 500).
-    submissions = sft.fetch_submissions(cik)
+    submissions = sft.fetch_submissions_strict(cik)
     for start_date, end_date in windows:
         filings = sft.filter_filings(submissions, forms=("8-K",), start_date=start_date, end_date=end_date)
         for filing in filings:
@@ -225,9 +234,18 @@ def main() -> None:
     parser.add_argument("--output-dir", default=config.DIR_FINANCIALS, type=Path)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--max-failure-ratio", type=float, default=DEFAULT_MAX_FAILURE_RATIO,
+        help="Part maximale d'entreprises en échec RÉSEAU tolérée avant d'abandonner le run "
+             "sans rien écrire (défaut: %(default)s). Un material_events_8k.parquet incomplet "
+             "désactive silencieusement le filtre d'événements matériels du backtest.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+    if sft.sec_http.require_contact_email(logger) is None:
+        sys.exit(1)
 
     if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
         logger.warning(
@@ -276,7 +294,11 @@ def main() -> None:
 
     logger.info("%d/%d tickers avec un historique TTM à interroger.", len(to_process), len(symbols_ric))
 
-    ok_count, fail_count, event_count = 0, 0, 0
+    # Trois compteurs distincts, et non un seul "échec" : une entreprise sans
+    # 8-K et une entreprise dont la SEC n'a pas répondu ne veulent pas dire la
+    # même chose. Seuls les échecs RÉSEAU remettent en cause la complétude du
+    # fichier de sortie (cf. le seuil en fin de run).
+    ok_count, not_found_count, network_fail_count, event_count = 0, 0, 0, 0
     since_checkpoint = 0
     try:
         for i, symbol in enumerate(to_process, start=1):
@@ -285,10 +307,22 @@ def main() -> None:
             logger.info("[%d/%d] %s (CIK %s, %d fenêtre(s))...", i, len(to_process), symbol, cik, len(windows))
             try:
                 rows = process_ticker_8k(symbol, cik, windows)
+            except sft.sec_http.SecNotFound:
+                # CIK inconnu de la SEC : réponse définitive, il n'y a rien à
+                # récupérer et rien à réessayer. Ce n'est pas un incident.
+                logger.info("  -> CIK %s inconnu de la SEC pour %s, ignoré.", cik, symbol)
+                rows = []
+                not_found_count += 1
+            except sft.sec_http.SecUnavailable as exc:
+                # La SEC n'a pas répondu : les 8-K de cette entreprise existent
+                # peut-être. C'est CE cas qui creusait des trous silencieux.
+                logger.warning("  -> SEC indisponible pour %s : %s (à relancer)", symbol, exc)
+                rows = []
+                network_fail_count += 1
             except Exception as exc:  # noqa: BLE001
                 logger.warning("  -> ECHEC pour %s : %s (ticker ignoré, on continue)", symbol, exc)
                 rows = []
-                fail_count += 1
+                network_fail_count += 1
             else:
                 ok_count += 1
                 event_count += len(rows)
@@ -303,7 +337,23 @@ def main() -> None:
     finally:
         save_progress(args.output_dir, processed_keys)
 
-    logger.info("Terminé. OK: %d | Échecs: %d | 8-K détectés: %d", ok_count, fail_count, event_count)
+    logger.info(
+        "Terminé. OK: %d | CIK introuvables: %d | Échecs réseau: %d | 8-K détectés: %d",
+        ok_count, not_found_count, network_fail_count, event_count,
+    )
+
+    failure_ratio = network_fail_count / len(to_process) if to_process else 0.0
+    if failure_ratio > args.max_failure_ratio:
+        logger.error(
+            "%.0f%% des entreprises (%d/%d) ont échoué pour cause d'indisponibilité SEC, "
+            "au-delà du seuil de %.0f%%. Le fichier de sortie serait INCOMPLET, et un "
+            "material_events_8k.parquet incomplet désactive silencieusement le filtre "
+            "d'événements matériels du backtest (load_material_events_8k rend None et le "
+            "run continue). Rien n'est écrit : relance 04c_recuperation_8k.py --resume "
+            "quand la SEC répond de nouveau.",
+            failure_ratio * 100, network_fail_count, len(to_process), args.max_failure_ratio * 100,
+        )
+        sys.exit(1)
 
     rows = load_checkpoint_rows(args.output_dir)
     if not rows:

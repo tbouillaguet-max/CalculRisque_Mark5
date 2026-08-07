@@ -234,6 +234,43 @@ def test_le_choix_est_stable_quel_que_soit_l_ordre_du_json(monkeypatch):
         assert filing["form"] == "10-Q"
 
 
+# --------------------------------------------------------------------------- #
+# D4 (suite) : 404 et panne réseau ne se confondent plus côté appelant
+# --------------------------------------------------------------------------- #
+
+def test_fetch_strict_distingue_cik_inconnu_et_panne(monkeypatch):
+    import sec_http
+
+    def introuvable(url, session=None):
+        raise sec_http.SecNotFound(url)
+
+    monkeypatch.setattr(sec_http, "get_json", introuvable)
+    with pytest.raises(sec_http.SecNotFound):
+        sft.fetch_submissions_strict("0000000001")
+
+    sft._submissions_memory_cache.clear()
+
+    def indisponible(url, session=None):
+        raise sec_http.SecUnavailable(url)
+
+    monkeypatch.setattr(sec_http, "get_json", indisponible)
+    with pytest.raises(sec_http.SecUnavailable):
+        sft.fetch_submissions_strict("0000000002")
+
+
+def test_fetch_strict_sert_le_cache_comme_la_variante_tolerante(monkeypatch):
+    import sec_http
+
+    appels = []
+    monkeypatch.setattr(
+        sec_http, "get_json",
+        lambda url, session=None: appels.append(url) or submissions_json(ENTREES),
+    )
+    sft.fetch_submissions_strict("0000000001")
+    sft.fetch_submissions_strict("0000000001")
+    assert len(appels) == 1
+
+
 def test_primary_document_vide_est_refuse(monkeypatch, caplog):
     """L'URL construite serait invalide : le téléchargement ramènerait la page
     d'index du filing, pas le document."""

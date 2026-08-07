@@ -169,6 +169,49 @@ def _write_submissions_cache(cik: str, filings: List[Dict]) -> None:
         logger.debug("Cache submissions non écrit pour CIK %s : %s", cik, exc)
 
 
+def fetch_submissions_strict(cik: str, use_cache: bool = True) -> List[Dict]:
+    """Comme fetch_submissions, mais laisse remonter SecNotFound (CIK
+    inexistant : rien à récupérer, et rien à signaler comme incident) et
+    SecUnavailable (la SEC n'a pas répondu : les données existent peut-être).
+
+    Les appelants qui écrivent un fichier de sortie DOIVENT distinguer les
+    deux : confondues, une panne réseau passagère creuse des trous
+    silencieux dans le parquet -- et pour material_events_8k.parquet, ces
+    trous désactivent ensuite le filtre d'événements matériels sans que rien
+    ne le signale."""
+    if use_cache:
+        cached = _submissions_memory_cache.get(cik)
+        if cached is not None:
+            return cached
+        on_disk = _read_submissions_cache(cik)
+        if on_disk is not None:
+            _submissions_memory_cache[cik] = on_disk
+            return on_disk
+
+    data = sec_http.get_json(SUBMISSIONS_URL.format(cik=cik))
+    filings = _assemble_filings(cik, data)
+    if use_cache:
+        _submissions_memory_cache[cik] = filings
+        _write_submissions_cache(cik, filings)
+    return filings
+
+
+def _assemble_filings(cik: str, data: dict) -> List[Dict]:
+    blocks = data.get("filings", {})
+    filings = _normalize_filing_block(blocks.get("recent", {}))
+    filings.extend(_fetch_older_filings(cik, blocks.get("files", [])))
+
+    # Dédoublonnage par accession : les pages anciennes et `recent` peuvent se
+    # recouvrir sur leur borne, et un même filing ne doit pas être classifié
+    # deux fois par 04c.
+    unique: Dict[str, Dict] = {}
+    for filing in filings:
+        accession = filing.get("accession_number")
+        if accession and accession not in unique:
+            unique[accession] = filing
+    return sorted(unique.values(), key=lambda f: f.get("filing_date") or "")
+
+
 def fetch_submissions(cik: str, use_cache: bool = True) -> List[Dict]:
     """TOUS les filings connus d'un CIK, normalisés en
     [{form, filing_date, accession_number, primary_document}, ...].
@@ -196,19 +239,7 @@ def fetch_submissions(cik: str, use_cache: bool = True) -> List[Dict]:
     if not data:
         return []
 
-    blocks = data.get("filings", {})
-    filings = _normalize_filing_block(blocks.get("recent", {}))
-    filings.extend(_fetch_older_filings(cik, blocks.get("files", [])))
-
-    # Dédoublonnage par accession : les pages anciennes et `recent` peuvent se
-    # recouvrir sur leur borne, et un même filing ne doit pas être classifié
-    # deux fois par 04c.
-    unique: Dict[str, Dict] = {}
-    for filing in filings:
-        accession = filing.get("accession_number")
-        if accession and accession not in unique:
-            unique[accession] = filing
-    filings = sorted(unique.values(), key=lambda f: f.get("filing_date") or "")
+    filings = _assemble_filings(cik, data)
 
     if use_cache:
         _submissions_memory_cache[cik] = filings
