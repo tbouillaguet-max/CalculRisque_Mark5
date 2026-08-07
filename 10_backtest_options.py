@@ -136,8 +136,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT,
-        help="Part minimale du NAV investie en primes : en dessous, les positions ouvertes "
-             "sont renforcées au prorata. 0 pour désactiver.",
+        help="Part minimale du NAV investie en primes (défaut: %(default)s) : en dessous, les "
+             "positions ouvertes sont renforcées au prorata. Arbitre cash contre theta contre "
+             "levier -- voir le commentaire de config.OPTIONS_MIN_DEPLOYMENT_PCT. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--max-delta-notional-pct", type=float, default=config.OPTIONS_MAX_DELTA_NOTIONAL_PCT,
+        help="Exposition notionnelle delta-équivalente maximale, en %% du NAV (défaut: "
+             "%(default)s). Borne le levier : le redéploiement du cash s'arrête dès ce plafond "
+             "atteint, même si --min-deployment-pct n'est pas satisfait. 0 pour désactiver.",
     )
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
@@ -260,6 +267,7 @@ def main() -> None:
         commission_min_per_order=args.commission_min_per_order,
         max_fee_pct_of_trade=args.max_fee_pct_of_trade,
         min_deployment_pct=args.min_deployment_pct,
+        max_delta_notional_pct=args.max_delta_notional_pct,
         fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
@@ -307,6 +315,8 @@ def main() -> None:
         "strategy": args.strategy, "strategy_params": strategy_params,
         "initial_capital": args.initial_capital, "commission_per_contract": args.commission_per_contract,
         "slippage_pct_of_premium": args.slippage_pct_of_premium,
+        "min_deployment_pct": args.min_deployment_pct,
+        "max_delta_notional_pct": args.max_delta_notional_pct,
         **engine_settings,
         "real_snapshot_tolerance_days": args.real_snapshot_tolerance_days,
         "start_date": str(engine.calendar[0].date()), "end_date": str(engine.calendar[-1].date()),

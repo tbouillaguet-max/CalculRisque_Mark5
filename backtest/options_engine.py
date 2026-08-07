@@ -35,6 +35,13 @@ l'utilisateur appelle "se hedger grâce aux greeks" : l'exposition $ ciblée
 est la même quelle que soit la delta de l'option choisie, pas un nombre de
 contrats arbitraire.
 
+Levier : ce dimensionnement vise une exposition delta d'environ 1x le NAV,
+mais le redéploiement du cash oisif (_deploy_idle_cash) le contredisait
+frontalement -- remplir 90% du NAV de primes, à ~10% de prime pour 100% de
+spot, porte 8 à 10x le NAV. config.OPTIONS_MAX_DELTA_NOTIONAL_PCT plafonne
+désormais explicitement cette exposition, et la colonne `delta_notional` de
+l'equity_curve la rend lisible dans les sorties.
+
 Sortie d'une position : stop-loss/take-profit, expiration (réglée à la valeur
 intrinsèque), ou disparition des données de prix du sous-jacent.
 Stop-loss/take-profit sont, comme les rebalancements, décidés à la clôture de
@@ -205,6 +212,7 @@ class OptionsBacktestEngine:
         fee_bump_max_extra_pct: Optional[float] = config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
         max_fee_pct_of_trade: Optional[float] = config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
         min_deployment_pct: Optional[float] = config.OPTIONS_MIN_DEPLOYMENT_PCT,
+        max_delta_notional_pct: Optional[float] = config.OPTIONS_MAX_DELTA_NOTIONAL_PCT,
         whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
         contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
@@ -241,6 +249,7 @@ class OptionsBacktestEngine:
         self.fee_bump_max_extra_pct = fee_bump_max_extra_pct
         self.max_fee_pct_of_trade = max_fee_pct_of_trade
         self.min_deployment_pct = min_deployment_pct
+        self.max_delta_notional_pct = max_delta_notional_pct
         self.whole_contracts = whole_contracts
         # Contrats négociés par mois civil : détermine le palier dégressif.
         self._monthly_contracts: dict[tuple[int, int], float] = {}
@@ -417,9 +426,50 @@ class OptionsBacktestEngine:
         # au travail sur les positions ouvertes (cf. _deploy_idle_cash).
         self._deploy_idle_cash(today)
 
+    def _spot_for_execution(self, symbol: str, today: pd.Timestamp) -> Optional[float]:
+        """Prix d'ouverture du jour (celui auquel un ordre s'exécute), à
+        défaut la clôture -- utilisé pour mesurer une exposition, jamais pour
+        exécuter un ordre."""
+        spot = self.prices.open_at(symbol, today)
+        return spot if spot is not None else self.prices.close_at(symbol, today)
+
+    def _delta_notional(self, today: pd.Timestamp) -> float:
+        """Exposition NOTIONNELLE delta-équivalente du portefeuille : somme de
+        |delta| x spot x contrats x multiplicateur.
+
+        C'est la mesure honnête du levier -- combien de dollars de sous-jacent
+        le portefeuille suit réellement. La valeur des primes, elle, n'en est
+        qu'une fraction (une option ATM à 9 mois vaut ~8-12% du spot), ce qui
+        rendait le levier invisible dans toutes les sorties du moteur."""
+        total = 0.0
+        for symbol, pos in self.positions.items():
+            spot = self._spot_for_execution(symbol, today)
+            if spot is None or spot <= 0:
+                continue
+            delta = self._position_delta(pos, today, spot)
+            if delta is None:
+                continue
+            total += abs(delta) * spot * pos.contracts * pos.multiplier
+        return total
+
+    def _contracts_under_delta_cap(
+        self, pos: OptionPosition, spot: float, today: pd.Timestamp, remaining_delta_notional: float,
+    ) -> float:
+        """Nombre de contrats supplémentaires que le plafond de levier laisse
+        encore ajouter sur cette position. Troncature (jamais d'arrondi au
+        plus proche) : un plafond qu'on arrondit vers le haut n'en est pas un."""
+        delta = self._position_delta(pos, today, spot)
+        if delta is None or abs(delta) < 1e-6 or spot <= 0:
+            return 0.0
+        allowed = remaining_delta_notional / (abs(delta) * spot * pos.multiplier)
+        if allowed <= 0:
+            return 0.0
+        return float(int(allowed)) if self.whole_contracts else allowed
+
     def _deploy_idle_cash(self, today: pd.Timestamp) -> None:
         """Renforce les positions ouvertes tant que la part du NAV investie en
-        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT.
+        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT, ET que le levier
+        reste sous config.OPTIONS_MAX_DELTA_NOTIONAL_PCT.
 
         Le dimensionnement du moteur vise une exposition NOTIONNELLE
         delta-équivalente ; la prime effectivement décaissée n'en représente
@@ -429,6 +479,15 @@ class OptionsBacktestEngine:
         retenues -- au prorata de leur taille actuelle, donc sans modifier la
         hiérarchie décidée par la stratégie, et sans ouvrir de ligne que la
         stratégie n'a pas choisie.
+
+        MAIS ce plancher de primes, poussé à 90% du NAV, ANNULAIT le
+        dimensionnement par delta qu'il est censé compléter : à ~10% de prime
+        pour 100% de spot, remplir 90% du NAV de primes porte une exposition
+        delta de 8 à 10x le NAV. Le plafond de delta-notionnel est donc
+        vérifié AVANT toute passe et RE-vérifié à chaque renforcement : dès
+        qu'il est atteint, le redéploiement s'arrête, même s'il reste du cash
+        et que le plancher de primes n'est pas satisfait. Le plafond prime sur
+        le plancher, qui n'est qu'une préférence.
 
         Renforcer une position se fait sur SON contrat (strike et échéance
         inchangés), au prix d'ouverture du jour, comme n'importe quel
@@ -443,6 +502,10 @@ class OptionsBacktestEngine:
                 return
             missing = nav * self.min_deployment_pct / 100 - invested
             if missing < MIN_TRADE_DOLLAR or self.cash < MIN_TRADE_DOLLAR:
+                return
+
+            delta_budget = nav * self.max_delta_notional_pct / 100 if self.max_delta_notional_pct else None
+            if delta_budget is not None and self._delta_notional(today) >= delta_budget:
                 return
 
             values = {sym: self._position_value(pos, today) for sym, pos in self.positions.items()}
@@ -463,6 +526,13 @@ class OptionsBacktestEngine:
                 gross_premium = premium * (1 + self.slippage_rate)
                 share = missing * (value / total_value)
                 extra = self._round_contracts(share / (pos.multiplier * gross_premium))
+                if delta_budget is not None:
+                    # Recalculé à chaque symbole : les renforcements déjà
+                    # passés dans cette même boucle consomment le budget.
+                    remaining = delta_budget - self._delta_notional(today)
+                    if remaining <= 0:
+                        return
+                    extra = min(extra, self._contracts_under_delta_cap(pos, spot, today, remaining))
                 if extra <= 0:
                     continue
 
@@ -1134,9 +1204,17 @@ class OptionsBacktestEngine:
     def _mark_to_market(self, today: pd.Timestamp) -> None:
         invested = sum(self._position_value(pos, today) for pos in self.positions.values())
         nav = self.cash + invested
+        # delta_notional : le levier réellement porté, invisible jusqu'ici
+        # dans toutes les sorties du moteur (invested_value ne mesure que les
+        # primes décaissées, soit ~10% de l'exposition d'une option ATM).
+        # delta_notional_pct le rapporte au NAV, l'unité dans laquelle
+        # config.OPTIONS_MAX_DELTA_NOTIONAL_PCT est exprimé.
+        delta_notional = self._delta_notional(today)
         self.equity_curve_rows.append({
             "date": today, "nav": nav, "cash": self.cash, "invested_value": invested,
             "num_positions": len(self.positions),
+            "delta_notional": delta_notional,
+            "delta_notional_pct": (delta_notional / nav * 100) if nav > 0 else None,
         })
 
     def _record_positions(self, today: pd.Timestamp) -> None:

@@ -367,11 +367,36 @@ OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
 # le moteur renforce les positions déjà ouvertes (au prorata de leur taille)
 # pour remettre le capital au travail plutôt que de le laisser dormir.
 #
-# ATTENTION : contrairement à une action, une option peut valoir ZÉRO à
-# l'échéance. Immobiliser 90% du capital en primes n'a donc pas le même sens
-# que 90% investi en actions -- c'est un plancher d'exposition délibérément
-# agressif, à confronter au drawdown qu'il produit. 0 ou None le désactive.
-OPTIONS_MIN_DEPLOYMENT_PCT = 90.0
+# CE RÉGLAGE PILOTE UN ARBITRAGE À TROIS TERMES -- cash, theta, levier :
+#   - trop BAS : le capital dort, et le rendement du portefeuille est celui
+#     d'une petite poche investie noyée dans du cash non rémunéré ;
+#   - trop HAUT : c'est la totalité du capital qui paie la perte de valeur
+#     temps (theta) tous les jours, et surtout le LEVIER explose. Le moteur
+#     dimensionne en exposition NOTIONNELLE delta-équivalente (nb_contrats =
+#     budget / (|delta| x spot x multiplicateur)), ce qui vise une exposition
+#     delta d'environ 1x le NAV. Or la prime d'une option ATM à 9 mois ne vaut
+#     que ~8 à 12% du spot : forcer 90% du NAV en primes revenait donc à
+#     porter une exposition delta de l'ordre de 8 à 10x le NAV -- cause
+#     structurelle des drawdowns extrêmes observés, et annulation pure et
+#     simple du dimensionnement par delta.
+#
+# La valeur était 90 ; ramenée à 25, complétée par le plafond explicite
+# d'exposition delta ci-dessous qui borne le levier quoi qu'il arrive.
+# 0 ou None désactive le redéploiement.
+OPTIONS_MIN_DEPLOYMENT_PCT = 25.0
+
+# Exposition NOTIONNELLE delta-équivalente maximale du portefeuille d'options,
+# en % du NAV : somme sur les positions de |delta| x spot x contrats x
+# multiplicateur. C'est la mesure honnête du levier -- combien de dollars de
+# sous-jacent le portefeuille suit réellement, par opposition au montant de
+# primes décaissé, qui n'en est qu'une fraction.
+#
+# 100% = le portefeuille bouge comme s'il détenait son NAV en actions. Au-delà
+# de ce plafond, le redéploiement du cash oisif s'arrête, même si la part
+# investie en primes reste sous OPTIONS_MIN_DEPLOYMENT_PCT : c'est le plafond
+# qui prime, le plancher n'étant qu'une préférence. 0 ou None le désactive
+# (comportement d'avant : levier non borné).
+OPTIONS_MAX_DELTA_NOTIONAL_PCT = 100.0
 
 # Optimisation de taille au regard des frais.
 #
