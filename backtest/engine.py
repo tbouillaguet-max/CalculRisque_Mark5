@@ -18,6 +18,11 @@ qu'un de ces deux déclencheurs le ferme. Le capital alloué aux nouvelles
 positions/positions actives est donc le NAV diminué de la valeur des
 positions gelées (voir _rebalance).
 
+Stop-loss/take-profit : mesurés depuis l'ouverture de la THÈSE
+(Position.stop_reference_price, figée à la première entrée), pas depuis le
+prix de revient courant -- lequel continue d'être moyenné à chaque renfort
+pour le P&L. Un renfort ne déplace donc jamais le seuil.
+
 Coûts de transaction : commission + slippage fusionnés en un seul cost_bps
 appliqué symétriquement à l'achat et à la vente (prix d'exécution effectif
 = prix marché x (1 ± cost_bps/10000)), pour que le P&L par trade reflète le
@@ -47,6 +52,19 @@ class Position:
     shares: float
     entry_price: float  # prix d'exécution effectif, coût de transaction d'entrée déjà inclus
     entry_date: pd.Timestamp
+
+    # Référence du stop-loss/take-profit, figée à la PREMIÈRE ouverture et
+    # jamais recalculée -- à distinguer de entry_price, prix de revient
+    # comptable qui continue d'être moyenné à chaque renfort (c'est ce
+    # qu'attend le P&L des trades).
+    #
+    # Sans cette distinction, renforcer une position en baisse abaissait le
+    # prix de revient, donc le seuil du stop avec lui : le stop ne se
+    # déclenchait pratiquement jamais tant qu'on moyennait à la baisse,
+    # exactement la situation où il devrait protéger. Même sémantique que
+    # OptionPosition.stop_reference_premium côté options : le stop mesure la
+    # perte depuis l'ouverture de la THÈSE.
+    stop_reference_price: float = 0.0
 
 
 @dataclass
@@ -202,9 +220,14 @@ class BacktestEngine:
                     return
             self.cash -= cost
             if pos is None:
-                self.positions[symbol] = Position(symbol, shares_delta, effective_price, today)
+                self.positions[symbol] = Position(
+                    symbol, shares_delta, effective_price, today,
+                    stop_reference_price=effective_price,  # posée ici et nulle part ailleurs
+                )
             else:
                 new_shares = pos.shares + shares_delta
+                # Prix de revient moyenné (P&L), référence de stop INTACTE
+                # (cf. Position.stop_reference_price).
                 pos.entry_price = (pos.entry_price * pos.shares + effective_price * shares_delta) / new_shares
                 pos.shares = new_shares
             return
@@ -236,9 +259,10 @@ class BacktestEngine:
         triggered = set()
         for symbol, pos in list(self.positions.items()):
             price = self.prices.close_at(symbol, today)
-            if price is None:
+            reference = pos.stop_reference_price or pos.entry_price
+            if price is None or not reference:
                 continue
-            move_pct = (price - pos.entry_price) / pos.entry_price * 100
+            move_pct = (price - reference) / reference * 100
             if move_pct <= self.stop_loss_pct:
                 self._queue_order(symbol, 0.0, "stop_loss", today)
                 triggered.add(symbol)

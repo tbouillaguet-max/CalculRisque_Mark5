@@ -53,6 +53,12 @@ Trois comportements de sortie/renouvellement sont OPTIONNELS, désactivés par
 défaut -- le moteur se comporte exactement comme avant si aucun n'est activé
 (c'est le cas de la stratégie valuation_gap_options) :
 
+Référence des stops : dans les DEUX bases ci-dessous, le seuil se mesure
+depuis l'ouverture de la thèse (OptionPosition.stop_reference_premium /
+stop_reference_spot, figées à la première ouverture), et non depuis le prix de
+revient courant -- lequel continue d'être moyenné à chaque renfort pour le
+P&L. Un renfort ne déplace donc jamais le stop.
+
     stop_basis="underlying"     Stop-loss/take-profit mesurés sur le COURS DU
                                 SOUS-JACENT au lieu de la prime, et orientés
                                 dans le sens de la position (pour un PUT, une
@@ -158,10 +164,30 @@ class OptionPosition:
     # volatilité réalisée indisponible à l'entrée).
     vol_ratio: Optional[float] = None
 
-    # Cours du sous-jacent au moment de l'entrée : référence des stop-loss/
-    # take-profit quand ils portent sur le sous-jacent (stop_basis="underlying")
-    # plutôt que sur la prime.
+    # Cours du sous-jacent au moment de l'entrée (traçabilité).
     entry_spot: float = 0.0
+
+    # RÉFÉRENCES DE STOP, figées à la PREMIÈRE ouverture et jamais recalculées
+    # ensuite -- à distinguer de entry_premium, prix de revient comptable qui
+    # continue lui d'être moyenné à chaque renfort (c'est ce qu'attend le P&L
+    # des trades).
+    #
+    # Sans cette distinction, les deux bases de stop étaient incohérentes
+    # entre elles : en stop_basis="premium", entry_premium étant moyenné à la
+    # baisse à chaque renfort, la référence du stop baissait avec lui et le
+    # stop ne se déclenchait pratiquement jamais tant qu'on moyennait à la
+    # baisse -- exactement la situation où il devrait protéger. En
+    # stop_basis="underlying", entry_spot n'était au contraire jamais mis à
+    # jour, donc le stop restait calé sur la toute première entrée. Les deux
+    # modes mesuraient donc deux choses différentes.
+    #
+    # SÉMANTIQUE RETENUE, désormais commune aux deux modes : le stop mesure la
+    # perte depuis l'ouverture de la THÈSE, pas depuis le prix de revient
+    # courant. Un renfort ne déplace jamais le seuil ; seule une nouvelle
+    # ouverture (position fermée puis rouverte, y compris par roulement) pose
+    # une nouvelle référence.
+    stop_reference_premium: float = 0.0
+    stop_reference_spot: float = 0.0
     # Exposition $ visée à l'entrée (avant conversion en contrats par le
     # delta) : rejouée telle quelle lors d'un roulement, pour que renouveler
     # le contrat ne change pas la taille de la position.
@@ -546,6 +572,8 @@ class OptionsBacktestEngine:
                 self._record_contract_volume(extra, today)
                 effective_premium = cost / (extra * pos.multiplier)
                 new_contracts = pos.contracts + extra
+                # Prix de revient moyenné (P&L), référence de stop INTACTE
+                # (cf. OptionPosition.stop_reference_premium).
                 pos.entry_premium = (pos.entry_premium * pos.contracts + effective_premium * extra) / new_contracts
                 pos.contracts = new_contracts
                 progressed = True
@@ -832,6 +860,8 @@ class OptionsBacktestEngine:
                 contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
                 vol=contract["vol"], multiplier=multiplier, source=contract["source"],
                 entry_spot=spot, target_dollar=target_dollar,
+                # Références de stop posées ICI et nulle part ailleurs.
+                stop_reference_premium=effective_premium, stop_reference_spot=spot,
                 strike_reference_price=strike_reference_price, tenor_days=tenor_days,
                 vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
             )
@@ -893,6 +923,8 @@ class OptionsBacktestEngine:
                 self._record_contract_volume(delta_contracts, today)
                 effective_premium = cost / (delta_contracts * multiplier)
                 new_contracts = existing.contracts + delta_contracts
+                # Idem : le prix de revient suit le renfort, le seuil de stop
+                # non (cf. OptionPosition.stop_reference_premium).
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
                 existing.contracts = new_contracts
             else:
@@ -957,14 +989,16 @@ class OptionsBacktestEngine:
         scénario gagnant)."""
         if self.stop_basis == "premium":
             premium = self._current_premium(pos, today)
-            if premium is None:
+            reference = pos.stop_reference_premium or pos.entry_premium
+            if premium is None or not reference:
                 return None
-            return (premium - pos.entry_premium) / pos.entry_premium * 100
+            return (premium - reference) / reference * 100
 
         close = self.prices.close_at(pos.symbol, today)
-        if close is None or not pos.entry_spot:
+        reference = pos.stop_reference_spot or pos.entry_spot
+        if close is None or not reference:
             return None
-        move_pct = (close - pos.entry_spot) / pos.entry_spot * 100
+        move_pct = (close - reference) / reference * 100
         return move_pct if pos.option_type == "CALL" else -move_pct
 
     def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
