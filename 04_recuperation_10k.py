@@ -69,9 +69,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import threading
-import time
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -80,32 +78,20 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
 
 import config
+import sec_http
 import sec_xbrl
 
 FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state.json"
 REFRESH_DAYS_DEFAULT = 30
 
-# ⚠️ À COMPLÉTER : la SEC exige un User-Agent identifiant un contact réel.
-# Surchargeable par la variable d'environnement du même nom, pour déployer le
-# pipeline (cron, conteneur) sans éditer le script.
-SEC_CONTACT_EMAIL = os.getenv("SEC_CONTACT_EMAIL", "jeanboubou1er@gmail.com")
-
-HEADERS = {
-    "User-Agent": f"OptionsPipeline/1.0 ({SEC_CONTACT_EMAIL})",
-    "Accept": "application/json",
-}
-
 TICKERS_JSON_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
-# Politique d'accès équitable de la SEC : ~10 requêtes/seconde avec un
-# User-Agent identifiant un contact réel. On reste juste en dessous, tous
-# threads confondus (voir _RateLimiter).
-MAX_REQUESTS_PER_SECOND = 8.0
-DEFAULT_WORKERS = 8
+# Débit et réessais : voir sec_http (module partagé avec 04b/04c/sec_filings_text).
+MAX_REQUESTS_PER_SECOND = sec_http.MAX_REQUESTS_PER_SECOND
+DEFAULT_WORKERS = sec_http.DEFAULT_WORKERS
 
 # Tags candidats par métrique, dans l'ordre de préférence (certaines
 # entreprises taguent différemment selon les années/schémas). Un tag préfixé
@@ -147,86 +133,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-class _RateLimiter:
-    """Espace les requêtes d'AU MOINS 1/rate seconde, tous threads confondus.
-
-    L'attente a lieu à l'intérieur du verrou : les threads se mettent
-    naturellement en file et le débit global reste borné, quel que soit leur
-    nombre -- c'est cette garantie qui permet de paralléliser sans dépasser
-    la limite d'accès équitable de la SEC."""
-
-    def __init__(self, rate_per_second: float):
-        self._min_interval = 1.0 / rate_per_second
-        self._lock = threading.Lock()
-        self._next_slot = 0.0
-
-    def acquire(self) -> None:
-        with self._lock:
-            now = time.monotonic()
-            wait = self._next_slot - now
-            if wait > 0:
-                time.sleep(wait)
-                now = self._next_slot
-            self._next_slot = now + self._min_interval
-
-
-_rate_limiter = _RateLimiter(MAX_REQUESTS_PER_SECOND)
-_session_local = threading.local()
-
-
-def _build_session(pool_size: int) -> requests.Session:
-    """Session HTTP persistante : la connexion TLS vers data.sec.gov est
-    négociée une fois puis réutilisée pour tous les tickers (elle l'était
-    pour chacun d'eux auparavant).
-
-    Les réessais sont gérés par _get et NON par l'adaptateur (max_retries=0) :
-    un réessai interne à urllib3 ne repasserait pas par le limiteur de débit,
-    et rejouerait donc une requête hors quota -- précisément au moment où la
-    SEC vient de nous signaler qu'on en envoie trop (429)."""
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    adapter = HTTPAdapter(max_retries=0, pool_connections=pool_size, pool_maxsize=pool_size)
-    session.mount("https://", adapter)
-    return session
-
-
-RETRYABLE_STATUS = frozenset((429, 500, 502, 503, 504))
-MAX_ATTEMPTS = 4
-
-
-def _retry_delay(response: Optional[requests.Response], attempt: int) -> float:
-    """Backoff exponentiel (2s, 4s, 8s), sauf si la SEC indique elle-même
-    combien de temps attendre via Retry-After."""
-    if response is not None:
-        retry_after = response.headers.get("Retry-After")
-        if retry_after and retry_after.isdigit():
-            return float(retry_after)
-    return 2.0 ** (attempt + 1)
+# Le limiteur de débit, la session persistante et la politique de réessai
+# vivent dans sec_http : ils étaient écrits ici, mais 04b, 04c et
+# sec_filings_text n'en avaient aucun équivalent (voir la docstring de ce
+# module). Les alias ci-dessous gardent les noms locaux utilisés plus bas.
+_build_session = sec_http.build_session
+RETRYABLE_STATUS = sec_http.RETRYABLE_STATUS
+MAX_ATTEMPTS = sec_http.MAX_ATTEMPTS
 
 
 def _get(url: str, session: Optional[requests.Session] = None) -> Optional[dict]:
-    if session is None:
-        session = getattr(_session_local, "session", None)
-        if session is None:
-            session = _session_local.session = _build_session(DEFAULT_WORKERS)
-
-    for attempt in range(MAX_ATTEMPTS):
-        _rate_limiter.acquire()
-        response = None
-        try:
-            response = session.get(url, timeout=30)
-            if response.status_code in RETRYABLE_STATUS:
-                raise requests.exceptions.HTTPError(f"HTTP {response.status_code}", response=response)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as exc:
-            if attempt == MAX_ATTEMPTS - 1:
-                logger.error("Échec de la requête %s (%d tentatives) : %s", url, MAX_ATTEMPTS, exc)
-                return None
-            delay = _retry_delay(response, attempt)
-            logger.warning("Requête %s en échec (%s), nouvelle tentative dans %.0fs.", url, exc, delay)
-            time.sleep(delay)
-    return None
+    """None sur échec, quel qu'en soit le motif -- comportement historique de
+    ce script, conservé : extract_financials_for_ticker traite déjà l'absence
+    de données comme un échec à réessayer au run suivant (le ticker n'est pas
+    marqué dans fetch_state)."""
+    return sec_http.get_json_or_none(url, session=session)
 
 
 def get_cik_map(session: Optional[requests.Session] = None) -> Dict[str, str]:
@@ -463,12 +384,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if SEC_CONTACT_EMAIL == "ton_email@example.com":
-        logger.warning(
-            "SEC_CONTACT_EMAIL n'a pas été renseigné en haut du script : la SEC "
-            "peut bloquer les requêtes avec un User-Agent générique. "
-            "Modifie SEC_CONTACT_EMAIL avant un run complet."
-        )
+    if sec_http.require_contact_email(logger) is None:
+        sys.exit(1)
 
     if args.ticker:
         symbols = [args.ticker.upper()]

@@ -80,15 +80,15 @@ import argparse
 import importlib
 import json
 import logging
-import time
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
 
 import config
+import sec_http
 import sec_xbrl
 
 # ----------------------------------------------------------------------------
@@ -100,14 +100,8 @@ import sec_xbrl
 FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state_10q.json"
 REFRESH_DAYS_DEFAULT = 7
 
-SEC_CONTACT_EMAIL = "jeanboubou1er@gmail.com"
-HEADERS = {
-    "User-Agent": f"OptionsPipeline/1.0 ({SEC_CONTACT_EMAIL})",
-    "Accept": "application/json",
-}
 TICKERS_JSON_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-REQUEST_DELAY = 0.15
 
 # Mêmes tags que 04_recuperation_10k.py::XBRL_TAGS -- garder les deux en
 # synchronisation si un tag candidat est ajouté/retiré d'un côté.
@@ -159,15 +153,12 @@ compute_derived = _module_10k.compute_derived
 
 
 def _get(url: str) -> Optional[dict]:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("Échec de la requête %s: %s", url, e)
-        return None
-    finally:
-        time.sleep(REQUEST_DELAY)
+    """Passe désormais par sec_http : limiteur de débit GLOBAL partagé avec
+    04/04c (ce script envoyait ses requêtes sans throttle commun, si bien que
+    deux scripts lancés en parallèle doublaient le débit vers la SEC) et
+    réessais sur erreur transitoire (il n'en avait aucun : un 503 passager
+    faisait perdre le ticker pour tout le run)."""
+    return sec_http.get_json_or_none(url)
 
 
 def get_cik_map() -> Dict[str, str]:
@@ -490,11 +481,8 @@ def main() -> None:
     parser.add_argument("--force-refresh", action="store_true")
     args = parser.parse_args()
 
-    if SEC_CONTACT_EMAIL == "ton_email@example.com":
-        logger.warning(
-            "SEC_CONTACT_EMAIL n'a pas été renseigné en haut du script : la SEC "
-            "peut bloquer les requêtes avec un User-Agent générique."
-        )
+    if sec_http.require_contact_email(logger) is None:
+        sys.exit(1)
 
     if args.ticker:
         symbols = [args.ticker.upper()]

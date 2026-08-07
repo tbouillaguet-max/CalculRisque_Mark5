@@ -45,11 +45,8 @@ from typing import Dict, List, Optional
 import requests
 from bs4 import BeautifulSoup
 
-SEC_CONTACT_EMAIL = "jeanboubou1er@gmail.com"
-HEADERS = {
-    "User-Agent": f"OptionsPipeline/1.0 ({SEC_CONTACT_EMAIL})",
-    "Accept": "application/json",
-}
+import sec_http
+
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik_nolead}/{accession_nodash}/{document}"
 REQUEST_DELAY = 0.15
@@ -72,15 +69,10 @@ logger = logging.getLogger("sec_filings_text")
 
 
 def _get_json(url: str) -> Optional[dict]:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("Échec de la requête %s: %s", url, e)
-        return None
-    finally:
-        time.sleep(REQUEST_DELAY)
+    """Conservé pour les appelants existants : None quel que soit le motif.
+    Le code neuf passe par sec_http.get_json, qui distingue "n'existe pas"
+    (SecNotFound) de "pas de réponse" (SecUnavailable)."""
+    return sec_http.get_json_or_none(url)
 
 
 def list_company_filings(
@@ -130,13 +122,10 @@ def fetch_filing_text(url: str, max_chars: int = MAX_TEXT_CHARS) -> Optional[str
     depuis le début des années 2000) et en extrait le texte brut, tronqué à
     max_chars. None si le téléchargement échoue."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=30)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as e:
+        resp = sec_http.request(url)
+    except (sec_http.SecNotFound, sec_http.SecUnavailable) as e:
         logger.error("Échec du téléchargement du filing %s: %s", url, e)
         return None
-    finally:
-        time.sleep(REQUEST_DELAY)
 
     soup = BeautifulSoup(resp.content, "html.parser")
     for tag in soup(["script", "style"]):
