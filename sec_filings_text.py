@@ -43,8 +43,9 @@ import json
 import logging
 import os
 import random
+import re
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from pathlib import Path
 
@@ -68,10 +69,34 @@ _submissions_memory_cache: Dict[str, List[Dict]] = {}
 
 # Budget de texte transmis au LLM (voir analyser_texte_mistral) : un 10-K
 # peut faire 100+ pages, très au-delà du contexte utile/payant pour une
-# classification -- tronqué au début du document (page de garde + souvent le
-# début des risk factors / MD&A pour un 10-K, l'objet de l'annonce pour un
-# 8-K), pragmatique plutôt qu'une extraction sémantique de section.
+# classification. Ce budget est désormais dépensé sur les SECTIONS
+# pertinentes, plus sur le début du document (voir fetch_filing_text).
 MAX_TEXT_CHARS = 15_000
+
+# Plafond de téléchargement par document. Un 10-K moderne en iXBRL fait 10 à
+# 30 Mo de balisage pour quelques dizaines de milliers de caractères de texte
+# utile : le flux est coupé au-delà. Large devant MAX_TEXT_CHARS, parce que le
+# ratio balisage/texte est de l'ordre de 10 à 30 pour 1 et que les sections
+# recherchées se trouvent après le corps du document.
+MAX_DOWNLOAD_BYTES = 12_000_000
+
+# Sections d'un 10-K/10-Q sur lesquelles porte réellement le prompt de 07b.
+# La regex tolère la casse, les espaces insécables et les variantes de
+# ponctuation ("ITEM 1A.", "Item&nbsp;1A —", "Item 1A:"). Le point d'ancrage
+# est le début d'intitulé, pas la mention en toutes lettres : les documents
+# SEC n'ont aucun balisage sémantique exploitable pour ça.
+_ITEM_SEPARATOR = r"[\s   ]*"
+_SECTION_PATTERNS = [
+    ("Item 1A - Facteurs de risque",
+     re.compile(rf"ITEM{_ITEM_SEPARATOR}1A{_ITEM_SEPARATOR}[.:\-–—]?", re.IGNORECASE)),
+    ("Item 3 - Procedures judiciaires",
+     re.compile(rf"ITEM{_ITEM_SEPARATOR}3{_ITEM_SEPARATOR}[.:\-–—]?(?!\d)", re.IGNORECASE)),
+    ("Item 7 - Analyse de la direction",
+     re.compile(rf"ITEM{_ITEM_SEPARATOR}7{_ITEM_SEPARATOR}[.:\-–—]?(?!A|\d)", re.IGNORECASE)),
+]
+
+# Parser BeautifulSoup retenu, résolu une seule fois (voir _best_parser).
+_PARSER: Optional[str] = None
 
 MISTRAL_API_KEY_ENV = "MISTRAL_API_KEY"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
@@ -256,21 +281,141 @@ def filing_document_url(cik: str, accession_number: str, primary_document: str) 
     return ARCHIVES_URL.format(cik_nolead=cik_nolead, accession_nodash=accession_nodash, document=primary_document)
 
 
-def fetch_filing_text(url: str, max_chars: int = MAX_TEXT_CHARS) -> Optional[str]:
-    """Télécharge un document de filing (HTML dans la quasi-totalité des cas
-    depuis le début des années 2000) et en extrait le texte brut, tronqué à
-    max_chars. None si le téléchargement échoue."""
+def _best_parser() -> str:
+    """"lxml" s'il est installé, sinon "html.parser".
+
+    Un 10-K moderne en iXBRL fait plusieurs mégaoctets de balisage :
+    html.parser y est plusieurs fois plus lent que lxml, et ce document est
+    parsé une fois par période évaluée."""
+    global _PARSER
+    if _PARSER is None:
+        try:
+            import lxml  # noqa: F401
+            _PARSER = "lxml"
+        except ImportError:
+            _PARSER = "html.parser"
+            logger.debug("lxml indisponible : repli sur html.parser (plus lent sur les gros filings).")
+    return _PARSER
+
+
+def _download_bounded(url: str, max_bytes: int) -> Optional[bytes]:
+    """Télécharge au plus max_bytes, en flux, avec arrêt anticipé.
+
+    Les filings modernes en iXBRL font 10 à 30 Mo, intégralement téléchargés
+    jusqu'ici pour n'en garder que quelques milliers de caractères de texte.
+    L'arrêt anticipé borne le transfert ; le budget est pris large devant le
+    budget de TEXTE, parce que le ratio balisage/texte d'un iXBRL est de
+    l'ordre de 10 à 30 pour 1 et que les sections recherchées (Items 1A, 3, 7)
+    se trouvent après le corps du document."""
     try:
-        resp = sec_http.request(url)
+        resp = sec_http.request(url, stream=True)
     except (sec_http.SecNotFound, sec_http.SecUnavailable) as e:
         logger.error("Échec du téléchargement du filing %s: %s", url, e)
         return None
 
-    soup = BeautifulSoup(resp.content, "html.parser")
+    chunks, total = [], 0
+    try:
+        for chunk in resp.iter_content(chunk_size=65_536):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= max_bytes:
+                logger.debug("%s tronqué à %d octets (budget de téléchargement atteint).", url, total)
+                break
+    except requests.exceptions.RequestException as e:
+        # Coupure en cours de flux : on garde ce qui est déjà arrivé plutôt
+        # que de tout perdre -- un document partiel reste exploitable, et
+        # l'extraction par section dira si les sections voulues y sont.
+        logger.warning("Flux interrompu pour %s (%s) : %d octets exploités.", url, e, total)
+        if not chunks:
+            return None
+    finally:
+        resp.close()
+
+    return b"".join(chunks)
+
+
+def _extract_sections(text: str, max_chars: int) -> Optional[str]:
+    """Concatène les sections d'un 10-K/10-Q qui portent réellement ce que le
+    prompt de 07b cherche : Item 1A (facteurs de risque), Item 3 (procédures
+    judiciaires) et Item 7 (analyse de la direction, dont la guidance).
+
+    POURQUOI. La troncature d'origine gardait les max_chars PREMIERS
+    caractères du document. Or les 15 000 premiers caractères d'un 10-K sont
+    la page de garde, la table des matières et le début de l'Item 1
+    (Business) : une dépréciation d'actif, un litige matériel, une révision de
+    guidance ou un doute sur la continuité d'exploitation se trouvent
+    typiquement entre 30 000 et 80 000 caractères plus loin. Les verdicts
+    produits ne portaient donc pas sur ce qu'on croyait mesurer.
+
+    Le budget est réparti ENTRE LES SECTIONS TROUVÉES, pas alloué au premier
+    arrivé : trouver l'Item 1A ne doit pas consommer tout l'espace au point
+    de faire disparaître l'Item 7.
+
+    None si aucune section n'est localisée -- à l'appelant de retomber sur le
+    début du document, en le signalant."""
+    matches = []
+    for label, pattern in _SECTION_PATTERNS:
+        found = list(pattern.finditer(text))
+        if found:
+            # La table des matières cite les mêmes intitulés que le corps du
+            # document : la DERNIÈRE occurrence est la bonne dans la grande
+            # majorité des cas, la première étant celle du sommaire.
+            matches.append((label, found[-1].start()))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: item[1])
+    budget = max_chars // len(matches)
+    morceaux = []
+    for index, (label, start) in enumerate(matches):
+        # Fin = début de la section suivante trouvée, sinon fin du document.
+        end = matches[index + 1][1] if index + 1 < len(matches) else len(text)
+        extrait = text[start:min(end, start + budget)].strip()
+        if extrait:
+            morceaux.append(f"[{label}]\n{extrait}")
+
+    return "\n\n".join(morceaux)[:max_chars] if morceaux else None
+
+
+def fetch_filing_text(
+    url: str, max_chars: int = MAX_TEXT_CHARS, form: Optional[str] = None,
+) -> Optional[Tuple[str, str]]:
+    """Télécharge un document de filing et en extrait le texte transmis au
+    modèle. Retourne (texte, extraction_mode) où extraction_mode vaut :
+
+        "sections"        Items 1A/3/7 localisés et concaténés (10-K/10-Q).
+        "debut_document"  Aucune section localisée : repli sur le début du
+                          document, comportement historique.
+
+    Ce mode est remonté jusqu'au parquet de sortie de 07b : un verdict rendu
+    sur le début du document ne porte pas sur la même chose qu'un verdict
+    rendu sur les sections de risque, et la différence doit être auditable
+    plutôt que devinée.
+
+    Les 8-K sont laissés au repli "début de document" sans même tenter la
+    localisation : ce sont des documents courts, dont l'objet est annoncé dès
+    les premières lignes -- la troncature y est sans effet.
+
+    None si le téléchargement échoue."""
+    content = _download_bounded(url, MAX_DOWNLOAD_BYTES)
+    if content is None:
+        return None
+
+    soup = BeautifulSoup(content, _best_parser())
     for tag in soup(["script", "style"]):
         tag.decompose()
     text = soup.get_text(separator=" ", strip=True)
-    return text[:max_chars]
+
+    if form is None or form.upper().startswith(("10-K", "10-Q")):
+        sections = _extract_sections(text, max_chars)
+        if sections:
+            return sections, "sections"
+        logger.debug("%s : aucune section Item 1A/3/7 localisée, repli sur le début du document.", url)
+
+    return text[:max_chars], "debut_document"
 
 
 def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-Q")) -> Optional[Dict]:
@@ -281,16 +426,43 @@ def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-
     période). None si aucun filing de ce type n'a été déposé exactement à
     cette date (CIK introuvable, désynchronisation de cache, etc.).
 
-    Retourne {form, filing_date, accession_number, primary_document, text}."""
+    Quand PLUSIEURS filings partagent la même date de dépôt, l'ordre de la
+    tuple `forms` départage : elle exprime une préférence (07b passe
+    ("10-Q", "10-K") pour une période TTM, ("10-K",) pour un exercice), mais
+    le filtre `if form not in forms` ne la respectait pas -- c'était
+    `filings[0]`, donc l'ordre du JSON SEC, qui décidait. filter_filings trie
+    désormais sur ce critère (cf. D3), et le cas est journalisé en debug.
+
+    Retourne {form, filing_date, accession_number, primary_document, text,
+    extraction_mode}."""
     filings = list_company_filings(cik, forms=forms, start_date=filed_date, end_date=filed_date)
     if not filings:
         return None
+    if len(filings) > 1:
+        logger.debug(
+            "CIK %s : %d filings déposés le %s (%s) -- le premier dans l'ordre de préférence "
+            "%s est retenu.", cik, len(filings), filed_date,
+            ", ".join(f"{f['form']}/{f['accession_number']}" for f in filings), list(forms),
+        )
     filing = filings[0]
-    url = filing_document_url(cik, filing["accession_number"], filing["primary_document"])
-    text = fetch_filing_text(url)
-    if text is None:
+
+    if not filing.get("primary_document"):
+        # Certains filings anciens n'ont pas de primaryDocument : l'URL
+        # construite serait invalide (".../accession/") et le téléchargement
+        # ramènerait la page d'index, pas le document.
+        logger.warning(
+            "CIK %s, filing %s du %s : primary_document vide, document introuvable "
+            "(filing ancien ?). Période non évaluée.",
+            cik, filing.get("accession_number"), filed_date,
+        )
         return None
-    return {**filing, "text": text}
+
+    url = filing_document_url(cik, filing["accession_number"], filing["primary_document"])
+    extracted = fetch_filing_text(url, form=filing.get("form"))
+    if extracted is None:
+        return None
+    text, extraction_mode = extracted
+    return {**filing, "text": text, "extraction_mode": extraction_mode}
 
 
 def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]:

@@ -193,3 +193,54 @@ def test_les_filings_sont_tries_par_date(monkeypatch):
     monkeypatch.setattr(sft, "_get_json", _routeur(ENTREES, {"page.json": ANCIENS}))
     dates = [f["filing_date"] for f in sft.fetch_submissions("0000000001")]
     assert dates == sorted(dates)
+
+
+# --------------------------------------------------------------------------- #
+# D5 : choix déterministe quand plusieurs filings partagent une date
+# --------------------------------------------------------------------------- #
+
+MEME_JOUR = [
+    ("10-K", "2022-02-15", "0001-22-000010", "annuel.htm"),
+    ("10-Q", "2022-02-15", "0001-22-000011", "trimestriel.htm"),
+]
+
+
+@pytest.fixture
+def filings_du_meme_jour(monkeypatch):
+    monkeypatch.setattr(sft, "_get_json", lambda url: submissions_json(MEME_JOUR))
+    monkeypatch.setattr(
+        sft, "fetch_filing_text", lambda url, max_chars=None, form=None: ("texte", "sections"),
+    )
+
+
+def test_l_ordre_de_preference_des_formulaires_est_respecte(filings_du_meme_jour):
+    """Le paramètre `forms` exprime une préférence (07b passe ("10-Q", "10-K")
+    pour une période TTM) que `filings[0]` ignorait : c'était l'ordre du JSON
+    SEC qui décidait."""
+    trimestriel = sft.get_filing_text_asof("0000000001", "2022-02-15", forms=("10-Q", "10-K"))
+    annuel = sft.get_filing_text_asof("0000000001", "2022-02-15", forms=("10-K", "10-Q"))
+    assert trimestriel["form"] == "10-Q"
+    assert annuel["form"] == "10-K"
+
+
+def test_le_choix_est_stable_quel_que_soit_l_ordre_du_json(monkeypatch):
+    for entrees in (MEME_JOUR, list(reversed(MEME_JOUR))):
+        sft._submissions_memory_cache.clear()
+        monkeypatch.setattr(sft, "_get_json", lambda url, e=entrees: submissions_json(e))
+        monkeypatch.setattr(
+            sft, "fetch_filing_text", lambda url, max_chars=None, form=None: ("texte", "sections"),
+        )
+        filing = sft.get_filing_text_asof("0000000001", "2022-02-15", forms=("10-Q", "10-K"))
+        assert filing["form"] == "10-Q"
+
+
+def test_primary_document_vide_est_refuse(monkeypatch, caplog):
+    """L'URL construite serait invalide : le téléchargement ramènerait la page
+    d'index du filing, pas le document."""
+    monkeypatch.setattr(
+        sft, "_get_json",
+        lambda url: submissions_json([("10-K", "2005-03-01", "0001-05-000001", "")]),
+    )
+    with caplog.at_level("WARNING"):
+        assert sft.get_filing_text_asof("0000000001", "2005-03-01", forms=("10-K",)) is None
+    assert any("primary_document vide" in m for m in caplog.messages)

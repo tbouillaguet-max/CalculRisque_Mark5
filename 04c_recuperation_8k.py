@@ -142,10 +142,20 @@ def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]
                 continue  # deux fenêtres adjacentes peuvent se recouvrir sur leur borne commune
             seen_accessions.add(filing["accession_number"])
 
-            url = sft.filing_document_url(cik, filing["accession_number"], filing["primary_document"])
-            text = sft.fetch_filing_text(url)
-            if text is None:
+            if not filing.get("primary_document"):
+                logger.warning(
+                    "%s : filing %s du %s sans primary_document, ignoré (filing ancien ?).",
+                    symbol, filing["accession_number"], filing["filing_date"],
+                )
                 continue
+
+            url = sft.filing_document_url(cik, filing["accession_number"], filing["primary_document"])
+            # form="8-K" : pas de tentative d'extraction par section (document
+            # court, dont l'objet est annoncé dès les premières lignes).
+            extracted = sft.fetch_filing_text(url, form=filing["form"])
+            if extracted is None:
+                continue
+            text, _extraction_mode = extracted
 
             classification = classify_8k(symbol, filing["filing_date"], text)
             rows.append({
