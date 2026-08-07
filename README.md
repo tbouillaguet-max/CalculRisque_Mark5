@@ -4,6 +4,24 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+## Configuration requise
+
+```bash
+export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"   # obligatoire pour 04, 04b, 04c, 07b
+export MISTRAL_API_KEY="ta_cle"                     # optionnel : 02, 04c, 07b
+export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfill-dates
+```
+
+`SEC_CONTACT_EMAIL` n'a **pas** de valeur par défaut : la SEC exige un
+User-Agent identifiant un contact réel, et un User-Agent générique se fait
+bloquer (403/429). Les scripts qui interrogent la SEC échouent au démarrage
+avec un message explicite si elle est absente, plutôt que de dégrader
+silencieusement.
+
+Sans `MISTRAL_API_KEY`, `04c` et `07b` journalisent leurs lignes en
+`non_evalue_pas_de_cle_api` au lieu d'appeler le modèle — les filtres
+qualitatifs restent alors sans effet, ce qui est le comportement voulu.
+
 ## Rafraîchissement trimestriel (04b, 04c, 07b, run_pipeline_quarterly.py)
 
 Le pipeline de base (04→07) est annuel (un 10-K par an). Ces scripts
@@ -260,6 +278,109 @@ formule que `06b_calcul_valorisation_combinee.py` utilisait déjà. Si tu as
 des runs `07`/`09_backtest.py` antérieurs à ce correctif, relance
 `07_calcul_dcf.py` pour régénérer des valeurs DCF exactes avant de
 retro-comparer des résultats de backtest.
+
+## Biais et limites connus
+
+Ces points sont **documentés mais NON corrigés** : soit la donnée nécessaire
+n'est pas disponible, soit la correction est un rattrapage long laissé à ta
+décision. Ils vont tous dans le même sens — ils rendent les résultats de
+backtest **plus optimistes** que la réalité. À garder en tête avant de
+conclure quoi que ce soit d'un run.
+
+### Médianes sectorielles calculées sur les survivants (06b)
+
+`compute_sector_year_multiples` recalcule bien les multiples par millésime de
+publication, ce qui supprime le look-ahead temporel. Mais il les calcule à
+partir de `multiples.parquet`, qui ne contient que l'univers **actuel** : les
+médianes sectorielles de 2012 sont établies sur les seules entreprises encore
+présentes dans l'indice aujourd'hui.
+
+Les entreprises disparues (faillite, rachat, sortie d'indice) étaient en
+moyenne moins bien valorisées que les survivantes : la médiane sectorielle
+historique est donc probablement **surestimée**, et avec elle les
+valorisations théoriques et les écarts calculés contre elles.
+
+`06b` journalise le nombre de pairs par (secteur, millésime) et, si `01b` a
+tourné, avertit des tickers radiés absents de `multiples.parquet`.
+
+**Correction complète** (longue : plusieurs milliers de requêtes SEC et IBKR) :
+
+```bash
+python 01b_historique_univers_sp500.py                              # produit UNIVERSE_FULL_FILE
+python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
+python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv --force-refresh
+python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv --force-refresh
+python 05_calcul_multiples.py && python 07_calcul_dcf.py && python 06b_calcul_valorisation_combinee.py
+```
+
+### Secteur GICS rétroactif (05, 07, 06b)
+
+La colonne `sector` vient de `config.UNIVERSE_FILE`, soit la classification
+GICS **d'aujourd'hui**, appliquée telle quelle à des exercices de 2012. Elle
+pilote le WACC et les taux de croissance du DCF
+(`config.SECTOR_DCF_PARAMS`), les multiples jugés pertinents
+(`config.SECTOR_MULTIPLES`), le rendement du dividende du pricing d'options
+(`config.SECTOR_DIVIDEND_YIELD`) et l'exclusion du DCF
+(`config.SECTORS_SANS_DCF`).
+
+Une entreprise reclassée depuis — les GICS ont déplacé les télécoms et une
+partie de la tech vers « Services de communication » en 2018 — est donc
+comparée aux mauvais pairs et valorisée avec les mauvaises hypothèses sur
+toute sa partie ancienne. L'historique GICS point-in-time n'est pas
+disponible gratuitement.
+
+### Risque de volatilité non modélisé (10, backtest/options_pricing.py)
+
+Le repricing quotidien des positions d'options se fait à volatilité **figée**
+(`--vol-mode frozen`) ou suivant la volatilité **réalisée**
+(`--vol-mode rolling`), jamais suivant la volatilité **implicite** : le
+pipeline ne collecte aucune surface de volatilité historique.
+
+Or une option longue est longue de vega. Un effondrement de l'implicite lui
+fait perdre de l'argent même quand le sous-jacent va dans son sens, et ce P&L
+n'apparaît nulle part dans les résultats. Les rendements du backtest options
+sont donc une **borne optimiste** sur toute période de compression de
+volatilité. `10_backtest_options.py` l'annonce au démarrage de chaque run.
+
+Le pricing simulé corrige en revanche deux approximations qui allaient dans
+un sens systématique : les dividendes (`config.SECTOR_DIVIDEND_YIELD`, faute
+de donnée par titre) et le taux sans risque
+(`config.RISK_FREE_RATE_BY_YEAR`).
+
+### Cours IBKR sans dividendes (03, 03b)
+
+`03_recuperation_cours.py` et `03b_recuperation_cours_quotidiens.py`
+demandent `whatToShow="TRADES"` à IBKR : des cours de transaction, ajustés
+des splits mais **pas des dividendes**. Le P&L du backtest actions ignore
+donc les dividendes réinvestis, soit environ **2 %/an** de rendement manquant
+sur le S&P 500 — davantage sur les secteurs à haut rendement, précisément
+ceux qu'un signal « value » sélectionne.
+
+Ce biais joue **contre** la stratégie (il la sous-estime), à l'inverse des
+trois précédents. Il joue en revanche aussi contre l'indice de référence
+reconstruit en équipondéré (`build_benchmark_series`), donc l'`alpha_pct`
+reste à peu près comparable ; un `SPY` collecté par la même voie porterait la
+même sous-estimation.
+
+### Biais de survivance de l'univers (09, 10)
+
+Si `01b_historique_univers_sp500.py` n'a jamais tourné, l'univers **actuel**
+du S&P 500 est appliqué à toutes les dates passées. Les deux moteurs le
+signalent par un avertissement au démarrage. Lance `01b` pour l'éliminer.
+
+Même avec `01b`, la table des changements de Wikipédia ne remonte qu'à
+~1996-2000 : une entreprise sortie de l'indice avant le début de ce suivi
+n'apparaît pas.
+
+### Exposition delta plafonnée à l'ordre, pas en continu (10)
+
+`config.OPTIONS_MAX_DELTA_NOTIONAL_PCT` borne le levier **au moment où un
+ordre est passé**. Entre deux renforcements, le delta des contrats détenus
+dérive avec le sous-jacent (gamma) et le moteur ne vend jamais pour se
+désendetter : le levier réalisé peut dépasser le plafond de quelques dizaines
+de points de NAV. La colonne `delta_notional_pct` de l'`equity_curve` et les
+champs `avg_delta_notional_pct` / `max_delta_notional_pct_observed` de
+`metrics.json` permettent de le constater run par run.
 
 ## Installation
 
