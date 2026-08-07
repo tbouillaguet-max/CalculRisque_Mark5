@@ -42,14 +42,23 @@ import random
 import time
 from typing import Dict, List, Optional
 
+from pathlib import Path
+
 import requests
 from bs4 import BeautifulSoup
 
+import config
 import sec_http
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data/{cik_nolead}/{accession_nodash}/{document}"
-REQUEST_DELAY = 0.15
+
+# Cache des submissions : mémoire pour un run, disque pour les runs suivants.
+# Un émetteur ne dépose pas plusieurs fois par jour, et un run interrompu puis
+# repris (--resume) ne doit pas tout retélécharger.
+SUBMISSIONS_CACHE_DIR = config.DIR_FINANCIALS / "sec_submissions"
+SUBMISSIONS_CACHE_TTL_SECONDS = 24 * 3600
+_submissions_memory_cache: Dict[str, List[Dict]] = {}
 
 # Budget de texte transmis au LLM (voir analyser_texte_mistral) : un 10-K
 # peut faire 100+ pages, très au-delà du contexte utile/payant pour une
@@ -75,37 +84,118 @@ def _get_json(url: str) -> Optional[dict]:
     return sec_http.get_json_or_none(url)
 
 
+def _normalize_filing_block(block: dict) -> List[Dict]:
+    """Un bloc "colonnaire" de l'API submissions (des listes parallèles, une
+    par champ) -> une liste de dicts. Les listes peuvent être de longueurs
+    différentes sur des filings anciens : zip s'arrête à la plus courte, ce
+    qui vaut mieux qu'un IndexError ou qu'un décalage silencieux entre
+    colonnes."""
+    return [
+        {"form": form, "filing_date": filing_date,
+         "accession_number": accession, "primary_document": doc}
+        for form, filing_date, accession, doc in zip(
+            block.get("form", []), block.get("filingDate", []),
+            block.get("accessionNumber", []), block.get("primaryDocument", []),
+        )
+    ]
+
+
+def _submissions_cache_path(cik: str) -> Path:
+    return SUBMISSIONS_CACHE_DIR / f"CIK{cik}.json"
+
+
+def _read_submissions_cache(cik: str) -> Optional[List[Dict]]:
+    path = _submissions_cache_path(cik)
+    if not path.exists():
+        return None
+    age = time.time() - path.stat().st_mtime
+    if age > SUBMISSIONS_CACHE_TTL_SECONDS:
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Cache submissions illisible pour CIK %s (%s), il sera réinterrogé.", cik, exc)
+        return None
+
+
+def _write_submissions_cache(cik: str, filings: List[Dict]) -> None:
+    try:
+        SUBMISSIONS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _submissions_cache_path(cik).with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(filings, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(_submissions_cache_path(cik))
+    except OSError as exc:  # un cache non écrit n'est pas une erreur bloquante
+        logger.debug("Cache submissions non écrit pour CIK %s : %s", cik, exc)
+
+
+def fetch_submissions(cik: str, use_cache: bool = True) -> List[Dict]:
+    """TOUS les filings connus d'un CIK, normalisés en
+    [{form, filing_date, accession_number, primary_document}, ...].
+
+    Séparée de filter_filings parce que 04c_recuperation_8k.py appelait
+    list_company_filings UNE FOIS PAR FENÊTRE de recherche : une entreprise
+    avec 40 trimestres TTM connus déclenchait 40 téléchargements du MÊME JSON
+    (à l'échelle du S&P 500, ~20 000 requêtes pour ~500 nécessaires). Le
+    filtrage par formulaire et par dates est une opération purement mémoire :
+    il n'a jamais eu besoin de retourner sur le réseau.
+
+    Deux niveaux de cache : mémoire (pour un run) et disque avec TTL (pour
+    les runs successifs -- un émetteur ne dépose pas plusieurs fois par jour,
+    et un run interrompu puis repris ne doit pas tout retélécharger)."""
+    if use_cache:
+        cached = _submissions_memory_cache.get(cik)
+        if cached is not None:
+            return cached
+        on_disk = _read_submissions_cache(cik)
+        if on_disk is not None:
+            _submissions_memory_cache[cik] = on_disk
+            return on_disk
+
+    data = _get_json(SUBMISSIONS_URL.format(cik=cik))
+    if not data:
+        return []
+
+    filings = _normalize_filing_block(data.get("filings", {}).get("recent", {}))
+
+    if use_cache:
+        _submissions_memory_cache[cik] = filings
+        _write_submissions_cache(cik, filings)
+    return filings
+
+
+def filter_filings(
+    filings: List[Dict], forms: tuple = ("10-K", "10-Q"),
+    start_date: Optional[str] = None, end_date: Optional[str] = None,
+) -> List[Dict]:
+    """Filtre EN MÉMOIRE par formulaire et fenêtre de dates de DÉPÔT
+    (filingDate SEC, format YYYY-MM-DD, bornes incluses).
+
+    Le résultat est trié par date de dépôt, puis par l'ORDRE DE PRÉFÉRENCE de
+    la tuple `forms` -- voir get_filing_text_asof pour ce que ce second
+    critère résout."""
+    preference = {form: rank for rank, form in enumerate(forms)}
+    results = [
+        f for f in filings
+        if f.get("form") in preference
+        and not (start_date and (f.get("filing_date") or "") < start_date)
+        and not (end_date and (f.get("filing_date") or "") > end_date)
+    ]
+    results.sort(key=lambda f: (f.get("filing_date") or "", preference[f["form"]]))
+    return results
+
+
 def list_company_filings(
     cik: str, forms: tuple = ("10-K", "10-Q"),
     start_date: Optional[str] = None, end_date: Optional[str] = None,
 ) -> List[Dict]:
     """Filings d'une entreprise (CIK, 10 chiffres) filtrés par formulaire et
-    fenêtre de dates de DÉPÔT (filingDate SEC, format YYYY-MM-DD, bornes
-    incluses). Une entrée : {form, filing_date, accession_number,
-    primary_document}. Liste vide si le CIK est introuvable ou n'a aucun
-    filing correspondant -- pas une erreur bloquante."""
-    data = _get_json(SUBMISSIONS_URL.format(cik=cik))
-    if not data:
-        return []
-    recent = data.get("filings", {}).get("recent", {})
-    forms_list = recent.get("form", [])
-    dates_list = recent.get("filingDate", [])
-    accessions_list = recent.get("accessionNumber", [])
-    docs_list = recent.get("primaryDocument", [])
+    fenêtre de dates de dépôt. Liste vide si le CIK est introuvable ou n'a
+    aucun filing correspondant -- pas une erreur bloquante.
 
-    results = []
-    for form, filing_date, accession, doc in zip(forms_list, dates_list, accessions_list, docs_list):
-        if form not in forms:
-            continue
-        if start_date and filing_date < start_date:
-            continue
-        if end_date and filing_date > end_date:
-            continue
-        results.append({
-            "form": form, "filing_date": filing_date,
-            "accession_number": accession, "primary_document": doc,
-        })
-    return results
+    Conservée telle quelle pour les appelants existants ; elle n'est
+    désormais qu'un raccourci sur fetch_submissions + filter_filings, et le
+    JSON n'est plus retéléchargé à chaque appel (voir fetch_submissions)."""
+    return filter_filings(fetch_submissions(cik), forms=forms, start_date=start_date, end_date=end_date)
 
 
 def filing_document_url(cik: str, accession_number: str, primary_document: str) -> str:

@@ -129,8 +129,14 @@ def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
 def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]:
     rows = []
     seen_accessions = set()
+    # UNE seule requête submissions par entreprise, puis filtrage en mémoire.
+    # Auparavant, list_company_filings était appelée une fois PAR FENÊTRE :
+    # une entreprise avec 40 trimestres TTM connus téléchargeait 40 fois le
+    # même JSON (~20 000 requêtes SEC pour ~500 nécessaires à l'échelle du
+    # S&P 500).
+    submissions = sft.fetch_submissions(cik)
     for start_date, end_date in windows:
-        filings = sft.list_company_filings(cik, forms=("8-K",), start_date=start_date, end_date=end_date)
+        filings = sft.filter_filings(submissions, forms=("8-K",), start_date=start_date, end_date=end_date)
         for filing in filings:
             if filing["accession_number"] in seen_accessions:
                 continue  # deux fenêtres adjacentes peuvent se recouvrir sur leur borne commune
