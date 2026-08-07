@@ -547,6 +547,28 @@ SECTOR_DCF_PARAMS: dict[str, dict] = {
 }
 
 
+# Secteurs pour lesquels un DCF de type FCFF n'a PAS de sens, et que
+# 07_calcul_dcf.py écarte donc explicitement.
+#
+# Le FCFF part de l'EBIT et traite la dette comme un financement à retrancher
+# en fin de calcul. Pour une banque ou un assureur, la dette est un INTRANT DU
+# MÉTIER (les dépôts et les provisions techniques financent l'actif) et l'EBIT
+# n'est pas une mesure opérationnelle pertinente : les valoriser ainsi produit
+# un chiffre qui a l'air d'un DCF sans en être un. Pour une foncière, l'essentiel
+# du résultat est absorbé par des amortissements sans contrepartie de trésorerie
+# et le capex se confond avec l'acquisition d'actifs -- le FCFF n'y décrit rien
+# non plus.
+#
+# Jusqu'ici, il suffisait qu'OperatingIncomeLoss soit tagué pour qu'un chiffre
+# sorte quand même. Ces entreprises ne perdent rien au change :
+# 06b_calcul_valorisation_combinee.py les valorise déjà par les multiples
+# sectoriels que SECTOR_MULTIPLES juge pertinents pour elles (P/E pour les
+# financières, EV/EBITDA pour l'immobilier) -- et les multiples, eux, n'ont pas
+# besoin de l'EBIT.
+#
+# Libellés de 02_categoriser_secteurs.py (français), comme SECTOR_DCF_PARAMS.
+SECTORS_SANS_DCF: tuple = ("Banques", "Assurance", "Services financiers", "Immobilier")
+
 # ----------------------------------------------------------------------------
 # Multiples pertinents par SECTEUR (06b_calcul_valorisation_combinee.py)
 # ----------------------------------------------------------------------------

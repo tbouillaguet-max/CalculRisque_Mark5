@@ -201,9 +201,24 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
     # fin de run plutôt qu'une fois par ligne (une entreprise a jusqu'à ~40
     # périodes FY+TTM dans l'historique).
     symboles_sans_da = set()
+    # Lignes écartées parce que leur secteur ne se valorise pas par un FCFF
+    # (cf. config.SECTORS_SANS_DCF) : comptées par secteur pour que le volume
+    # écarté soit visible, et non deviné à la baisse du nombre de lignes.
+    secteurs_sans_dcf = set(getattr(config, "SECTORS_SANS_DCF", ()) or ())
+    ecartees_par_secteur: Dict[str, int] = {}
     for _, row in df.iterrows():
         symbol = row.get("symbol", "?")
         try:
+            secteur_ligne = row.get("sector")
+            if isinstance(secteur_ligne, str) and secteur_ligne in secteurs_sans_dcf:
+                # Un DCF FCFF sur une banque ou une foncière n'a pas de sens :
+                # l'EBIT n'y est pas une mesure opérationnelle pertinente et la
+                # dette est un intrant du métier, pas un financement à
+                # retrancher. Ces entreprises restent valorisées par 06b via
+                # les multiples sectoriels de config.SECTOR_MULTIPLES.
+                ecartees_par_secteur[secteur_ligne] = ecartees_par_secteur.get(secteur_ligne, 0) + 1
+                continue
+
             ebit = row.get("ebit")
             if pd.isna(ebit) or ebit is None or ebit <= 0:
                 logger.warning("EBIT manquant/invalide pour %s. DCF non calculé.", symbol)
@@ -285,6 +300,15 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
         except Exception as e:  # noqa: BLE001
             logger.error("Erreur pour %s: %s", symbol, e)
             continue
+
+    if ecartees_par_secteur:
+        logger.info(
+            "%d ligne(s) écartées du DCF, secteur non valorisable par un FCFF "
+            "(config.SECTORS_SANS_DCF) : %s. Ces entreprises restent valorisées par "
+            "06b_calcul_valorisation_combinee.py via les multiples sectoriels.",
+            sum(ecartees_par_secteur.values()),
+            ", ".join(f"{s} ({n})" for s, n in sorted(ecartees_par_secteur.items())),
+        )
 
     if symboles_sans_da:
         apercu = ", ".join(sorted(symboles_sans_da)[:15])
