@@ -268,6 +268,14 @@ class OptionsBacktestEngine:
         }
         self.universe = data_loader.UniverseResolver(universe_history, fallback_universe_symbols)
         self.option_index = data_loader.OptionSnapshotIndex(option_snapshots)
+        # Secteur par symbole, pour le rendement du dividende du pricing
+        # (config.SECTOR_DIVIDEND_YIELD). Le secteur est porté par les signaux
+        # eux-mêmes, il n'y a donc rien à recharger. Un symbole sans secteur
+        # connu retombe sur "_default".
+        self._sector_of: dict[str, object] = (
+            signal_events.drop_duplicates("symbol").set_index("symbol")["sector"].to_dict()
+            if "sector" in signal_events.columns and not signal_events.empty else {}
+        )
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.commission_per_contract = commission_per_contract
@@ -390,6 +398,20 @@ class OptionsBacktestEngine:
     # ------------------------------------------------------------------ #
     # Pricing d'une position ouverte, à une date donnée
     # ------------------------------------------------------------------ #
+    def _pricing_context(self, symbol: str, today: pd.Timestamp) -> tuple[float, float]:
+        """(taux sans risque, rendement du dividende) à utiliser pour pricer ce
+        symbole à cette date.
+
+        Le taux vient de la courbe annuelle (config.RISK_FREE_RATE_BY_YEAR) :
+        une constante à 4% sur 2010-2026 était fausse des deux côtés, le taux
+        réel étant allé de ~0,05% à ~5,3%. Le rendement du dividende vient du
+        SECTEUR de l'entreprise (config.SECTOR_DIVIDEND_YIELD) faute de donnée
+        par titre -- approximation assumée, mais qui corrige un biais
+        systématique : sans dividende, Black-Scholes surévalue les calls et
+        sous-évalue les puts, d'autant plus que le rendement est élevé, donc
+        précisément sur les secteurs qu'un signal "value" sélectionne."""
+        return config.risk_free_rate_for(today.year), config.dividend_yield_for(self._sector_of.get(symbol))
+
     def _repricing_vol(self, pos: OptionPosition, today: pd.Timestamp) -> float:
         """Volatilité utilisée pour repricer une position ouverte.
 
@@ -412,9 +434,12 @@ class OptionsBacktestEngine:
         (prix d'OUVERTURE du jour d'exécution) si fourni -- sinon clôture du
         jour (utilisé pour les décisions/le marked-to-market, jamais pour
         exécuter un ordre, cf. les appelants)."""
+        r, q = self._pricing_context(pos.symbol, today)
         if spot is not None:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            return options_pricing.bs_price(spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
+            return options_pricing.bs_price(
+                spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
+            )
 
         if pos._premium_asof == today:
             return pos._premium
@@ -423,7 +448,9 @@ class OptionsBacktestEngine:
             premium = None
         else:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            premium = options_pricing.bs_price(close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
+            premium = options_pricing.bs_price(
+                close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
+            )
         pos._premium_asof, pos._premium = today, premium
         return premium
 
@@ -639,8 +666,9 @@ class OptionsBacktestEngine:
         strike = target_strike if target_strike is not None else spot
         expiry = today + pd.Timedelta(days=tenor)
         t_years = tenor / 365.0
-        premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type)
-        greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type)
+        r, q = self._pricing_context(symbol, today)
+        premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type, r=r, q=q)
+        greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type, r=r, q=q)
         return {
             "strike": strike, "expiry": expiry, "premium": premium, "vol": vol,
             "delta": greeks["delta"], "multiplier": self.contract_multiplier, "source": "simulated",
@@ -666,8 +694,9 @@ class OptionsBacktestEngine:
         t_years = max((pos.expiry - today).days, 0) / 365.0
         if t_years <= 0 or spot <= 0:
             return None
+        r, q = self._pricing_context(pos.symbol, today)
         return options_pricing.bs_greeks(
-            spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type,
+            spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
         )["delta"]
 
     def _round_contracts(self, contracts: float) -> float:

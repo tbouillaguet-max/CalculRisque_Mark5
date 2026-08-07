@@ -106,10 +106,34 @@ def test_resume_signale_l_absence_de_benchmark():
 # --------------------------------------------------------------------------- #
 
 def test_sharpe_utilise_l_ecart_type_des_exces():
-    """Avec un taux sans risque constant les deux écarts-types coïncident :
-    le test vérifie surtout qu'on n'a pas changé la valeur au passage."""
+    """Sharpe = moyenne des EXCÈS / écart-type des EXCÈS, le taux sans risque
+    étant pris année par année (config.RISK_FREE_RATE_BY_YEAR)."""
+    import config
+
     rng = np.random.default_rng(2)
     navs = 100 * np.cumprod(1 + rng.normal(0.0005, 0.01, 500))
+    curve = equity(list(navs))
+    m = metrics_mod.compute_metrics(curve, pd.DataFrame(), risk_free_rate=0.04)
+
+    returns = pd.Series(navs).pct_change().dropna()
+    rf = pd.Series(
+        [config.risk_free_rate_for(d.year) / metrics_mod.TRADING_DAYS_PER_YEAR
+         for d in curve["date"].iloc[1:]],
+        index=returns.index,
+    )
+    excess = returns - rf
+    attendu = excess.mean() / excess.std() * np.sqrt(metrics_mod.TRADING_DAYS_PER_YEAR)
+    assert m["sharpe_ratio"] == pytest.approx(attendu)
+
+
+def test_sharpe_repli_sur_la_constante_hors_table(monkeypatch):
+    """Sans courbe annuelle disponible, le comportement d'avant est conservé :
+    taux constant appliqué à toute la période."""
+    import config
+
+    monkeypatch.setattr(config, "RISK_FREE_RATE_BY_YEAR", {}, raising=False)
+    rng = np.random.default_rng(3)
+    navs = 100 * np.cumprod(1 + rng.normal(0.0005, 0.01, 300))
     curve = equity(list(navs))
     m = metrics_mod.compute_metrics(curve, pd.DataFrame(), risk_free_rate=0.04)
 

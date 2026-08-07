@@ -17,6 +17,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+import config
+
 TRADING_DAYS_PER_YEAR = 252
 
 
@@ -29,6 +31,21 @@ def _max_drawdown_duration_days(equity_curve: pd.DataFrame) -> int:
     group_id = (~in_drawdown).cumsum()
     durations = equity_curve.loc[in_drawdown].groupby(group_id[in_drawdown])["date"].agg(lambda d: (d.max() - d.min()).days + 1)
     return int(durations.max()) if not durations.empty else 0
+
+
+def _risk_free_daily(dates: pd.Series, fallback_annual_rate: float) -> pd.Series:
+    """Taux sans risque quotidien, pris sur la courbe annuelle
+    config.RISK_FREE_RATE_BY_YEAR quand elle existe.
+
+    Repli sur `fallback_annual_rate` (constante, comportement d'avant) pour
+    les années absentes de la table, ou si config ne porte pas la courbe --
+    on ne veut pas qu'une métrique dépende de la présence d'un réglage
+    optionnel."""
+    by_year = getattr(config, "RISK_FREE_RATE_BY_YEAR", None)
+    if not by_year:
+        return pd.Series(fallback_annual_rate / TRADING_DAYS_PER_YEAR, index=dates.index)
+    annual = pd.DatetimeIndex(dates).year.map(lambda y: by_year.get(int(y), fallback_annual_rate))
+    return pd.Series(np.asarray(annual, dtype=float) / TRADING_DAYS_PER_YEAR, index=dates.index)
 
 
 def _benchmark_metrics(equity_curve: pd.DataFrame, benchmark_prices: pd.Series, n_years: float) -> dict:
@@ -136,7 +153,12 @@ def compute_metrics(
     cagr_pct = ((nav_end / nav_start) ** (1 / n_years) - 1) * 100 if n_years and n_years > 0 else np.nan
 
     ann_vol_pct = daily_returns.std() * np.sqrt(TRADING_DAYS_PER_YEAR) * 100 if len(daily_returns) > 1 else np.nan
-    rf_daily = risk_free_rate / TRADING_DAYS_PER_YEAR
+    # Taux sans risque JOUR PAR JOUR quand la courbe annuelle est disponible :
+    # appliquer 4% à 2012 (taux réel ~0,09%) fabriquait une prime de risque
+    # négative sur une année pourtant positive, et le Sharpe s'en trouvait
+    # écrasé sur toute la première moitié de l'historique.
+    rf_daily = _risk_free_daily(equity_curve["date"].iloc[1:], risk_free_rate)
+    rf_daily.index = daily_returns.index
     excess = daily_returns - rf_daily
     # Sharpe = moyenne des EXCÈS / écart-type des EXCÈS. L'ancienne version
     # divisait par l'écart-type des rendements BRUTS : le taux sans risque

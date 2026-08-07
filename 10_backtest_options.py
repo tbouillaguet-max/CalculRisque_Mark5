@@ -226,6 +226,17 @@ def main() -> None:
         logger.error("Stratégie options inconnue: %s. Disponibles: %s", args.strategy, sorted(OPTIONS_STRATEGY_REGISTRY))
         sys.exit(1)
 
+    logger.warning(
+        "RISQUE DE VOLATILITÉ NON MODÉLISÉ. Le repricing quotidien des positions se fait à "
+        "volatilité figée (--vol-mode frozen) ou suivant la volatilité RÉALISÉE "
+        "(--vol-mode rolling), jamais suivant la volatilité IMPLICITE : le pipeline ne "
+        "collecte aucune surface de volatilité historique. Or une option longue est longue "
+        "de vega -- un effondrement de l'implicite lui fait perdre de l'argent même quand le "
+        "sous-jacent va dans son sens, et ce P&L n'apparaît nulle part dans les résultats "
+        "ci-dessous. Les rendements de ce backtest sont donc à lire comme une borne "
+        "OPTIMISTE sur toute période de compression de volatilité."
+    )
+
     logger.info("Chargement des données...")
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)

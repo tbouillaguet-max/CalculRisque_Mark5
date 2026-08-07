@@ -46,6 +46,7 @@ s'enchaîner sans transformation manuelle entre les deux.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 # ----------------------------------------------------------------------------
 # Arborescence de sortie (unique, partagée par tous les scripts)
@@ -200,6 +201,84 @@ COUNTRY = "United States"
 # script plantait à l'import dès qu'un greek devait être estimé
 # localement) ; approximation du taux 3 mois US, à ajuster si besoin.
 RISK_FREE_RATE = 0.04
+
+# Taux sans risque PAR ANNÉE (rendement du Treasury 3 mois, moyenne annuelle).
+#
+# Un taux constant à 4% sur 2010-2026 est faux des deux côtés : le taux réel
+# est allé de ~0,05% (2011-2015, après la crise) à ~5,3% (2023-2024). Sur une
+# option à 9 mois, l'écart déplace la prime de plusieurs pour cent, et dans un
+# sens systématique par période -- il surévaluait les calls du début de
+# l'historique et sous-évaluait ceux de la fin. La même courbe sert de taux
+# sans risque aux métriques (Sharpe, Sortino), où un taux de 4% appliqué à
+# 2012 fabriquait une prime de risque négative sur une année pourtant positive.
+#
+# SOURCES : moyennes annuelles du 3-Month Treasury Bill (séries FRED DTB3 /
+# TB3MS), arrondies au dixième de point. Elles n'ont PAS pu être re-vérifiées
+# automatiquement dans l'environnement de rédaction (accès sortant bloqué) --
+# recoupe-les si un chiffre te paraît douteux : https://fred.stlouisfed.org/series/TB3MS
+# Une année absente de la table retombe sur RISK_FREE_RATE ci-dessus.
+RISK_FREE_RATE_BY_YEAR: dict[int, float] = {
+    2005: 0.0322, 2006: 0.0482, 2007: 0.0444, 2008: 0.0137, 2009: 0.0015,
+    2010: 0.0014, 2011: 0.0005, 2012: 0.0009, 2013: 0.0006, 2014: 0.0003,
+    2015: 0.0005, 2016: 0.0032, 2017: 0.0093, 2018: 0.0194, 2019: 0.0206,
+    2020: 0.0037, 2021: 0.0004, 2022: 0.0202, 2023: 0.0515, 2024: 0.0521,
+    2025: 0.0430, 2026: 0.0400,
+}
+
+
+def risk_free_rate_for(year: Optional[int] = None) -> float:
+    """Taux sans risque de l'année demandée, avec repli sur la constante
+    RISK_FREE_RATE (années hors table, ou appelant qui n'a pas de date sous
+    la main -- le pricing de 08_recuperation_options.py, par exemple, ne
+    valorise que des contrats du jour)."""
+    if year is None:
+        return RISK_FREE_RATE
+    return RISK_FREE_RATE_BY_YEAR.get(int(year), RISK_FREE_RATE)
+
+
+# Rendement du dividende par SECTEUR, utilisé par le pricing Black-Scholes du
+# backtest (backtest/options_pricing.py, paramètre `q`).
+#
+# Black-Scholes sans dividende surévalue les CALLS et sous-évalue les PUTS,
+# systématiquement -- et d'autant plus que le rendement est élevé, donc
+# précisément sur les secteurs qu'un signal "value" sélectionne (utilities,
+# télécoms, pétrole, banques). Le biais n'est donc pas aléatoire : il pousse la
+# stratégie à surpayer ses calls sur exactement les titres qu'elle achète.
+#
+# Un rendement PAR TITRE et PAR DATE serait meilleur, mais le pipeline ne
+# collecte aucune donnée de dividende (03/03b demandent whatToShow="TRADES" à
+# IBKR, cf. la section "Biais et limites connus" du README) : ces moyennes
+# sectorielles sont une approximation assumée, pas une mesure. Ordres de
+# grandeur usuels du marché US.
+SECTOR_DIVIDEND_YIELD: dict[str, float] = {
+    "Technologie": 0.008,
+    "Santé": 0.017,
+    "Agro-alimentaire et boissons": 0.028,
+    "Produits ménagers et de soin personnel": 0.025,
+    "Services aux collectivités": 0.035,
+    "Banques": 0.030,
+    "Assurance": 0.022,
+    "Services financiers": 0.020,
+    "Immobilier": 0.040,
+    "Pétrole et gaz": 0.035,
+    "Biens et services industriels": 0.018,
+    "Bâtiment et matériaux de construction": 0.015,
+    "Matières premières": 0.020,
+    "Chimie": 0.022,
+    "Medias": 0.012,
+    "Télécommunications": 0.045,
+    "Distribution": 0.015,
+    "Automobiles et équipementiers": 0.020,
+    "Voyage et loisirs": 0.012,
+    "_default": 0.018,
+}
+
+
+def dividend_yield_for(sector) -> float:
+    """Rendement du dividende retenu pour un secteur (repli "_default")."""
+    return SECTOR_DIVIDEND_YIELD.get(
+        sector if isinstance(sector, str) else "", SECTOR_DIVIDEND_YIELD["_default"],
+    )
 
 # ----------------------------------------------------------------------------
 # Filtre de valorisation (déclenche la récupération des options en 08)

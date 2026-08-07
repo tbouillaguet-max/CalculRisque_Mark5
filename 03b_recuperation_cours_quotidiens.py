@@ -176,6 +176,10 @@ def _duration_str(duration_days: int) -> str:
 def fetch_ibkr_daily(ib, contract, fetch_from: date, today: date) -> pd.DataFrame:
     from ib_insync import util
     duration_days = max((today - fetch_from).days + 3, 2)  # +3 : marge week-ends/jours fériés
+    # whatToShow="TRADES" : ajusté des splits, PAS des dividendes -- le P&L du
+    # backtest actions est donc sous-estimé d'environ 2%/an. Voir le même
+    # commentaire dans 03_recuperation_cours.py et la section "Biais et
+    # limites connus" du README.
     bars = ib.reqHistoricalData(
         contract, endDateTime="", durationStr=_duration_str(duration_days),
         barSizeSetting="1 day", whatToShow="TRADES", useRTH=True, formatDate=1,
