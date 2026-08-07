@@ -619,9 +619,13 @@ class OptionSnapshotIndex:
             np.abs(entry["cols"]["strike"][lo:hi] - target_strike)
             if target_strike is not None else entry["cols"]["moneyness_abs"][lo:hi]
         )
+        # np.zeros(hi - lo) et non np.zeros(width) : `width` n'a jamais existé
+        # dans cette portée -- le NameError se déclenchait dès qu'un appelant
+        # demandait un strike SANS échéance cible et qu'un snapshot réel
+        # existait pour ce (symbole, type).
         tenor_dist = (
             np.abs(entry["cols"]["tenor_days"][lo:hi] - target_tenor_days)
-            if target_tenor_days is not None else np.zeros(width)
+            if target_tenor_days is not None else np.zeros(hi - lo)
         )
         # Strike prioritaire, échéance en départage : même hiérarchie que la
         # sélection par défaut (monnaie d'abord, échéance ensuite).
