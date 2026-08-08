@@ -53,6 +53,7 @@ import pandas as pd
 from ib_insync import IB, Stock, Contract, util
 
 import config
+import ib_connect
 
 IB_HOST = "127.0.0.1"
 IB_PORT_DEFAULT = 4002
@@ -96,10 +97,10 @@ def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:
 
 
 def connect_ib(port: int) -> IB:
-    ib = IB()
-    ib.connect(IB_HOST, port, clientId=IB_CLIENT_ID, timeout=20)
-    logger.info("Connecté à IBKR sur %s:%s (clientId=%s)", IB_HOST, port, IB_CLIENT_ID)
-    return ib
+    """Connexion via ib_connect, qui se rabat sur une connexion API seule si la
+    synchronisation de compte d'ib_insync bloque -- ce script ne lit que des
+    barres historiques (voir la docstring de ib_connect.py)."""
+    return ib_connect.connect(port=port, client_id=IB_CLIENT_ID, host=IB_HOST)
 
 
 def resolve_stock_contract(ib: IB, symbol: str, exchange: str, currency: str) -> Optional[Contract]:

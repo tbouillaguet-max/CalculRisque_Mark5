@@ -51,6 +51,7 @@ import pandas as pd
 import requests
 
 import config
+import ib_connect
 
 IB_HOST = "127.0.0.1"
 IB_PORT_DEFAULT = 4002
@@ -137,11 +138,8 @@ def determine_fetch_from(existing: pd.DataFrame, symbol: str, start_date: date, 
 
 
 def connect_ib(port: int):
-    from ib_insync import IB
-    ib = IB()
-    ib.connect(IB_HOST, port, clientId=IB_CLIENT_ID, timeout=20)
-    logger.info("Connecté à IBKR sur %s:%s (clientId=%s)", IB_HOST, port, IB_CLIENT_ID)
-    return ib
+    """Voir 03_recuperation_cours.py::connect_ib et ib_connect.py."""
+    return ib_connect.connect(port=port, client_id=IB_CLIENT_ID, host=IB_HOST)
 
 
 def resolve_stock_contract(ib, symbol: str, exchange: str, currency: str):
