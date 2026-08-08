@@ -213,6 +213,15 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
     # écarté soit visible, et non deviné à la baisse du nombre de lignes.
     secteurs_sans_dcf = set(getattr(config, "SECTORS_SANS_DCF", ()) or ())
     ecartees_par_secteur: Dict[str, int] = {}
+    # Raisons d'exclusion comptées : le script n'émettait qu'un avertissement
+    # PAR LIGNE, noyé dans des milliers d'autres. Savoir que 3 000 lignes
+    # tombent sur "EBIT manquant" et 40 sur "actions manquantes" ne se lisait
+    # nulle part, alors que c'est ce qui dit où porter l'effort.
+    raisons: Dict[str, int] = {}
+
+    def ecarter(raison: str) -> None:
+        raisons[raison] = raisons.get(raison, 0) + 1
+
     for _, row in df.iterrows():
         symbol = row.get("symbol", "?")
         try:
@@ -224,11 +233,13 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 # retrancher. Ces entreprises restent valorisées par 06b via
                 # les multiples sectoriels de config.SECTOR_MULTIPLES.
                 ecartees_par_secteur[secteur_ligne] = ecartees_par_secteur.get(secteur_ligne, 0) + 1
+                ecarter("secteur sans DCF (FCFF non pertinent)")
                 continue
 
             ebit = row.get("ebit")
             if pd.isna(ebit) or ebit is None or ebit <= 0:
-                logger.warning("EBIT manquant/invalide pour %s. DCF non calculé.", symbol)
+                ecarter("EBIT manquant" if pd.isna(ebit) or ebit is None else "EBIT negatif ou nul")
+                logger.debug("EBIT manquant/invalide pour %s. DCF non calculé.", symbol)
                 continue
 
             capex = row.get("capex") or 0
@@ -263,14 +274,16 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 taux_imposition = hypotheses["taux_imposition_defaut"]
 
             if pd.isna(shares_outstanding) or not shares_outstanding or shares_outstanding <= 0:
-                logger.warning("Nombre d'actions manquant pour %s. DCF non calculé.", symbol)
+                ecarter("nombre d'actions manquant")
+                logger.debug("Nombre d'actions manquant pour %s. DCF non calculé.", symbol)
                 continue
 
             fcf_actuel = calculer_fcf(
                 ebit=ebit, taux_imposition=taux_imposition, capex=capex, variation_bfr=bfr, da=da,
             )
             if fcf_actuel <= 0:
-                logger.warning("FCF actuel <= 0 pour %s. DCF non calculé.", symbol)
+                ecarter("FCF <= 0")
+                logger.debug("FCF actuel <= 0 pour %s. DCF non calculé.", symbol)
                 continue
 
             secteur = row.get("sector")
@@ -305,8 +318,27 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 **{k: v for k, v in details.items() if k != "FCF_futurs"},
             })
         except Exception as e:  # noqa: BLE001
+            ecarter(f"erreur de calcul ({type(e).__name__})")
             logger.error("Erreur pour %s: %s", symbol, e)
             continue
+
+    if raisons:
+        total = sum(raisons.values())
+        logger.info(
+            "--- %d/%d lignes écartées du DCF (%d calculées) ---",
+            total, total + len(results), len(results),
+        )
+        for raison, compte in sorted(raisons.items(), key=lambda kv: kv[1], reverse=True):
+            logger.info("  %-42s %6d (%4.1f%%)", raison, compte, compte / (total + len(results)) * 100)
+        if raisons.get("EBIT manquant"):
+            logger.warning(
+                "%d lignes sans EBIT : ces entreprises ne taguent ni OperatingIncomeLoss ni "
+                "aucun des postes permettant de le reconstruire (résultat avant impôt, marge "
+                "brute, coûts totaux -- cf. 04_recuperation_10k.py::_reconstruct_ebit). "
+                "Vérifie le résumé de couverture affiché en fin de run de 04 ; si le taux y est "
+                "bas, c'est l'extraction qu'il faut compléter, pas ce script.",
+                raisons["EBIT manquant"],
+            )
 
     if ecartees_par_secteur:
         logger.info(

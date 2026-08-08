@@ -100,34 +100,10 @@ DEFAULT_WORKERS = sec_http.DEFAULT_WORKERS
 # dont beaucoup d'entreprises (ex: V, VLO) ne taguent jamais la version
 # us-gaap et ne renseignent que la page de garde du 10-K (taxonomie "dei",
 # quasi universelle chez les émetteurs SEC).
-XBRL_TAGS: Dict[str, List[str]] = {
-    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
-    "ebit": ["OperatingIncomeLoss"],
-    "net_income": ["NetIncomeLoss"],
-    "total_assets": ["Assets"],
-    "total_liabilities": ["Liabilities"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue"],
-    "short_term_debt": ["DebtCurrent", "ShortTermBorrowings"],
-    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpenditures"],
-    "da": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet"],
-    "income_tax_expense": ["IncomeTaxExpenseBenefit"],
-    "interest_expense": ["InterestExpense"],
-    "shares_outstanding": [
-        "CommonStockSharesOutstanding", "dei:EntityCommonStockSharesOutstanding", "CommonStockSharesIssued",
-    ],
-    "current_assets": ["AssetsCurrent"],
-    "current_liabilities": ["LiabilitiesCurrent"],
-}
-
-# Chaque métrique doit être classée flux XOR stock : c'est cette
-# classification qui décide si un fait XBRL doit passer le filtre de durée
-# annuelle (voir sec_xbrl.collect_annual_entries). Une métrique ajoutée à
-# XBRL_TAGS sans être classée ferait échouer l'assertion au chargement du
-# module plutôt que d'être silencieusement traitée comme un poste de bilan.
-assert sec_xbrl.FLOW_METRICS | sec_xbrl.STOCK_METRICS == set(XBRL_TAGS), (
-    "Chaque tag XBRL doit être classé flux XOR stock dans sec_xbrl."
-)
+# Défini dans sec_xbrl (module partagé avec 04b), qui porte aussi la
+# classification flux/stock : les deux scripts en avaient une copie à garder
+# synchronisée à la main. Ré-exporté ici sous son nom historique.
+XBRL_TAGS: Dict[str, List[str]] = sec_xbrl.XBRL_TAGS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -240,6 +216,59 @@ def extract_annual_values(
     return {year: (val, filed) for year, (_, filed, val) in by_year.items()}
 
 
+def _reconstruct_ebit(raw, zeroed, raw_source) -> Tuple[pd.Series, pd.Series]:
+    """EBIT, reconstruit quand l'entreprise ne le tague pas directement.
+
+    POURQUOI. `OperatingIncomeLoss` est le seul tag qui donne l'EBIT tel quel,
+    et beaucoup d'émetteurs ne le renseignent JAMAIS -- ils publient un compte
+    de résultat dont l'agrégat "operating income" n'est pas taggué comme tel.
+    07_calcul_dcf.py écartant toute ligne sans EBIT ("EBIT manquant/invalide,
+    DCF non calculé"), ces entreprises n'avaient aucune valorisation DCF, quel
+    que soit le nombre d'exercices récupérés par ailleurs.
+
+    Trois voies de reconstruction, dans l'ordre de fidélité décroissante :
+
+    1. RÉSULTAT AVANT IMPÔT + CHARGES D'INTÉRÊTS. C'est la définition
+       comptable de l'EBIT, et `pretax_income` est bien plus universellement
+       tagué qu'`OperatingIncomeLoss`. Réserve : le résultat avant impôt
+       inclut les produits et charges NON opérationnels (produits financiers,
+       plus-values de cession), que cette voie laisse donc dans l'EBIT --
+       c'est la convention qu'emploient la plupart des fournisseurs de données
+       pour un EBIT "large". Une charge d'intérêts manquante est traitée comme
+       nulle, ce qui SOUS-estime l'EBIT (donc conservateur pour le DCF).
+    2. MARGE BRUTE - CHARGES D'EXPLOITATION. Exactement l'agrégat recherché
+       quand les deux postes sont tagués.
+    3. CHIFFRE D'AFFAIRES - COÛTS ET CHARGES TOTAUX. Même agrégat, pour les
+       émetteurs qui présentent un total `CostsAndExpenses` plutôt qu'une
+       marge brute.
+
+    Retourne (ebit, ebit_source). `ebit_source` trace la voie retenue ligne par
+    ligne : une valorisation DCF assise sur un EBIT reconstruit ne mérite pas
+    la même confiance qu'une autre, et l'information doit être auditable plutôt
+    que devinée."""
+    direct = raw("ebit")
+    candidates = [
+        ("operating_income", direct),
+        ("pretax_plus_interest", raw("pretax_income") + zeroed("interest_expense")),
+        ("gross_profit_less_opex", raw("gross_profit") - raw("operating_expenses")),
+        ("revenue_less_costs", raw("revenue") - raw("costs_and_expenses")),
+    ]
+
+    ebit = direct.copy()
+    # Provenance DÉJÀ connue conservée telle quelle : 04b rappelle
+    # compute_derived sur les agrégats TTM, dont l'ebit est la somme d'EBIT
+    # trimestriels éventuellement déjà reconstruits. Sans ça, le TTM
+    # réétiquetterait en "operating_income" un EBIT qui n'en est pas un.
+    source = raw_source("ebit_source")
+    source[direct.notna() & source.isna()] = "operating_income"
+    for label, candidate in candidates[1:]:
+        manquant = ebit.isna() & candidate.notna()
+        if manquant.any():
+            ebit = ebit.where(~manquant, candidate)
+            source[manquant] = label
+    return ebit, source
+
+
 def compute_derived(df: pd.DataFrame) -> pd.DataFrame:
     """Métriques dérivées, calculées sur le schéma canonique déjà en place.
 
@@ -261,11 +290,20 @@ def compute_derived(df: pd.DataFrame) -> pd.DataFrame:
             return pd.Series(np.nan, index=df.index)
         return pd.to_numeric(df[column], errors="coerce")
 
+    def raw_source(column: str) -> pd.Series:
+        """Colonne de PROVENANCE (texte), à ne pas passer par to_numeric."""
+        if column not in df.columns:
+            return pd.Series(pd.NA, index=df.index, dtype=object)
+        return df[column].astype(object).where(df[column].notna(), pd.NA)
+
     long_term_debt, short_term_debt = zeroed("long_term_debt"), zeroed("short_term_debt")
     net_income, da, capex = zeroed("net_income"), zeroed("da"), zeroed("capex")
     income_tax_expense = zeroed("income_tax_expense")
     total_debt = long_term_debt + short_term_debt
-    ebit, current_assets, current_liabilities = raw("ebit"), raw("current_assets"), raw("current_liabilities")
+    current_assets, current_liabilities = raw("current_assets"), raw("current_liabilities")
+
+    ebit, df["ebit_source"] = _reconstruct_ebit(raw, zeroed, raw_source)
+    df["ebit"] = ebit
 
     df["net_debt"] = total_debt - zeroed("cash")
     # EBIT réellement manquant (None/NaN) -> EBITDA laissé à None plutôt que
@@ -472,6 +510,55 @@ def main() -> None:
         "Fichier écrit : %s (%d lignes au total, %d nouvelles/mises à jour ce run).",
         config.FINANCIALS_FILE, len(combined), len(df_new),
     )
+    log_coverage(combined)
+
+
+# Métriques sans lesquelles 07_calcul_dcf.py écarte purement et simplement la
+# ligne : c'est leur taux de couverture qui détermine combien d'entreprises
+# ont une valorisation DCF, et donc combien de candidats la stratégie voit.
+DCF_REQUIRED_METRICS = ("ebit", "shares_outstanding", "capex", "da", "net_debt")
+
+
+def log_coverage(df: pd.DataFrame) -> None:
+    """Taux de renseignement par métrique, et provenance de l'EBIT.
+
+    Sans ce résumé, "peu de DCF calculés" ne se diagnostique qu'en ouvrant le
+    parquet à la main : on ne sait pas si le problème vient de l'extraction
+    (métrique jamais taguée), du filtre de période, ou du calcul lui-même."""
+    if df.empty:
+        return
+
+    logger.info("--- Couverture des métriques nécessaires au DCF (%d lignes) ---", len(df))
+    for metric in DCF_REQUIRED_METRICS:
+        if metric not in df.columns:
+            logger.warning("  %-20s ABSENTE du fichier", metric)
+            continue
+        renseignees = pd.to_numeric(df[metric], errors="coerce").notna().sum()
+        logger.info("  %-20s %5.1f%% (%d/%d)", metric, renseignees / len(df) * 100, renseignees, len(df))
+
+    if "ebit_source" in df.columns:
+        repartition = df["ebit_source"].value_counts(dropna=False).to_dict()
+        logger.info("Provenance de l'EBIT : %s", repartition)
+        reconstruits = df["ebit_source"].isin(
+            ["pretax_plus_interest", "gross_profit_less_opex", "revenue_less_costs"]
+        ).sum()
+        if reconstruits:
+            logger.info(
+                "%d/%d lignes ont un EBIT RECONSTRUIT (l'entreprise ne tague pas "
+                "OperatingIncomeLoss) : sans cette reconstruction, autant de DCF "
+                "manquants. Voir _reconstruct_ebit pour les réserves de chaque voie.",
+                reconstruits, len(df),
+            )
+
+    manquant_ebit = df[pd.to_numeric(df.get("ebit"), errors="coerce").isna()] if "ebit" in df else df.iloc[0:0]
+    if len(manquant_ebit):
+        symboles = sorted(manquant_ebit["symbol"].unique())
+        logger.warning(
+            "%d ligne(s) restent sans EBIT (%d entreprises) : aucune de leurs périodes "
+            "n'aura de DCF. Entreprises concernées (extrait) : %s%s",
+            len(manquant_ebit), len(symboles), ", ".join(symboles[:15]),
+            "..." if len(symboles) > 15 else "",
+        )
 
 
 if __name__ == "__main__":

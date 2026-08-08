@@ -35,17 +35,95 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
+# Tags candidats par métrique, dans l'ordre de préférence (les entreprises ne
+# taguent pas toutes de la même façon, et beaucoup ont changé de tag en cours
+# d'historique). Un tag préfixé "namespace:" cherche dans cette taxonomie XBRL
+# au lieu de "us-gaap" par défaut.
+#
+# Défini ICI et non dans 04/04b : les deux scripts en avaient une copie que le
+# commentaire de 04b demandait de "garder en synchronisation" à la main. Une
+# métrique ajoutée d'un seul côté déclenchait en plus l'assertion flux/stock.
+XBRL_TAGS: Dict[str, List[str]] = {
+    "revenue": [
+        "Revenues",
+        "RevenueFromContractWithCustomerExcludingAssessedTax",
+        "RevenueFromContractWithCustomerIncludingAssessedTax",
+        "SalesRevenueNet",
+        "SalesRevenueGoodsNet",
+        "SalesRevenueServicesNet",
+    ],
+    # EBIT : voir compute_derived (04) pour les trois voies de RECONSTRUCTION
+    # utilisées quand aucun de ces tags n'est renseigné.
+    "ebit": [
+        "OperatingIncomeLoss",
+        "OperatingIncomeLossIncludingNoncontrollingInterest",
+    ],
+    # Résultat AVANT impôt : bien plus universellement tagué que
+    # OperatingIncomeLoss, et c'est de lui que se déduit l'EBIT le plus
+    # fidèlement (EBIT = résultat avant impôt + charges d'intérêts).
+    "pretax_income": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesNoncontrollingInterest",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic",
+    ],
+    # Deux voies de reconstruction supplémentaires (cf. compute_derived).
+    "gross_profit": ["GrossProfit"],
+    "operating_expenses": ["OperatingExpenses", "OperatingCostsAndExpenses"],
+    "costs_and_expenses": ["CostsAndExpenses", "BenefitsLossesAndExpenses"],
+    "net_income": ["NetIncomeLoss", "ProfitLoss"],
+    "total_assets": ["Assets"],
+    "total_liabilities": ["Liabilities"],
+    "cash": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        # Repli : inclut la trésorerie RESTREINTE, qui n'est pas disponible
+        # pour l'actionnaire. Elle minore donc la dette nette et majore
+        # légèrement la valeur DCF. Retenu quand même : n'avoir aucune
+        # trésorerie fait bien plus d'écart que d'en avoir une un peu large.
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    ],
+    "short_term_debt": ["DebtCurrent", "ShortTermBorrowings", "LongTermDebtCurrent"],
+    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "capex": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+        "CapitalExpenditures",
+    ],
+    "da": [
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+        "DepreciationAndAmortization",
+        "Depreciation",
+    ],
+    "income_tax_expense": ["IncomeTaxExpenseBenefit"],
+    # Uniquement des CHARGES d'intérêts, jamais un solde net : un tag comme
+    # InterestIncomeExpenseNet peut être négatif (produits financiers
+    # supérieurs aux charges), et il est additionné au résultat avant impôt
+    # pour reconstruire l'EBIT -- un signe inversé s'y propagerait sans bruit,
+    # tout comme dans cost_of_debt.
+    "interest_expense": ["InterestExpense", "InterestExpenseDebt", "InterestExpenseNonoperating"],
+    "shares_outstanding": [
+        "CommonStockSharesOutstanding", "dei:EntityCommonStockSharesOutstanding", "CommonStockSharesIssued",
+    ],
+    "current_assets": ["AssetsCurrent"],
+    "current_liabilities": ["LiabilitiesCurrent"],
+}
+
 # Flux (montant SUR la période) vs stock/bilan (montant À une date). Cette
 # classification pilote deux choses : la fenêtre de durée applicable au fait
 # XBRL (un poste de bilan n'a pas de durée), et la façon dont 04b agrège un
 # TTM (somme pour un flux, dernière valeur connue pour un stock).
 FLOW_METRICS = frozenset({
     "revenue", "ebit", "net_income", "capex", "da", "income_tax_expense", "interest_expense",
+    "pretax_income", "gross_profit", "operating_expenses", "costs_and_expenses",
 })
 STOCK_METRICS = frozenset({
     "total_assets", "total_liabilities", "cash", "short_term_debt", "long_term_debt",
     "shares_outstanding", "current_assets", "current_liabilities",
 })
+assert FLOW_METRICS | STOCK_METRICS == set(XBRL_TAGS), (
+    "Chaque tag XBRL doit être classé flux XOR stock."
+)
 
 # Fenêtres de durée acceptées pour un poste de flux, en jours.
 #   - trimestre : 60-100 jours (un "3 mois" réel va de ~89 à ~92 jours ; la
