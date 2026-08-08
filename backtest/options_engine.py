@@ -35,6 +35,13 @@ l'utilisateur appelle "se hedger grâce aux greeks" : l'exposition $ ciblée
 est la même quelle que soit la delta de l'option choisie, pas un nombre de
 contrats arbitraire.
 
+Levier : ce dimensionnement vise une exposition delta d'environ 1x le NAV,
+mais le redéploiement du cash oisif (_deploy_idle_cash) le contredisait
+frontalement -- remplir 90% du NAV de primes, à ~10% de prime pour 100% de
+spot, porte 8 à 10x le NAV. config.OPTIONS_MAX_DELTA_NOTIONAL_PCT plafonne
+désormais explicitement cette exposition, et la colonne `delta_notional` de
+l'equity_curve la rend lisible dans les sorties.
+
 Sortie d'une position : stop-loss/take-profit, expiration (réglée à la valeur
 intrinsèque), ou disparition des données de prix du sous-jacent.
 Stop-loss/take-profit sont, comme les rebalancements, décidés à la clôture de
@@ -45,6 +52,12 @@ la disparition des données (rien à attendre) sont immédiates.
 Trois comportements de sortie/renouvellement sont OPTIONNELS, désactivés par
 défaut -- le moteur se comporte exactement comme avant si aucun n'est activé
 (c'est le cas de la stratégie valuation_gap_options) :
+
+Référence des stops : dans les DEUX bases ci-dessous, le seuil se mesure
+depuis l'ouverture de la thèse (OptionPosition.stop_reference_premium /
+stop_reference_spot, figées à la première ouverture), et non depuis le prix de
+revient courant -- lequel continue d'être moyenné à chaque renfort pour le
+P&L. Un renfort ne déplace donc jamais le stop.
 
     stop_basis="underlying"     Stop-loss/take-profit mesurés sur le COURS DU
                                 SOUS-JACENT au lieu de la prime, et orientés
@@ -113,11 +126,18 @@ import pandas as pd
 
 import config
 from backtest import data_loader, options_pricing
+from backtest import engine as engine_mod
 from backtest.strategies.options_base import OptionsStrategy
 
 logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
+
+# Sorties qui ont lieu QUOI QU'IL ARRIVE, même quand les frais dépassent la
+# valeur résiduelle du contrat : à l'échéance il n'y a plus rien à détenir (le
+# contrat est abandonné sans frais), et sur une disparition des cours du
+# sous-jacent il n'y a aucune cotation future à espérer. Voir _reduce_position.
+FORCED_EXIT_REASONS = frozenset({"expiry", "data_gap"})
 
 # Bornes de la volatilité de repricing en mode "rolling" : une volatilité
 # réalisée mesurée sur une fenêtre courte peut devenir aberrante (quasi nulle
@@ -151,10 +171,30 @@ class OptionPosition:
     # volatilité réalisée indisponible à l'entrée).
     vol_ratio: Optional[float] = None
 
-    # Cours du sous-jacent au moment de l'entrée : référence des stop-loss/
-    # take-profit quand ils portent sur le sous-jacent (stop_basis="underlying")
-    # plutôt que sur la prime.
+    # Cours du sous-jacent au moment de l'entrée (traçabilité).
     entry_spot: float = 0.0
+
+    # RÉFÉRENCES DE STOP, figées à la PREMIÈRE ouverture et jamais recalculées
+    # ensuite -- à distinguer de entry_premium, prix de revient comptable qui
+    # continue lui d'être moyenné à chaque renfort (c'est ce qu'attend le P&L
+    # des trades).
+    #
+    # Sans cette distinction, les deux bases de stop étaient incohérentes
+    # entre elles : en stop_basis="premium", entry_premium étant moyenné à la
+    # baisse à chaque renfort, la référence du stop baissait avec lui et le
+    # stop ne se déclenchait pratiquement jamais tant qu'on moyennait à la
+    # baisse -- exactement la situation où il devrait protéger. En
+    # stop_basis="underlying", entry_spot n'était au contraire jamais mis à
+    # jour, donc le stop restait calé sur la toute première entrée. Les deux
+    # modes mesuraient donc deux choses différentes.
+    #
+    # SÉMANTIQUE RETENUE, désormais commune aux deux modes : le stop mesure la
+    # perte depuis l'ouverture de la THÈSE, pas depuis le prix de revient
+    # courant. Un renfort ne déplace jamais le seuil ; seule une nouvelle
+    # ouverture (position fermée puis rouverte, y compris par roulement) pose
+    # une nouvelle référence.
+    stop_reference_premium: float = 0.0
+    stop_reference_spot: float = 0.0
     # Exposition $ visée à l'entrée (avant conversion en contrats par le
     # delta) : rejouée telle quelle lors d'un roulement, pour que renouveler
     # le contrat ne change pas la taille de la position.
@@ -205,6 +245,7 @@ class OptionsBacktestEngine:
         fee_bump_max_extra_pct: Optional[float] = config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
         max_fee_pct_of_trade: Optional[float] = config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
         min_deployment_pct: Optional[float] = config.OPTIONS_MIN_DEPLOYMENT_PCT,
+        max_delta_notional_pct: Optional[float] = config.OPTIONS_MAX_DELTA_NOTIONAL_PCT,
         whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
         contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
@@ -233,6 +274,14 @@ class OptionsBacktestEngine:
         }
         self.universe = data_loader.UniverseResolver(universe_history, fallback_universe_symbols)
         self.option_index = data_loader.OptionSnapshotIndex(option_snapshots)
+        # Secteur par symbole, pour le rendement du dividende du pricing
+        # (config.SECTOR_DIVIDEND_YIELD). Le secteur est porté par les signaux
+        # eux-mêmes, il n'y a donc rien à recharger. Un symbole sans secteur
+        # connu retombe sur "_default".
+        self._sector_of: dict[str, object] = (
+            signal_events.drop_duplicates("symbol").set_index("symbol")["sector"].to_dict()
+            if "sector" in signal_events.columns and not signal_events.empty else {}
+        )
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.commission_per_contract = commission_per_contract
@@ -241,6 +290,7 @@ class OptionsBacktestEngine:
         self.fee_bump_max_extra_pct = fee_bump_max_extra_pct
         self.max_fee_pct_of_trade = max_fee_pct_of_trade
         self.min_deployment_pct = min_deployment_pct
+        self.max_delta_notional_pct = max_delta_notional_pct
         self.whole_contracts = whole_contracts
         # Contrats négociés par mois civil : détermine le palier dégressif.
         self._monthly_contracts: dict[tuple[int, int], float] = {}
@@ -284,6 +334,10 @@ class OptionsBacktestEngine:
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
 
+        # Voir execution_diagnostics (même raisonnement que le moteur actions).
+        self.buy_orders_count = 0
+        self.truncated_orders_count = 0
+
         calendar = price_panel.close.index
         if start_date is not None:
             calendar = calendar[calendar >= start_date]
@@ -309,6 +363,21 @@ class OptionsBacktestEngine:
     def run(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         for today in self.calendar:
             self._execute_pending_orders(today)
+            # Le cash resté oisif est remis au travail sur les positions
+            # ouvertes, TOUS LES JOURS. Cet appel vivait dans
+            # _execute_pending_orders, qui sort tôt sur
+            # `if not self.pending_orders: return` : le redéploiement n'avait
+            # donc lieu que les jours où un ordre était déjà en file -- une
+            # intermittence involontaire, qui laissait dormir des mois durant
+            # le cash libéré par une expiration ou un stop, jusqu'à ce qu'un
+            # ordre sans rapport le réveille.
+            #
+            # Placé juste après l'exécution des ordres (et non en fin de
+            # journée simulée) pour conserver l'ordre intra-journalier
+            # d'origine : le renforcement s'exécute au prix d'OUVERTURE, il ne
+            # doit donc pas être décidé après des étapes qui, elles, lisent la
+            # clôture du jour (expiration, stops, rebalancement).
+            self._deploy_idle_cash(today)
             exited_today = self._settle_expired_positions(today)
             exited_today |= self._handle_stale_underlyings(today)
             exited_today |= self._check_stop_loss_take_profit(today)
@@ -335,6 +404,20 @@ class OptionsBacktestEngine:
     # ------------------------------------------------------------------ #
     # Pricing d'une position ouverte, à une date donnée
     # ------------------------------------------------------------------ #
+    def _pricing_context(self, symbol: str, today: pd.Timestamp) -> tuple[float, float]:
+        """(taux sans risque, rendement du dividende) à utiliser pour pricer ce
+        symbole à cette date.
+
+        Le taux vient de la courbe annuelle (config.RISK_FREE_RATE_BY_YEAR) :
+        une constante à 4% sur 2010-2026 était fausse des deux côtés, le taux
+        réel étant allé de ~0,05% à ~5,3%. Le rendement du dividende vient du
+        SECTEUR de l'entreprise (config.SECTOR_DIVIDEND_YIELD) faute de donnée
+        par titre -- approximation assumée, mais qui corrige un biais
+        systématique : sans dividende, Black-Scholes surévalue les calls et
+        sous-évalue les puts, d'autant plus que le rendement est élevé, donc
+        précisément sur les secteurs qu'un signal "value" sélectionne."""
+        return config.risk_free_rate_for(today.year), config.dividend_yield_for(self._sector_of.get(symbol))
+
     def _repricing_vol(self, pos: OptionPosition, today: pd.Timestamp) -> float:
         """Volatilité utilisée pour repricer une position ouverte.
 
@@ -357,9 +440,12 @@ class OptionsBacktestEngine:
         (prix d'OUVERTURE du jour d'exécution) si fourni -- sinon clôture du
         jour (utilisé pour les décisions/le marked-to-market, jamais pour
         exécuter un ordre, cf. les appelants)."""
+        r, q = self._pricing_context(pos.symbol, today)
         if spot is not None:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            return options_pricing.bs_price(spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
+            return options_pricing.bs_price(
+                spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
+            )
 
         if pos._premium_asof == today:
             return pos._premium
@@ -368,7 +454,9 @@ class OptionsBacktestEngine:
             premium = None
         else:
             t_years = max((pos.expiry - today).days, 0) / 365.0
-            premium = options_pricing.bs_price(close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type)
+            premium = options_pricing.bs_price(
+                close, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
+            )
         pos._premium_asof, pos._premium = today, premium
         return premium
 
@@ -413,13 +501,51 @@ class OptionsBacktestEngine:
                 )
             self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
-        # Une fois les ordres du jour passés, le cash resté oisif est remis
-        # au travail sur les positions ouvertes (cf. _deploy_idle_cash).
-        self._deploy_idle_cash(today)
+
+    def _spot_for_execution(self, symbol: str, today: pd.Timestamp) -> Optional[float]:
+        """Prix d'ouverture du jour (celui auquel un ordre s'exécute), à
+        défaut la clôture -- utilisé pour mesurer une exposition, jamais pour
+        exécuter un ordre."""
+        spot = self.prices.open_at(symbol, today)
+        return spot if spot is not None else self.prices.close_at(symbol, today)
+
+    def _delta_notional(self, today: pd.Timestamp) -> float:
+        """Exposition NOTIONNELLE delta-équivalente du portefeuille : somme de
+        |delta| x spot x contrats x multiplicateur.
+
+        C'est la mesure honnête du levier -- combien de dollars de sous-jacent
+        le portefeuille suit réellement. La valeur des primes, elle, n'en est
+        qu'une fraction (une option ATM à 9 mois vaut ~8-12% du spot), ce qui
+        rendait le levier invisible dans toutes les sorties du moteur."""
+        total = 0.0
+        for symbol, pos in self.positions.items():
+            spot = self._spot_for_execution(symbol, today)
+            if spot is None or spot <= 0:
+                continue
+            delta = self._position_delta(pos, today, spot)
+            if delta is None:
+                continue
+            total += abs(delta) * spot * pos.contracts * pos.multiplier
+        return total
+
+    def _contracts_under_delta_cap(
+        self, pos: OptionPosition, spot: float, today: pd.Timestamp, remaining_delta_notional: float,
+    ) -> float:
+        """Nombre de contrats supplémentaires que le plafond de levier laisse
+        encore ajouter sur cette position. Troncature (jamais d'arrondi au
+        plus proche) : un plafond qu'on arrondit vers le haut n'en est pas un."""
+        delta = self._position_delta(pos, today, spot)
+        if delta is None or abs(delta) < 1e-6 or spot <= 0:
+            return 0.0
+        allowed = remaining_delta_notional / (abs(delta) * spot * pos.multiplier)
+        if allowed <= 0:
+            return 0.0
+        return float(int(allowed)) if self.whole_contracts else allowed
 
     def _deploy_idle_cash(self, today: pd.Timestamp) -> None:
         """Renforce les positions ouvertes tant que la part du NAV investie en
-        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT.
+        primes reste sous config.OPTIONS_MIN_DEPLOYMENT_PCT, ET que le levier
+        reste sous config.OPTIONS_MAX_DELTA_NOTIONAL_PCT.
 
         Le dimensionnement du moteur vise une exposition NOTIONNELLE
         delta-équivalente ; la prime effectivement décaissée n'en représente
@@ -429,6 +555,15 @@ class OptionsBacktestEngine:
         retenues -- au prorata de leur taille actuelle, donc sans modifier la
         hiérarchie décidée par la stratégie, et sans ouvrir de ligne que la
         stratégie n'a pas choisie.
+
+        MAIS ce plancher de primes, poussé à 90% du NAV, ANNULAIT le
+        dimensionnement par delta qu'il est censé compléter : à ~10% de prime
+        pour 100% de spot, remplir 90% du NAV de primes porte une exposition
+        delta de 8 à 10x le NAV. Le plafond de delta-notionnel est donc
+        vérifié AVANT toute passe et RE-vérifié à chaque renforcement : dès
+        qu'il est atteint, le redéploiement s'arrête, même s'il reste du cash
+        et que le plancher de primes n'est pas satisfait. Le plafond prime sur
+        le plancher, qui n'est qu'une préférence.
 
         Renforcer une position se fait sur SON contrat (strike et échéance
         inchangés), au prix d'ouverture du jour, comme n'importe quel
@@ -443,6 +578,10 @@ class OptionsBacktestEngine:
                 return
             missing = nav * self.min_deployment_pct / 100 - invested
             if missing < MIN_TRADE_DOLLAR or self.cash < MIN_TRADE_DOLLAR:
+                return
+
+            delta_budget = nav * self.max_delta_notional_pct / 100 if self.max_delta_notional_pct else None
+            if delta_budget is not None and self._delta_notional(today) >= delta_budget:
                 return
 
             values = {sym: self._position_value(pos, today) for sym, pos in self.positions.items()}
@@ -463,6 +602,13 @@ class OptionsBacktestEngine:
                 gross_premium = premium * (1 + self.slippage_rate)
                 share = missing * (value / total_value)
                 extra = self._round_contracts(share / (pos.multiplier * gross_premium))
+                if delta_budget is not None:
+                    # Recalculé à chaque symbole : les renforcements déjà
+                    # passés dans cette même boucle consomment le budget.
+                    remaining = delta_budget - self._delta_notional(today)
+                    if remaining <= 0:
+                        return
+                    extra = min(extra, self._contracts_under_delta_cap(pos, spot, today, remaining))
                 if extra <= 0:
                     continue
 
@@ -476,6 +622,8 @@ class OptionsBacktestEngine:
                 self._record_contract_volume(extra, today)
                 effective_premium = cost / (extra * pos.multiplier)
                 new_contracts = pos.contracts + extra
+                # Prix de revient moyenné (P&L), référence de stop INTACTE
+                # (cf. OptionPosition.stop_reference_premium).
                 pos.entry_premium = (pos.entry_premium * pos.contracts + effective_premium * extra) / new_contracts
                 pos.contracts = new_contracts
                 progressed = True
@@ -524,8 +672,9 @@ class OptionsBacktestEngine:
         strike = target_strike if target_strike is not None else spot
         expiry = today + pd.Timedelta(days=tenor)
         t_years = tenor / 365.0
-        premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type)
-        greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type)
+        r, q = self._pricing_context(symbol, today)
+        premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type, r=r, q=q)
+        greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type, r=r, q=q)
         return {
             "strike": strike, "expiry": expiry, "premium": premium, "vol": vol,
             "delta": greeks["delta"], "multiplier": self.contract_multiplier, "source": "simulated",
@@ -551,8 +700,9 @@ class OptionsBacktestEngine:
         t_years = max((pos.expiry - today).days, 0) / 365.0
         if t_years <= 0 or spot <= 0:
             return None
+        r, q = self._pricing_context(pos.symbol, today)
         return options_pricing.bs_greeks(
-            spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type,
+            spot, pos.strike, t_years, self._repricing_vol(pos, today), pos.option_type, r=r, q=q,
         )["delta"]
 
     def _round_contracts(self, contracts: float) -> float:
@@ -681,9 +831,14 @@ class OptionsBacktestEngine:
         contrats : avec un minimum par ordre, réduire la taille de moitié ne
         réduit pas le coût de moitié. Le coût est donc REcalculé après chaque
         réduction, au lieu d'être mis à l'échelle."""
+        self.buy_orders_count += 1
         cost = cost_of(contracts)
         if cost <= self.cash:
             return contracts, cost
+        # Même diagnostic que le moteur actions (cf. engine.execution_diagnostics) :
+        # le budget vient du NAV net des positions gelées, qui restent pourtant
+        # détenues -- le cash disponible est donc souvent inférieur.
+        self.truncated_orders_count += 1
         if self.cash <= 0:
             return 0.0, 0.0
 
@@ -762,6 +917,8 @@ class OptionsBacktestEngine:
                 contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
                 vol=contract["vol"], multiplier=multiplier, source=contract["source"],
                 entry_spot=spot, target_dollar=target_dollar,
+                # Références de stop posées ICI et nulle part ailleurs.
+                stop_reference_premium=effective_premium, stop_reference_spot=spot,
                 strike_reference_price=strike_reference_price, tenor_days=tenor_days,
                 vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
             )
@@ -823,6 +980,8 @@ class OptionsBacktestEngine:
                 self._record_contract_volume(delta_contracts, today)
                 effective_premium = cost / (delta_contracts * multiplier)
                 new_contracts = existing.contracts + delta_contracts
+                # Idem : le prix de revient suit le renfort, le seuil de stop
+                # non (cf. OptionPosition.stop_reference_premium).
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
                 existing.contracts = new_contracts
             else:
@@ -835,16 +994,29 @@ class OptionsBacktestEngine:
         current_premium = self._current_premium(pos, today, spot=spot)
         if current_premium is None:
             return
-        # Plancher à 0 : quand la commission dépasse ce que vaut encore
-        # l'option (prime quasi nulle), on ne PAIE pas pour vendre -- on laisse
-        # expirer sans valeur. Sans ce plancher, la sortie encaissait un
-        # produit négatif : le trade perdait plus que la prime investie
-        # (return_pct < -100%) et le cash fuyait à chaque clôture.
-        # Commission retranchée au niveau de l'ORDRE (minimum forfaitaire),
-        # pas au prorata de chaque contrat.
         gross_premium = current_premium * (1 - self.slippage_rate)
         gross_value = contracts_to_sell * pos.multiplier * gross_premium
         commission = self._order_commission(contracts_to_sell, gross_premium, pos.multiplier, today, "sell")
+
+        # Quand la commission dépasse ce que vaut encore l'option (prime quasi
+        # nulle), on ne PAIE pas pour vendre : on laisse expirer. Le
+        # raisonnement est juste, mais l'ancien `max(gross_value - commission,
+        # 0.0)` en tirait la mauvaise conclusion -- il sortait la position à
+        # zéro tout en ne payant jamais la commission, c'est-à-dire qu'il
+        # comptabilisait une vente qui n'avait pas lieu.
+        #
+        # La position reste donc OUVERTE jusqu'à son échéance. Deux exceptions,
+        # où il n'y a rien à attendre : l'expiration elle-même (le contrat est
+        # abandonné sans frais, produit nul) et la disparition des données du
+        # sous-jacent (aucune cotation future à espérer).
+        if gross_value <= commission and reason not in FORCED_EXIT_REASONS:
+            logger.debug(
+                "%s : vente non passée (%s) -- valeur résiduelle %.2f$ inférieure aux frais "
+                "%.2f$. Position conservée jusqu'à l'échéance du %s.",
+                pos.symbol, reason, gross_value, commission, pos.expiry.date(),
+            )
+            return
+
         proceeds = max(gross_value - commission, 0.0)
         effective_premium = proceeds / (contracts_to_sell * pos.multiplier)
         self.cash += proceeds
@@ -887,14 +1059,16 @@ class OptionsBacktestEngine:
         scénario gagnant)."""
         if self.stop_basis == "premium":
             premium = self._current_premium(pos, today)
-            if premium is None:
+            reference = pos.stop_reference_premium or pos.entry_premium
+            if premium is None or not reference:
                 return None
-            return (premium - pos.entry_premium) / pos.entry_premium * 100
+            return (premium - reference) / reference * 100
 
         close = self.prices.close_at(pos.symbol, today)
-        if close is None or not pos.entry_spot:
+        reference = pos.stop_reference_spot or pos.entry_spot
+        if close is None or not reference:
             return None
-        move_pct = (close - pos.entry_spot) / pos.entry_spot * 100
+        move_pct = (close - reference) / reference * 100
         return move_pct if pos.option_type == "CALL" else -move_pct
 
     def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
@@ -976,7 +1150,18 @@ class OptionsBacktestEngine:
                 "options clôturée à la dernière valorisation connue.",
                 symbol, last_valid.date(), data_loader.FORWARD_FILL_MAX_DAYS,
             )
-            self._close_position(symbol, last_valid, "data_gap")
+            # Valorisée à `last_valid` (dernier cours réel connu), mais DATÉE
+            # de `today` -- l'alignement sur backtest/engine.py, qui fait déjà
+            # _execute_trade(..., today, "data_gap") au dernier prix connu.
+            #
+            # L'appel d'origine passait `last_valid` comme date du trade : la
+            # sortie et holding_days étaient datées du dernier cours connu (des
+            # jours, parfois des semaines, avant la journée simulée) et surtout
+            # le cash était crédité à une date ANTÉRIEURE à celle où le moteur
+            # se trouve -- une position pouvait ainsi financer des achats déjà
+            # passés dans la simulation.
+            spot = self.prices.close_at(symbol, last_valid)
+            self._close_position(symbol, today, "data_gap", spot=spot)
             closed.add(symbol)
         return closed
 
@@ -1120,6 +1305,36 @@ class OptionsBacktestEngine:
         return closed
 
     # ------------------------------------------------------------------ #
+    def execution_diagnostics(self) -> dict:
+        """Mêmes diagnostics que backtest/engine.py::execution_diagnostics,
+        plus l'exposition delta moyenne et maximale -- le levier n'a pas à
+        être relu à la main dans l'equity_curve pour être constaté."""
+        truncated_pct = (
+            self.truncated_orders_count / self.buy_orders_count * 100
+            if self.buy_orders_count else 0.0
+        )
+        rows = [row for row in self.equity_curve_rows if row["nav"] > 0]
+        cash_pct = [row["cash"] / row["nav"] * 100 for row in rows]
+        delta_pct = [row["delta_notional"] / row["nav"] * 100 for row in rows]
+
+        if truncated_pct > engine_mod.TRUNCATED_ORDERS_WARNING_PCT:
+            logger.warning(
+                "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
+                "alloué dépasse régulièrement le cash disponible, les positions gelées "
+                "immobilisant du capital sans être vendues.",
+                truncated_pct, self.truncated_orders_count, self.buy_orders_count,
+            )
+
+        return {
+            "buy_orders_count": self.buy_orders_count,
+            "truncated_orders_count": self.truncated_orders_count,
+            "truncated_orders_pct": float(truncated_pct),
+            "avg_cash_pct": float(sum(cash_pct) / len(cash_pct)) if cash_pct else None,
+            "avg_delta_notional_pct": float(sum(delta_pct) / len(delta_pct)) if delta_pct else None,
+            "max_delta_notional_pct_observed": float(max(delta_pct)) if delta_pct else None,
+        }
+
+    # ------------------------------------------------------------------ #
     # Comptabilité quotidienne
     # ------------------------------------------------------------------ #
     def _position_value(self, pos: OptionPosition, today: pd.Timestamp) -> float:
@@ -1134,9 +1349,17 @@ class OptionsBacktestEngine:
     def _mark_to_market(self, today: pd.Timestamp) -> None:
         invested = sum(self._position_value(pos, today) for pos in self.positions.values())
         nav = self.cash + invested
+        # delta_notional : le levier réellement porté, invisible jusqu'ici
+        # dans toutes les sorties du moteur (invested_value ne mesure que les
+        # primes décaissées, soit ~10% de l'exposition d'une option ATM).
+        # delta_notional_pct le rapporte au NAV, l'unité dans laquelle
+        # config.OPTIONS_MAX_DELTA_NOTIONAL_PCT est exprimé.
+        delta_notional = self._delta_notional(today)
         self.equity_curve_rows.append({
             "date": today, "nav": nav, "cash": self.cash, "invested_value": invested,
             "num_positions": len(self.positions),
+            "delta_notional": delta_notional,
+            "delta_notional_pct": (delta_notional / nav * 100) if nav > 0 else None,
         })
 
     def _record_positions(self, today: pd.Timestamp) -> None:

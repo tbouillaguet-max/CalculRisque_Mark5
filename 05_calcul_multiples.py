@@ -34,12 +34,18 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+# Au-delà de cette part de lignes tombées sur le repli annuel, le signal est
+# majoritairement calculé contre des cours vieux de plusieurs mois : on le
+# signale bruyamment plutôt que de le laisser passer pour un run normal.
+FALLBACK_WARNING_RATIO = 0.20
 
 
 def load_financials_with_periods() -> pd.DataFrame:
@@ -70,10 +76,25 @@ def match_price_asof(df: pd.DataFrame) -> pd.DataFrame:
     """Associe à chaque ligne le dernier cours de clôture QUOTIDIEN connu à
     filed_date (jamais un cours futur -- même principe point-in-time que le
     reste du pipeline), via pandas.merge_asof sur DAILY_PRICES_FILE (03b).
-    Repli sur le cours de clôture ANNUEL (PRICES_FILE, 03, jointure sur
-    year) pour les lignes sans correspondance quotidienne (03b jamais lancé,
-    ou trou de couverture au-delà de DAILY_PRICE_ASOF_TOLERANCE_DAYS) --
-    comportement d'avant pour ces lignes-là."""
+
+    Repli sur les clôtures ANNUELLES (PRICES_FILE, 03) pour les lignes sans
+    correspondance quotidienne (03b jamais lancé, ou trou de couverture
+    au-delà de DAILY_PRICE_ASOF_TOLERANCE_DAYS).
+
+    CORRIGÉ : ce repli joignait sur `year`, donc récupérait la clôture du
+    31/12 de l'exercice décrit -- alors que filed_date tombe deux à trois mois
+    PLUS TARD. L'écart de valorisation était donc calculé contre un cours que
+    le marché n'avait pas encore formé au moment du dépôt, pendant que le
+    backtest, lui, entre au cours du jour. Le repli prend maintenant la
+    clôture annuelle la plus proche ANTÉRIEURE OU ÉGALE à filed_date : pour un
+    10-K déposé en mars, c'est le 31/12 de l'année PRÉCÉDENTE -- un cours plus
+    ancien, mais point-in-time correct, ce qui est la seule propriété qui
+    compte ici.
+
+    La proportion de lignes passées par ce repli est journalisée, et
+    au-delà de FALLBACK_WARNING_RATIO un avertissement invite à lancer 03b :
+    un repli massif signifie que la quasi-totalité du signal est calculée
+    contre des cours vieux de plusieurs mois."""
     df = df.dropna(subset=["filed_date"]).copy()
     # config.to_naive_day des deux côtés (et pas un simple pd.to_datetime) :
     # merge_asof refuse deux clés de résolutions différentes, or filed_date
@@ -100,13 +121,82 @@ def match_price_asof(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["close"] = None
 
+    df["price_source"] = np.where(df["close"].notna(), "quotidien", None)
+
     missing = df["close"].isna()
     if missing.any() and config.PRICES_FILE.exists():
-        annual_prices = pd.read_parquet(config.PRICES_FILE)[["symbol", "year", "close"]]
-        fallback = df.loc[missing, ["symbol", "year"]].merge(annual_prices, on=["symbol", "year"], how="left")
-        df.loc[missing, "close"] = fallback["close"].values
+        annual = _annual_prices_asof()
+        if annual is not None:
+            filled = pd.merge_asof(
+                df.loc[missing].sort_values("filed_date"),
+                annual, left_on="filed_date", right_on="price_date", by="symbol", direction="backward",
+            )
+            # merge_asof réordonne : on réaligne sur l'index d'origine plutôt
+            # que de supposer que l'ordre a été conservé.
+            filled = filled.set_index(df.loc[missing].sort_values("filed_date").index)
+            df.loc[filled.index, "close"] = filled["close_annual"]
+            df.loc[filled.index[filled["close_annual"].notna()], "price_source"] = "annuel_anterieur"
 
+    _log_price_source_summary(df)
     return df
+
+
+def _annual_prices_asof() -> "pd.DataFrame | None":
+    """Clôtures annuelles (03) indexées par leur DATE de cotation réelle, pour
+    un merge_asof point-in-time.
+
+    PRICES_FILE porte une colonne `date` (dernier jour coté de l'exercice)
+    depuis 03_recuperation_cours.py. Un cache plus ancien qui ne l'aurait pas
+    est reconstitué au 31/12 de l'année -- approximation, mais qui reste du
+    bon côté : elle ne peut que rendre le cours retenu plus ancien, jamais
+    futur."""
+    annual = pd.read_parquet(config.PRICES_FILE)
+    if "close" not in annual.columns or "symbol" not in annual.columns:
+        logger.warning("%s n'a ni 'symbol' ni 'close' : repli annuel désactivé.", config.PRICES_FILE)
+        return None
+
+    if "date" in annual.columns:
+        annual["price_date"] = config.to_naive_day(annual["date"])
+    elif "year" in annual.columns:
+        logger.warning(
+            "%s n'a pas de colonne 'date' (cache antérieur) : les clôtures annuelles sont "
+            "datées au 31/12 par défaut. Relance 03_recuperation_cours.py pour une date réelle.",
+            config.PRICES_FILE,
+        )
+        annual["price_date"] = pd.to_datetime(
+            annual["year"].astype("Int64").map(lambda y: f"{y}-12-31" if pd.notna(y) else None),
+            errors="coerce",
+        )
+    else:
+        return None
+
+    annual = (
+        annual.dropna(subset=["price_date", "close", "symbol"])
+        .rename(columns={"close": "close_annual"})[["symbol", "price_date", "close_annual"]]
+        .sort_values("price_date")
+    )
+    return annual if not annual.empty else None
+
+
+def _log_price_source_summary(df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    counts = df["price_source"].value_counts(dropna=False)
+    total = len(df)
+    fallback = int(counts.get("annuel_anterieur", 0))
+    logger.info(
+        "Association des cours : %d lignes au total -- %d au cours quotidien (03b), "
+        "%d en repli sur la clôture annuelle antérieure (03), %d sans cours.",
+        total, int(counts.get("quotidien", 0)), fallback, int(df["close"].isna().sum()),
+    )
+    if total and fallback / total > FALLBACK_WARNING_RATIO:
+        logger.warning(
+            "%.0f%% des lignes utilisent le repli annuel : leur écart de valorisation est "
+            "calculé contre une clôture vieille de plusieurs mois, alors que le backtest entre "
+            "au cours du jour. Lance 03b_recuperation_cours_quotidiens.py pour des cours "
+            "quotidiens point-in-time.",
+            fallback / total * 100,
+        )
 
 
 def calculate_multiples() -> pd.DataFrame:
@@ -149,6 +239,16 @@ def main() -> None:
     # regroupement par secteur dans 06. On convertit le RIC au même format
     # de symbole que le reste du pipeline (config.to_ib_symbol) : sinon les
     # tickers à classes d'actions (BRK.B, BF.B) se retrouvent sans secteur.
+    #
+    # BIAIS CONNU (non corrigé, cf. README) : ce secteur est la classification
+    # d'AUJOURD'HUI, appliquée rétroactivement à tous les exercices, y compris
+    # 2012. Une entreprise reclassée depuis (les GICS ont notamment déplacé
+    # les télécoms et une partie de la tech vers "Services de communication"
+    # en 2018) est donc comparée aux mauvais pairs sur toute sa partie
+    # ancienne, et se voit appliquer les mauvaises hypothèses de DCF
+    # (config.SECTOR_DCF_PARAMS) et les mauvais multiples pertinents
+    # (config.SECTOR_MULTIPLES). L'historique GICS point-in-time n'est pas
+    # disponible gratuitement -- c'est un biais assumé, pas un oubli.
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
     if "sector" in universe.columns:
         universe = universe.copy()

@@ -80,15 +80,16 @@ import argparse
 import importlib
 import json
 import logging
-import time
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
 
 import config
+import sec_http
+import sec_xbrl
 
 # ----------------------------------------------------------------------------
 # Fetch SEC : dupliqué à l'identique de 04_recuperation_10k.py (même pattern
@@ -99,14 +100,8 @@ import config
 FETCH_STATE_FILE = config.DIR_FINANCIALS / "fetch_state_10q.json"
 REFRESH_DAYS_DEFAULT = 7
 
-SEC_CONTACT_EMAIL = "jeanboubou1er@gmail.com"
-HEADERS = {
-    "User-Agent": f"OptionsPipeline/1.0 ({SEC_CONTACT_EMAIL})",
-    "Accept": "application/json",
-}
 TICKERS_JSON_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-REQUEST_DELAY = 0.15
 
 # Mêmes tags que 04_recuperation_10k.py::XBRL_TAGS -- garder les deux en
 # synchronisation si un tag candidat est ajouté/retiré d'un côté.
@@ -132,12 +127,12 @@ XBRL_TAGS: Dict[str, List[str]] = {
 
 # Flux (montant SUR la période -> le TTM en fait la SOMME) vs stock/bilan
 # (montant À une date -> le TTM en garde la DERNIÈRE valeur connue). Voir
-# section "TTM vs trimestre brut" de la docstring.
-FLOW_METRICS = {"revenue", "ebit", "net_income", "capex", "da", "income_tax_expense", "interest_expense"}
-STOCK_METRICS = {
-    "total_assets", "total_liabilities", "cash", "short_term_debt", "long_term_debt",
-    "shares_outstanding", "current_assets", "current_liabilities",
-}
+# section "TTM vs trimestre brut" de la docstring. Définis dans sec_xbrl
+# (module partagé avec 04) plutôt qu'ici : 04 a besoin de la même
+# classification depuis le passage au rattachement par `end`, et deux copies
+# divergeraient au premier tag ajouté d'un seul côté.
+FLOW_METRICS = set(sec_xbrl.FLOW_METRICS)
+STOCK_METRICS = set(sec_xbrl.STOCK_METRICS)
 assert FLOW_METRICS | STOCK_METRICS == set(XBRL_TAGS), "Chaque tag XBRL doit être classé flux XOR stock."
 
 QUARTER_SEQUENCE = ("Q1", "Q2", "Q3", "Q4")
@@ -158,15 +153,12 @@ compute_derived = _module_10k.compute_derived
 
 
 def _get(url: str) -> Optional[dict]:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.exceptions.RequestException as e:
-        logger.error("Échec de la requête %s: %s", url, e)
-        return None
-    finally:
-        time.sleep(REQUEST_DELAY)
+    """Passe désormais par sec_http : limiteur de débit GLOBAL partagé avec
+    04/04c (ce script envoyait ses requêtes sans throttle commun, si bien que
+    deux scripts lancés en parallèle doublaient le débit vers la SEC) et
+    réessais sur erreur transitoire (il n'en avait aucun : un 503 passager
+    faisait perdre le ticker pour tout le run)."""
+    return sec_http.get_json_or_none(url)
 
 
 def get_cik_map() -> Dict[str, str]:
@@ -217,14 +209,9 @@ def collect_period_entries(facts: dict, tags: List[str]) -> Dict[Tuple[int, str]
                 owner_priority.setdefault(key, priority)
 
                 start, end = v.get("start"), v.get("end")
-                duration_days = None
-                if start and end:
-                    try:
-                        duration_days = (datetime.strptime(end, "%Y-%m-%d") - datetime.strptime(start, "%Y-%m-%d")).days
-                    except ValueError:
-                        duration_days = None
                 entries_by_period.setdefault(key, []).append({
-                    "val": val, "filed": filed, "end": end, "duration_days": duration_days,
+                    "val": val, "filed": filed, "end": end,
+                    "duration_days": sec_xbrl.duration_days(start, end),
                 })
 
     return entries_by_period
@@ -232,17 +219,12 @@ def collect_period_entries(facts: dict, tags: List[str]) -> Dict[Tuple[int, str]
 
 def resolve_stock_value(entries: List[dict]) -> Optional[Tuple[float, str, Optional[str]]]:
     """Métrique de bilan : pas de discrétisation, juste la valeur (dépôt le
-    plus récent en cas de doublon, ex: restatement) -- même tie-break que 04."""
-    if not entries:
+    plus récent en cas de doublon, ex: restatement) -- même tie-break que 04,
+    désormais littéralement la même fonction (sec_xbrl.best_entry)."""
+    best = sec_xbrl.best_entry(entries)
+    if best is None:
         return None
-    best = max(entries, key=lambda e: e["filed"])
     return best["val"], best["filed"], best.get("end")
-
-
-def _best_entry_any_duration(entries: List[dict]) -> Optional[dict]:
-    if not entries:
-        return None
-    return max(entries, key=lambda e: e["filed"])
 
 
 def resolve_flow_quarter_or_annual(entries: List[dict]) -> Optional[Tuple[float, str, str, Optional[str]]]:
@@ -251,14 +233,17 @@ def resolve_flow_quarter_or_annual(entries: List[dict]) -> Optional[Tuple[float,
     meilleure entrée cumulative (peu importe sa durée -- 6 mois, 9 mois, ou
     l'année complète pour fp="FY"). Retourne (valeur, filed, kind, end) où
     kind = "direct" (déjà discret, à utiliser tel quel) ou "cumulative" (à
-    charge de l'appelant de soustraire le(s) trimestre(s) précédent(s))."""
+    charge de l'appelant de soustraire le(s) trimestre(s) précédent(s)).
+
+    La fenêtre de durée trimestrielle et le tie-break "dépôt le plus récent"
+    viennent de sec_xbrl, partagés avec 04 (qui applique la même mécanique à
+    sa fenêtre annuelle) -- ils étaient écrits ici en premier."""
     if not entries:
         return None
-    quarter_like = [e for e in entries if e["duration_days"] is not None and 60 <= e["duration_days"] <= 100]
-    if quarter_like:
-        best = _best_entry_any_duration(quarter_like)
+    best = sec_xbrl.best_entry_in_duration_window(entries, sec_xbrl.QUARTER_DURATION_DAYS)
+    if best is not None:
         return best["val"], best["filed"], "direct", best.get("end")
-    best = _best_entry_any_duration(entries)
+    best = sec_xbrl.best_entry(entries)
     return best["val"], best["filed"], "cumulative", best.get("end")
 
 
@@ -496,11 +481,8 @@ def main() -> None:
     parser.add_argument("--force-refresh", action="store_true")
     args = parser.parse_args()
 
-    if SEC_CONTACT_EMAIL == "ton_email@example.com":
-        logger.warning(
-            "SEC_CONTACT_EMAIL n'a pas été renseigné en haut du script : la SEC "
-            "peut bloquer les requêtes avec un User-Agent générique."
-        )
+    if sec_http.require_contact_email(logger) is None:
+        sys.exit(1)
 
     if args.ticker:
         symbols = [args.ticker.upper()]

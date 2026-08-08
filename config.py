@@ -46,6 +46,7 @@ s'enchaîner sans transformation manuelle entre les deux.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 # ----------------------------------------------------------------------------
 # Arborescence de sortie (unique, partagée par tous les scripts)
@@ -201,6 +202,84 @@ COUNTRY = "United States"
 # localement) ; approximation du taux 3 mois US, à ajuster si besoin.
 RISK_FREE_RATE = 0.04
 
+# Taux sans risque PAR ANNÉE (rendement du Treasury 3 mois, moyenne annuelle).
+#
+# Un taux constant à 4% sur 2010-2026 est faux des deux côtés : le taux réel
+# est allé de ~0,05% (2011-2015, après la crise) à ~5,3% (2023-2024). Sur une
+# option à 9 mois, l'écart déplace la prime de plusieurs pour cent, et dans un
+# sens systématique par période -- il surévaluait les calls du début de
+# l'historique et sous-évaluait ceux de la fin. La même courbe sert de taux
+# sans risque aux métriques (Sharpe, Sortino), où un taux de 4% appliqué à
+# 2012 fabriquait une prime de risque négative sur une année pourtant positive.
+#
+# SOURCES : moyennes annuelles du 3-Month Treasury Bill (séries FRED DTB3 /
+# TB3MS), arrondies au dixième de point. Elles n'ont PAS pu être re-vérifiées
+# automatiquement dans l'environnement de rédaction (accès sortant bloqué) --
+# recoupe-les si un chiffre te paraît douteux : https://fred.stlouisfed.org/series/TB3MS
+# Une année absente de la table retombe sur RISK_FREE_RATE ci-dessus.
+RISK_FREE_RATE_BY_YEAR: dict[int, float] = {
+    2005: 0.0322, 2006: 0.0482, 2007: 0.0444, 2008: 0.0137, 2009: 0.0015,
+    2010: 0.0014, 2011: 0.0005, 2012: 0.0009, 2013: 0.0006, 2014: 0.0003,
+    2015: 0.0005, 2016: 0.0032, 2017: 0.0093, 2018: 0.0194, 2019: 0.0206,
+    2020: 0.0037, 2021: 0.0004, 2022: 0.0202, 2023: 0.0515, 2024: 0.0521,
+    2025: 0.0430, 2026: 0.0400,
+}
+
+
+def risk_free_rate_for(year: Optional[int] = None) -> float:
+    """Taux sans risque de l'année demandée, avec repli sur la constante
+    RISK_FREE_RATE (années hors table, ou appelant qui n'a pas de date sous
+    la main -- le pricing de 08_recuperation_options.py, par exemple, ne
+    valorise que des contrats du jour)."""
+    if year is None:
+        return RISK_FREE_RATE
+    return RISK_FREE_RATE_BY_YEAR.get(int(year), RISK_FREE_RATE)
+
+
+# Rendement du dividende par SECTEUR, utilisé par le pricing Black-Scholes du
+# backtest (backtest/options_pricing.py, paramètre `q`).
+#
+# Black-Scholes sans dividende surévalue les CALLS et sous-évalue les PUTS,
+# systématiquement -- et d'autant plus que le rendement est élevé, donc
+# précisément sur les secteurs qu'un signal "value" sélectionne (utilities,
+# télécoms, pétrole, banques). Le biais n'est donc pas aléatoire : il pousse la
+# stratégie à surpayer ses calls sur exactement les titres qu'elle achète.
+#
+# Un rendement PAR TITRE et PAR DATE serait meilleur, mais le pipeline ne
+# collecte aucune donnée de dividende (03/03b demandent whatToShow="TRADES" à
+# IBKR, cf. la section "Biais et limites connus" du README) : ces moyennes
+# sectorielles sont une approximation assumée, pas une mesure. Ordres de
+# grandeur usuels du marché US.
+SECTOR_DIVIDEND_YIELD: dict[str, float] = {
+    "Technologie": 0.008,
+    "Santé": 0.017,
+    "Agro-alimentaire et boissons": 0.028,
+    "Produits ménagers et de soin personnel": 0.025,
+    "Services aux collectivités": 0.035,
+    "Banques": 0.030,
+    "Assurance": 0.022,
+    "Services financiers": 0.020,
+    "Immobilier": 0.040,
+    "Pétrole et gaz": 0.035,
+    "Biens et services industriels": 0.018,
+    "Bâtiment et matériaux de construction": 0.015,
+    "Matières premières": 0.020,
+    "Chimie": 0.022,
+    "Medias": 0.012,
+    "Télécommunications": 0.045,
+    "Distribution": 0.015,
+    "Automobiles et équipementiers": 0.020,
+    "Voyage et loisirs": 0.012,
+    "_default": 0.018,
+}
+
+
+def dividend_yield_for(sector) -> float:
+    """Rendement du dividende retenu pour un secteur (repli "_default")."""
+    return SECTOR_DIVIDEND_YIELD.get(
+        sector if isinstance(sector, str) else "", SECTOR_DIVIDEND_YIELD["_default"],
+    )
+
 # ----------------------------------------------------------------------------
 # Filtre de valorisation (déclenche la récupération des options en 08)
 # ----------------------------------------------------------------------------
@@ -264,6 +343,13 @@ BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simp
 # tolérer le glissement habituel de quelques semaines de la date de dépôt
 # d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
 # restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
+# Indice de référence auquel 09/10 comparent la stratégie (metrics.py). Doit
+# être un symbole présent dans DAILY_PRICES_FILE (03b) : à défaut, un indice
+# ÉQUIPONDÉRÉ de l'univers point-in-time est reconstruit à la volée, repère
+# utile mais différent du S&P 500 pondéré (voir
+# backtest/data_loader.build_benchmark_series).
+BENCHMARK_SYMBOL = "SPY"
+
 BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
 
 # Durée de vie d'un signal selon le type de période qui l'a produit : un TTM
@@ -360,11 +446,43 @@ OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
 # le moteur renforce les positions déjà ouvertes (au prorata de leur taille)
 # pour remettre le capital au travail plutôt que de le laisser dormir.
 #
-# ATTENTION : contrairement à une action, une option peut valoir ZÉRO à
-# l'échéance. Immobiliser 90% du capital en primes n'a donc pas le même sens
-# que 90% investi en actions -- c'est un plancher d'exposition délibérément
-# agressif, à confronter au drawdown qu'il produit. 0 ou None le désactive.
-OPTIONS_MIN_DEPLOYMENT_PCT = 90.0
+# CE RÉGLAGE PILOTE UN ARBITRAGE À TROIS TERMES -- cash, theta, levier :
+#   - trop BAS : le capital dort, et le rendement du portefeuille est celui
+#     d'une petite poche investie noyée dans du cash non rémunéré ;
+#   - trop HAUT : c'est la totalité du capital qui paie la perte de valeur
+#     temps (theta) tous les jours, et surtout le LEVIER explose. Le moteur
+#     dimensionne en exposition NOTIONNELLE delta-équivalente (nb_contrats =
+#     budget / (|delta| x spot x multiplicateur)), ce qui vise une exposition
+#     delta d'environ 1x le NAV. Or la prime d'une option ATM à 9 mois ne vaut
+#     que ~8 à 12% du spot : forcer 90% du NAV en primes revenait donc à
+#     porter une exposition delta de l'ordre de 8 à 10x le NAV -- cause
+#     structurelle des drawdowns extrêmes observés, et annulation pure et
+#     simple du dimensionnement par delta.
+#
+# La valeur était 90 ; ramenée à 25, complétée par le plafond explicite
+# d'exposition delta ci-dessous qui borne le levier quoi qu'il arrive.
+# 0 ou None désactive le redéploiement.
+OPTIONS_MIN_DEPLOYMENT_PCT = 25.0
+
+# Exposition NOTIONNELLE delta-équivalente maximale du portefeuille d'options,
+# en % du NAV : somme sur les positions de |delta| x spot x contrats x
+# multiplicateur. C'est la mesure honnête du levier -- combien de dollars de
+# sous-jacent le portefeuille suit réellement, par opposition au montant de
+# primes décaissé, qui n'en est qu'une fraction.
+#
+# 100% = le portefeuille bouge comme s'il détenait son NAV en actions. Au-delà
+# de ce plafond, le redéploiement du cash oisif s'arrête, même si la part
+# investie en primes reste sous OPTIONS_MIN_DEPLOYMENT_PCT : c'est le plafond
+# qui prime, le plancher n'étant qu'une préférence. 0 ou None le désactive
+# (comportement d'avant : levier non borné).
+#
+# PORTÉE : ce plafond contraint l'ORDRE au moment où il est passé, pas la
+# position dans la durée. Entre deux renforcements, le delta du contrat dérive
+# avec le sous-jacent (gamma) et le moteur ne vend JAMAIS pour se désendetter
+# -- le levier réalisé peut donc dépasser le plafond de quelques dizaines de
+# points de NAV. Suivre la colonne delta_notional_pct de l'equity_curve pour
+# le constater sur un run donné.
+OPTIONS_MAX_DELTA_NOTIONAL_PCT = 100.0
 
 # Optimisation de taille au regard des frais.
 #
@@ -507,6 +625,28 @@ SECTOR_DCF_PARAMS: dict[str, dict] = {
     "_default":                             {"wacc": 0.100, "fcf_growth": 0.05, "terminal_growth": 0.020},
 }
 
+
+# Secteurs pour lesquels un DCF de type FCFF n'a PAS de sens, et que
+# 07_calcul_dcf.py écarte donc explicitement.
+#
+# Le FCFF part de l'EBIT et traite la dette comme un financement à retrancher
+# en fin de calcul. Pour une banque ou un assureur, la dette est un INTRANT DU
+# MÉTIER (les dépôts et les provisions techniques financent l'actif) et l'EBIT
+# n'est pas une mesure opérationnelle pertinente : les valoriser ainsi produit
+# un chiffre qui a l'air d'un DCF sans en être un. Pour une foncière, l'essentiel
+# du résultat est absorbé par des amortissements sans contrepartie de trésorerie
+# et le capex se confond avec l'acquisition d'actifs -- le FCFF n'y décrit rien
+# non plus.
+#
+# Jusqu'ici, il suffisait qu'OperatingIncomeLoss soit tagué pour qu'un chiffre
+# sorte quand même. Ces entreprises ne perdent rien au change :
+# 06b_calcul_valorisation_combinee.py les valorise déjà par les multiples
+# sectoriels que SECTOR_MULTIPLES juge pertinents pour elles (P/E pour les
+# financières, EV/EBITDA pour l'immobilier) -- et les multiples, eux, n'ont pas
+# besoin de l'EBIT.
+#
+# Libellés de 02_categoriser_secteurs.py (français), comme SECTOR_DCF_PARAMS.
+SECTORS_SANS_DCF: tuple = ("Banques", "Assurance", "Services financiers", "Immobilier")
 
 # ----------------------------------------------------------------------------
 # Multiples pertinents par SECTEUR (06b_calcul_valorisation_combinee.py)

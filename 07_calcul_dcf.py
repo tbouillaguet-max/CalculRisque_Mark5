@@ -30,6 +30,12 @@ Corrections par rapport à CalculDCFMark1 :
       DCF_HISTORY_FILE porte désormais period_type ("FY"/"TTM") et
       fiscal_quarter, pour que 06b_calcul_valorisation_combinee.py compare
       les pairs au sein du même "millésime de publication".
+    - CORRIGÉ : calculer_fcf ne réintégrait pas la D&A (charge non
+      décaissée) et retranchait des intérêts qu'aucun appelant ne
+      renseignait -- voir la docstring de calculer_fcf. Le FCF, la valeur
+      terminale et la valeur par action étaient systématiquement
+      sous-estimés. Ce correctif invalide dcf_historique.parquet ET
+      valorisation_combinee_historique.parquet : relance 07 puis 06b.
 
 Usage :
     python 07_calcul_dcf.py
@@ -66,9 +72,28 @@ HYPOTHESES_DEFAUT = {
 }
 
 
-def calculer_fcf(ebit: float, taux_imposition: float, capex: float, variation_bfr: float, interets: float = 0) -> float:
-    """FCF = EBIT * (1 - t) - CapEx - ΔBFR - Intérêts * (1 - t)."""
-    return (ebit * (1 - taux_imposition)) - capex - variation_bfr - (interets * (1 - taux_imposition))
+def calculer_fcf(ebit: float, taux_imposition: float, capex: float, variation_bfr: float, da: float = 0.0) -> float:
+    """FCFF = EBIT x (1 - t) + D&A - CapEx - ΔBFR.
+
+    ANCIEN COMPORTEMENT (corrigé) : "EBIT x (1-t) - CapEx - ΔBFR - Intérêts x
+    (1-t)", qui souffrait de deux erreurs cumulées.
+
+    1. La D&A n'était pas réintégrée. C'est une charge NON DÉCAISSÉE déjà
+       déduite de l'EBIT : sans elle, le FCF est sous-estimé d'un montant
+       proche de la D&A elle-même (30 à 60% du FCF pour une industrielle), et
+       la sous-estimation se propage à la valeur terminale puis à la valeur
+       par action. Effet observable : quasiment toutes les entreprises
+       ressortaient survalorisées, la stratégie actions ne trouvait plus de
+       candidat au-dessus de son seuil, et la stratégie options basculait
+       structurellement du côté PUT.
+
+    2. Le paramètre `interets` est supprimé plutôt que branché. Il n'était
+       renseigné par AUCUN appelant (il valait donc toujours 0 : un paramètre
+       mort, et donc un piège), mais surtout le retrancher aurait été faux
+       ici : dans un FCFF, le coût de la dette est porté par le WACC utilisé
+       à l'actualisation (config.SECTOR_DCF_PARAMS), pas par le flux. Le
+       soustraire aussi du flux le compterait deux fois."""
+    return (ebit * (1 - taux_imposition)) + da - capex - variation_bfr
 
 
 def calculer_fcf_futurs(fcf_actuel: float, taux_croissance: float, periode: int) -> np.ndarray:
@@ -125,6 +150,13 @@ def build_input_table(latest_only: bool = True) -> pd.DataFrame:
     aujourd'hui."""
     financials = load_financials_with_periods()
     financials = match_price_asof(financials)
+    # BIAIS CONNU (non corrigé, cf. README) : le secteur vient de
+    # config.UNIVERSE_FILE, soit la classification GICS d'AUJOURD'HUI,
+    # appliquée rétroactivement à des exercices de 2012. Il pilote le WACC et
+    # les deux taux de croissance du DCF (hypotheses_pour_secteur), donc une
+    # entreprise reclassée depuis est valorisée sur toute sa partie ancienne
+    # avec les hypothèses du mauvais secteur. L'historique GICS point-in-time
+    # n'est pas disponible gratuitement : biais assumé, pas un oubli.
     universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
 
     # 'working_capital' (produit par 04/04b) est un NIVEAU (current_assets -
@@ -172,9 +204,28 @@ def hypotheses_pour_secteur(sector, hypotheses: Dict = HYPOTHESES_DEFAUT) -> Dic
 def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_DEFAUT) -> pd.DataFrame:
     results = []
     secteurs_inconnus = set()
+    # Entreprises dont AUCUNE période n'a de D&A tagué : signalées une fois en
+    # fin de run plutôt qu'une fois par ligne (une entreprise a jusqu'à ~40
+    # périodes FY+TTM dans l'historique).
+    symboles_sans_da = set()
+    # Lignes écartées parce que leur secteur ne se valorise pas par un FCFF
+    # (cf. config.SECTORS_SANS_DCF) : comptées par secteur pour que le volume
+    # écarté soit visible, et non deviné à la baisse du nombre de lignes.
+    secteurs_sans_dcf = set(getattr(config, "SECTORS_SANS_DCF", ()) or ())
+    ecartees_par_secteur: Dict[str, int] = {}
     for _, row in df.iterrows():
         symbol = row.get("symbol", "?")
         try:
+            secteur_ligne = row.get("sector")
+            if isinstance(secteur_ligne, str) and secteur_ligne in secteurs_sans_dcf:
+                # Un DCF FCFF sur une banque ou une foncière n'a pas de sens :
+                # l'EBIT n'y est pas une mesure opérationnelle pertinente et la
+                # dette est un intrant du métier, pas un financement à
+                # retrancher. Ces entreprises restent valorisées par 06b via
+                # les multiples sectoriels de config.SECTOR_MULTIPLES.
+                ecartees_par_secteur[secteur_ligne] = ecartees_par_secteur.get(secteur_ligne, 0) + 1
+                continue
+
             ebit = row.get("ebit")
             if pd.isna(ebit) or ebit is None or ebit <= 0:
                 logger.warning("EBIT manquant/invalide pour %s. DCF non calculé.", symbol)
@@ -194,6 +245,17 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                     symbol,
                 )
                 bfr = 0
+            # D&A (colonne produite par 04_recuperation_10k.py, XBRL_TAGS["da"]) :
+            # réintégrée au FCF comme charge non décaissée. Absente pour les
+            # entreprises qui ne taguent ni DepreciationDepletionAndAmortization
+            # ni DepreciationAmortizationAndAccretionNet -- traitée comme 0 en le
+            # SIGNALANT : le DCF est alors CONSERVATEUR (FCF sous-estimé du
+            # montant de la D&A réelle, donc valeur par action sous-estimée et
+            # écart de valorisation biaisé du côté "survalorisée").
+            da = row.get("da")
+            if da is None or pd.isna(da):
+                symboles_sans_da.add(symbol)
+                da = 0.0
             dette_nette = row.get("net_debt") or 0
             shares_outstanding = row.get("shares_outstanding")
             taux_imposition = row.get("tax_rate")
@@ -204,7 +266,9 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 logger.warning("Nombre d'actions manquant pour %s. DCF non calculé.", symbol)
                 continue
 
-            fcf_actuel = calculer_fcf(ebit=ebit, taux_imposition=taux_imposition, capex=capex, variation_bfr=bfr)
+            fcf_actuel = calculer_fcf(
+                ebit=ebit, taux_imposition=taux_imposition, capex=capex, variation_bfr=bfr, da=da,
+            )
             if fcf_actuel <= 0:
                 logger.warning("FCF actuel <= 0 pour %s. DCF non calculé.", symbol)
                 continue
@@ -243,6 +307,25 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
         except Exception as e:  # noqa: BLE001
             logger.error("Erreur pour %s: %s", symbol, e)
             continue
+
+    if ecartees_par_secteur:
+        logger.info(
+            "%d ligne(s) écartées du DCF, secteur non valorisable par un FCFF "
+            "(config.SECTORS_SANS_DCF) : %s. Ces entreprises restent valorisées par "
+            "06b_calcul_valorisation_combinee.py via les multiples sectoriels.",
+            sum(ecartees_par_secteur.values()),
+            ", ".join(f"{s} ({n})" for s, n in sorted(ecartees_par_secteur.items())),
+        )
+
+    if symboles_sans_da:
+        apercu = ", ".join(sorted(symboles_sans_da)[:15])
+        logger.warning(
+            "D&A absente pour %d entreprise(s) (aucun tag XBRL DepreciationDepletionAndAmortization "
+            "ni DepreciationAmortizationAndAccretionNet) : traitée comme 0, le DCF de ces "
+            "entreprises est donc CONSERVATEUR (FCF, valeur terminale et valeur par action "
+            "sous-estimés d'autant, écart de valorisation biaisé vers 'survalorisée'). %s%s",
+            len(symboles_sans_da), apercu, "..." if len(symboles_sans_da) > 15 else "",
+        )
 
     if secteurs_inconnus:
         logger.warning(

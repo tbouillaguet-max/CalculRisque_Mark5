@@ -136,8 +136,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT,
-        help="Part minimale du NAV investie en primes : en dessous, les positions ouvertes "
-             "sont renforcées au prorata. 0 pour désactiver.",
+        help="Part minimale du NAV investie en primes (défaut: %(default)s) : en dessous, les "
+             "positions ouvertes sont renforcées au prorata. Arbitre cash contre theta contre "
+             "levier -- voir le commentaire de config.OPTIONS_MIN_DEPLOYMENT_PCT. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--max-delta-notional-pct", type=float, default=config.OPTIONS_MAX_DELTA_NOTIONAL_PCT,
+        help="Exposition notionnelle delta-équivalente maximale, en %% du NAV (défaut: "
+             "%(default)s). Borne le levier : le redéploiement du cash s'arrête dès ce plafond "
+             "atteint, même si --min-deployment-pct n'est pas satisfait. 0 pour désactiver.",
     )
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
@@ -201,6 +208,11 @@ def main() -> None:
     )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--benchmark-symbol", default=config.BENCHMARK_SYMBOL,
+        help="Indice de référence (défaut: %(default)s). Doit être présent dans les cours "
+             "quotidiens ; sinon un indice équipondéré de l'univers point-in-time est reconstruit.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -213,6 +225,17 @@ def main() -> None:
     if args.strategy not in OPTIONS_STRATEGY_REGISTRY:
         logger.error("Stratégie options inconnue: %s. Disponibles: %s", args.strategy, sorted(OPTIONS_STRATEGY_REGISTRY))
         sys.exit(1)
+
+    logger.warning(
+        "RISQUE DE VOLATILITÉ NON MODÉLISÉ. Le repricing quotidien des positions se fait à "
+        "volatilité figée (--vol-mode frozen) ou suivant la volatilité RÉALISÉE "
+        "(--vol-mode rolling), jamais suivant la volatilité IMPLICITE : le pipeline ne "
+        "collecte aucune surface de volatilité historique. Or une option longue est longue "
+        "de vega -- un effondrement de l'implicite lui fait perdre de l'argent même quand le "
+        "sous-jacent va dans son sens, et ce P&L n'apparaît nulle part dans les résultats "
+        "ci-dessous. Les rendements de ce backtest sont donc à lire comme une borne "
+        "OPTIMISTE sur toute période de compression de volatilité."
+    )
 
     logger.info("Chargement des données...")
     daily_prices = data_loader.load_daily_prices()
@@ -255,6 +278,7 @@ def main() -> None:
         commission_min_per_order=args.commission_min_per_order,
         max_fee_pct_of_trade=args.max_fee_pct_of_trade,
         min_deployment_pct=args.min_deployment_pct,
+        max_delta_notional_pct=args.max_delta_notional_pct,
         fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
@@ -279,7 +303,16 @@ def main() -> None:
         args.strategy, engine.calendar[0].date(), engine.calendar[-1].date(), len(engine.calendar),
     )
     equity_curve, positions_history, trades, signals_history = engine.run()
-    run_metrics = metrics_mod.compute_metrics(equity_curve, trades, risk_free_rate=config.RISK_FREE_RATE)
+    benchmark_prices, benchmark_label = data_loader.build_benchmark_series(
+        price_panel, engine.universe, symbol=args.benchmark_symbol,
+    )
+    run_metrics = metrics_mod.compute_metrics(
+        equity_curve, trades,
+        risk_free_rate=config.RISK_FREE_RATE,
+        benchmark_prices=benchmark_prices,
+        extra=engine.execution_diagnostics(),
+    )
+    run_metrics["benchmark_label"] = benchmark_label
 
     run_id = args.run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = config.DIR_BACKTEST_OPTIONS / run_id
@@ -294,10 +327,13 @@ def main() -> None:
         "strategy": args.strategy, "strategy_params": strategy_params,
         "initial_capital": args.initial_capital, "commission_per_contract": args.commission_per_contract,
         "slippage_pct_of_premium": args.slippage_pct_of_premium,
+        "min_deployment_pct": args.min_deployment_pct,
+        "max_delta_notional_pct": args.max_delta_notional_pct,
         **engine_settings,
         "real_snapshot_tolerance_days": args.real_snapshot_tolerance_days,
         "start_date": str(engine.calendar[0].date()), "end_date": str(engine.calendar[-1].date()),
         "has_pit_universe": universe_history is not None, "n_real_option_snapshots": len(option_snapshots),
+        "benchmark_symbol": args.benchmark_symbol, "benchmark_label": benchmark_label,
     }, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.info("Résultats sauvegardés dans %s", out_dir)
@@ -305,9 +341,12 @@ def main() -> None:
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
+        "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "avg_delta_notional_pct", "max_delta_notional_pct_observed",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])
+    logger.info("%s", metrics_mod.format_benchmark_summary(run_metrics, benchmark_label))
     if not trades.empty and "exit_reason" in trades.columns:
         logger.info("Répartition des sorties: %s", trades["exit_reason"].value_counts().to_dict())
     if not positions_history.empty and "source" in positions_history.columns:

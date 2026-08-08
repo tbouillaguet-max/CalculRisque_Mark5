@@ -49,13 +49,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: voir SEC_CONTACT_EMAIL dans 04_recuperation_10k.py)"}
+HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: variable d'environnement SEC_CONTACT_EMAIL)"}
+
+
+_tables_cache: Optional[List[pd.DataFrame]] = None
 
 
 def _fetch_tables() -> List[pd.DataFrame]:
-    resp = requests.get(WIKI_URL, headers=HEADERS, timeout=20)
-    resp.raise_for_status()
-    return pd.read_html(io.StringIO(resp.text))
+    """Tables de la page Wikipedia, téléchargées UNE SEULE FOIS par run.
+
+    build_universe_history appelle load_current_constituents puis
+    load_changes_log, qui appelaient chacune cette fonction : la page (plus
+    d'un mégaoctet) était téléchargée et re-parsée trois fois par run, pour un
+    contenu strictement identique."""
+    global _tables_cache
+    if _tables_cache is None:
+        resp = requests.get(WIKI_URL, headers=HEADERS, timeout=20)
+        resp.raise_for_status()
+        _tables_cache = pd.read_html(io.StringIO(resp.text))
+    return _tables_cache
 
 
 def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:

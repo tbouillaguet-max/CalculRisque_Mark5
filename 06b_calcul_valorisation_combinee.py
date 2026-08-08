@@ -31,9 +31,37 @@ config.FINANCIALS_TTM_FILE existe ; sinon annuel seul, comportement inchangé) :
        manquants...).
 
 Bénéfice notable du repli multiples-d'abord : une banque ou une foncière
-(EBIT non tagué en XBRL, cf. 04) peut avoir une valorisation par les
-multiples même quand son DCF est impossible à calculer -- les multiples ne
-nécessitent pas l'EBIT.
+(EBIT non tagué en XBRL, cf. 04 ; et désormais écartées du DCF par
+config.SECTORS_SANS_DCF) peut avoir une valorisation par les multiples même
+quand son DCF est impossible à calculer -- les multiples ne nécessitent pas
+l'EBIT.
+
+LIMITE CONNUE : MÉDIANES SECTORIELLES CALCULÉES SUR LES SURVIVANTS
+-------------------------------------------------------------------
+Recalculer les multiples par millésime de publication supprime bien le
+look-ahead temporel (le P/E médian de la tech en 2012 n'est pas celui de
+2021). Il reste en revanche un BIAIS DE SURVIVANCE dans la composition des
+pairs : ces médianes sont calculées à partir de multiples.parquet (05), qui
+ne contient que l'univers ACTUEL (config.UNIVERSE_FILE). Les médianes
+sectorielles de 2012 sont donc établies sur les seules entreprises encore
+présentes dans l'indice aujourd'hui -- celles qui ont fait faillite, été
+rachetées ou sorties de l'indice entre-temps n'y figurent pas.
+
+Sens de l'erreur : les disparues étaient en moyenne moins bien valorisées que
+les survivantes, donc la médiane sectorielle historique est probablement
+SURESTIMÉE, et avec elle les valorisations théoriques et les écarts calculés
+contre elles. L'ampleur n'est pas mesurable sans backfill.
+
+Le nombre de pairs réellement utilisés par (secteur, millésime) est exposé
+dans les colonnes *_n_peers et journalisé en fin de run, pour que la
+robustesse de chaque médiane soit vérifiable plutôt que supposée. Si
+config.UNIVERSE_FULL_FILE (01b) existe, un avertissement signale les tickers
+radiés absents de multiples.parquet.
+
+CORRECTION COMPLÈTE (non faite ici, procédure dans le README) : backfiller
+03b et 04 sur l'univers COMPLET (UNIVERSE_FULL_FILE), puis régénérer 05 et
+06b. C'est un rattrapage long (plusieurs milliers de requêtes SEC et IBKR) et
+délibérément laissé à la décision de l'utilisateur.
 
 Usage :
     python 06b_calcul_valorisation_combinee.py
@@ -130,6 +158,73 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def log_peer_coverage(sector_year_multiples: pd.DataFrame) -> None:
+    """Journalise le nombre de pairs par (secteur, millésime) : c'est la
+    mesure directe de la robustesse des médianes, déjà calculée dans les
+    colonnes *_n_peers mais jamais exposée. Une médiane assise sur 5 pairs et
+    une assise sur 40 ne méritent pas la même confiance."""
+    if sector_year_multiples.empty:
+        return
+    peer_columns = [f"{col}_n_peers" for col in MULTIPLE_COLUMNS if f"{col}_n_peers" in sector_year_multiples]
+    if not peer_columns:
+        return
+
+    peers = sector_year_multiples[peer_columns].max(axis=1)
+    retenues = sum(sector_year_multiples[f"{col}_median"].notna().sum() for col in MULTIPLE_COLUMNS)
+    total = len(sector_year_multiples) * len(MULTIPLE_COLUMNS)
+    logger.info(
+        "Médianes sectorielles : %d groupes (secteur x millésime), %d pairs en médiane "
+        "(min %d, max %d) ; %d/%d médianes retenues (seuil : %d pairs).",
+        len(sector_year_multiples), int(peers.median()), int(peers.min()), int(peers.max()),
+        retenues, total, MIN_PEERS_PER_SECTOR_YEAR,
+    )
+    maigres = int((peers < MIN_PEERS_PER_SECTOR_YEAR).sum())
+    if maigres:
+        logger.info(
+            "%d/%d groupes ont moins de %d pairs : leurs multiples sont écartés et ces "
+            "entreprises retombent sur le DCF (source='dcf_fallback').",
+            maigres, len(sector_year_multiples), MIN_PEERS_PER_SECTOR_YEAR,
+        )
+
+
+def warn_if_delisted_missing(multiples: pd.DataFrame) -> None:
+    """Avertit quand des entreprises RADIÉES connues de 01b sont absentes de
+    multiples.parquet : ce sont exactement celles dont l'absence biaise les
+    médianes sectorielles historiques (voir la limite documentée en tête de
+    fichier). Sans 01b, on ne peut rien dire -- silence plutôt que fausse
+    assurance."""
+    path = getattr(config, "UNIVERSE_FULL_FILE", None)
+    if path is None or not path.exists():
+        logger.info(
+            "01b_historique_univers_sp500.py jamais lancé : impossible de mesurer combien "
+            "d'entreprises radiées manquent aux médianes sectorielles (biais de survivance "
+            "non quantifiable, voir la docstring de ce fichier)."
+        )
+        return
+
+    try:
+        full = pd.read_csv(path, encoding="utf-8-sig")
+    except (OSError, pd.errors.ParserError) as exc:
+        logger.warning("%s illisible (%s) : couverture de l'univers non vérifiée.", path, exc)
+        return
+
+    if "RIC" not in full.columns:
+        return
+    connus = set(full["RIC"].dropna().map(config.to_ib_symbol))
+    presents = set(multiples["symbol"].dropna().unique())
+    manquants = connus - presents
+    if manquants:
+        apercu = ", ".join(sorted(manquants)[:15])
+        logger.warning(
+            "%d/%d entreprises de l'univers COMPLET (01b) sont absentes de %s : les médianes "
+            "sectorielles historiques sont donc calculées sur les seuls survivants, et "
+            "probablement SURESTIMÉES. Backfille 03b et 04 avec --tickers %s, puis relance "
+            "05 et 06b. Manquantes (extrait) : %s%s",
+            len(manquants), len(connus), config.MULTIPLES_FILE, path, apercu,
+            "..." if len(manquants) > 15 else "",
+        )
+
+
 def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataFrame) -> pd.DataFrame:
     df = _normalize_fiscal_quarter(df)
     sector_year_multiples = _normalize_fiscal_quarter(sector_year_multiples)
@@ -138,11 +233,12 @@ def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataF
     ev_ebitda_med, ev_sales_med, pe_med = df["EV/EBITDA_median"], df["EV/Sales_median"], df["P/E_median"]
     ebitda, revenue, net_income = df["ebitda"], df["revenue"], df["net_income"]
     shares = df["shares_outstanding"]
-    # net_debt (04) est DÉJÀ net de cash (dette brute - cash) : contrairement
-    # à 07_calcul_dcf.py qui fait "EV - net_debt + cash" (double compte le
-    # cash, bug préexistant non corrigé ici pour ne pas modifier le
-    # comportement de 07), la conversion EV -> equity correcte est
-    # simplement "EV - net_debt".
+    # net_debt (04) est DÉJÀ net de cash (dette brute - cash) : la conversion
+    # EV -> equity est donc simplement "EV - net_debt". 07_calcul_dcf.py
+    # applique la même formule (calculer_dcf : equity_value = ev - dette_nette)
+    # -- son ancien "EV - net_debt + cash", qui comptait le cash deux fois, a
+    # été corrigé depuis, et ce commentaire décrivait un écart qui n'existe
+    # plus entre les deux scripts.
     net_debt = df["net_debt"]
 
     def implied_price(implied_ev: pd.Series) -> pd.Series:
@@ -202,6 +298,8 @@ def build_combined_valuation() -> pd.DataFrame:
     dcf_history = _normalize_fiscal_quarter(dcf_history)
 
     sector_year_multiples = compute_sector_year_multiples(multiples)
+    log_peer_coverage(sector_year_multiples)
+    warn_if_delisted_missing(multiples)
     df = compute_implied_valuations(multiples, sector_year_multiples)
     df = _normalize_fiscal_quarter(df)
 

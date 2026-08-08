@@ -18,6 +18,11 @@ qu'un de ces deux déclencheurs le ferme. Le capital alloué aux nouvelles
 positions/positions actives est donc le NAV diminué de la valeur des
 positions gelées (voir _rebalance).
 
+Stop-loss/take-profit : mesurés depuis l'ouverture de la THÈSE
+(Position.stop_reference_price, figée à la première entrée), pas depuis le
+prix de revient courant -- lequel continue d'être moyenné à chaque renfort
+pour le P&L. Un renfort ne déplace donc jamais le seuil.
+
 Coûts de transaction : commission + slippage fusionnés en un seul cost_bps
 appliqué symétriquement à l'achat et à la vente (prix d'exécution effectif
 = prix marché x (1 ± cost_bps/10000)), pour que le P&L par trade reflète le
@@ -40,6 +45,11 @@ logger = logging.getLogger("backtest.engine")
 
 MIN_TRADE_DOLLAR = 1.0  # en dessous, un ordre de rebalancement est ignoré (évite le "churn" sur des écarts négligeables)
 
+# Au-delà de cette part d'ordres d'achat rognés faute de cash, le
+# sous-investissement n'est plus un accident isolé mais le régime normal du
+# run : il est signalé en fin de backtest (cf. execution_diagnostics).
+TRUNCATED_ORDERS_WARNING_PCT = 10.0
+
 
 @dataclass
 class Position:
@@ -47,6 +57,19 @@ class Position:
     shares: float
     entry_price: float  # prix d'exécution effectif, coût de transaction d'entrée déjà inclus
     entry_date: pd.Timestamp
+
+    # Référence du stop-loss/take-profit, figée à la PREMIÈRE ouverture et
+    # jamais recalculée -- à distinguer de entry_price, prix de revient
+    # comptable qui continue d'être moyenné à chaque renfort (c'est ce
+    # qu'attend le P&L des trades).
+    #
+    # Sans cette distinction, renforcer une position en baisse abaissait le
+    # prix de revient, donc le seuil du stop avec lui : le stop ne se
+    # déclenchait pratiquement jamais tant qu'on moyennait à la baisse,
+    # exactement la situation où il devrait protéger. Même sémantique que
+    # OptionPosition.stop_reference_premium côté options : le stop mesure la
+    # perte depuis l'ouverture de la THÈSE.
+    stop_reference_price: float = 0.0
 
 
 @dataclass
@@ -105,6 +128,16 @@ class BacktestEngine:
         self.equity_curve_rows: list[dict] = []
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
+
+        # Diagnostics d'exécution (voir execution_diagnostics). _rebalance
+        # alloue un budget égal au NAV diminué des positions GELÉES, mais ces
+        # positions ne sont pas vendues : le cash réellement disponible est
+        # souvent inférieur au budget alloué, et _execute_trade tronquait
+        # l'achat en silence. Combiné à la règle "on ne sort jamais sur perte
+        # de signal", le portefeuille dérive alors vers un buy-and-hold de
+        # positions périmées sans que rien ne le signale.
+        self.buy_orders_count = 0
+        self.truncated_orders_count = 0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -194,7 +227,11 @@ class BacktestEngine:
             # positions conservées -- sans cette borne, le cash passait
             # négatif et l'exposition dépassait 100% du portefeuille.
             cost = shares_delta * effective_price
+            self.buy_orders_count += 1
             if cost > self.cash:
+                # Troncature COMPTÉE, plus silencieuse : c'est le symptôme
+                # observable du sous-investissement décrit dans __init__.
+                self.truncated_orders_count += 1
                 if self.cash <= 0:
                     return
                 shares_delta, cost = shares_delta * (self.cash / cost), self.cash
@@ -202,9 +239,14 @@ class BacktestEngine:
                     return
             self.cash -= cost
             if pos is None:
-                self.positions[symbol] = Position(symbol, shares_delta, effective_price, today)
+                self.positions[symbol] = Position(
+                    symbol, shares_delta, effective_price, today,
+                    stop_reference_price=effective_price,  # posée ici et nulle part ailleurs
+                )
             else:
                 new_shares = pos.shares + shares_delta
+                # Prix de revient moyenné (P&L), référence de stop INTACTE
+                # (cf. Position.stop_reference_price).
                 pos.entry_price = (pos.entry_price * pos.shares + effective_price * shares_delta) / new_shares
                 pos.shares = new_shares
             return
@@ -236,9 +278,10 @@ class BacktestEngine:
         triggered = set()
         for symbol, pos in list(self.positions.items()):
             price = self.prices.close_at(symbol, today)
-            if price is None:
+            reference = pos.stop_reference_price or pos.entry_price
+            if price is None or not reference:
                 continue
-            move_pct = (price - pos.entry_price) / pos.entry_price * 100
+            move_pct = (price - reference) / reference * 100
             if move_pct <= self.stop_loss_pct:
                 self._queue_order(symbol, 0.0, "stop_loss", today)
                 triggered.add(symbol)
@@ -277,6 +320,50 @@ class BacktestEngine:
 
     def _queue_order(self, symbol: str, target_dollar: float, reason: str, today: pd.Timestamp) -> None:
         self.pending_orders[symbol] = _PendingOrder(target_dollar, reason, today)
+
+    # ------------------------------------------------------------------ #
+    def execution_diagnostics(self) -> dict:
+        """Écart entre ce que le rebalancement a DEMANDÉ et ce que le cash a
+        permis d'exécuter, à fusionner dans metrics.json.
+
+        La règle des positions gelées est un choix utilisateur assumé et n'est
+        pas remise en cause ici -- mais elle a une conséquence qui, elle, doit
+        être visible : _rebalance alloue un budget calculé sur le NAV
+        (positions gelées déduites) alors que ces positions restent détenues,
+        si bien que le cash disponible est souvent inférieur au budget. Les
+        achats étaient alors rognés sans que rien ne l'indique, et le
+        portefeuille glissait vers un buy-and-hold de lignes périmées.
+
+        avg_cash_pct mesure l'autre face du même phénomène : la part du
+        portefeuille restée en cash faute d'avoir pu exécuter les ordres."""
+        truncated_pct = (
+            self.truncated_orders_count / self.buy_orders_count * 100
+            if self.buy_orders_count else 0.0
+        )
+        cash_pct = [
+            row["cash"] / row["nav"] * 100
+            for row in self.equity_curve_rows if row["nav"] > 0
+        ]
+        avg_cash_pct = sum(cash_pct) / len(cash_pct) if cash_pct else None
+
+        if truncated_pct > TRUNCATED_ORDERS_WARNING_PCT:
+            logger.warning(
+                "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
+                "alloué par le rebalancement dépasse régulièrement le cash disponible, parce que "
+                "les positions gelées immobilisent du capital sans être vendues. Le portefeuille "
+                "est donc moins investi que la stratégie ne le demande (cash moyen %.1f%%). "
+                "Réduire --max-positions, ou accepter ce sous-investissement comme faisant "
+                "partie de la règle des positions gelées.",
+                truncated_pct, self.truncated_orders_count, self.buy_orders_count,
+                avg_cash_pct if avg_cash_pct is not None else float("nan"),
+            )
+
+        return {
+            "buy_orders_count": self.buy_orders_count,
+            "truncated_orders_count": self.truncated_orders_count,
+            "truncated_orders_pct": float(truncated_pct),
+            "avg_cash_pct": float(avg_cash_pct) if avg_cash_pct is not None else None,
+        }
 
     # ------------------------------------------------------------------ #
     # Signaux et rebalancement

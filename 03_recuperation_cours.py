@@ -132,6 +132,14 @@ def fetch_daily_history(ib: IB, contract: Contract, start_year: int, end_year: i
     reqHistoricalData) : une requête par année et par ticker dépasserait
     largement ce budget sur l'ensemble de l'univers."""
     years_needed = end_year - start_year + 1
+    # whatToShow="TRADES" : cours de TRANSACTION, ajustés des splits mais PAS
+    # des dividendes -- le P&L actions calculé dessus ignore donc les
+    # dividendes réinvestis, soit environ 2%/an de rendement manquant sur le
+    # S&P 500 (davantage sur les secteurs à haut rendement, précisément ceux
+    # qu'un signal "value" sélectionne). Biais connu et documenté dans la
+    # section "Biais et limites connus" du README, non corrigé ici : IBKR
+    # n'expose pas de série totale-return sur cet endpoint, et changer de
+    # source de cours dépasse le cadre de ce correctif.
     bars = ib.reqHistoricalData(
         contract, endDateTime="", durationStr=f"{years_needed} Y",
         barSizeSetting="1 day", whatToShow="TRADES", useRTH=True, formatDate=1,
