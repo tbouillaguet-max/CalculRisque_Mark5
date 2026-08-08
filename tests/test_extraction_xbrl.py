@@ -98,12 +98,36 @@ def test_les_trois_exercices_sont_distincts(symbol):
     assert len(set(revenue.values())) == 3, f"{symbol} : {revenue}"
 
 
-def test_filed_date_est_celle_du_depot_le_plus_recent():
-    """Restatement : l'exercice 2021 d'Apple est republié dans les 10-K 2022
-    puis 2023 ; c'est le dépôt le plus récent qui fait foi."""
+def test_filed_date_est_celle_de_la_premiere_publication():
+    """Chaque exercice porte la date à laquelle il a été rendu public pour la
+    PREMIÈRE fois, pas celle du dernier 10-K qui l'a repris en comparatif.
+
+    Retenir le dépôt le plus récent -- ce que faisait la première version de
+    ce correctif -- collait la date du 10-K 2023 aux exercices 2021 et 2022 :
+    trois exercices devenaient connaissables le même jour, chacun jusqu'à deux
+    ans trop tard, et 07b allait chercher le mauvais document."""
     extracted = extract("AAPL", "revenue")
-    assert extracted[2021][1] == "2023-11-03"
+    assert extracted[2021][1] == "2021-10-29"
+    assert extracted[2022][1] == "2022-10-28"
     assert extracted[2023][1] == "2023-11-03"
+
+
+@pytest.mark.parametrize("symbol", ["AAPL", "JNJ", "XOM"])
+def test_les_dates_de_depot_sont_toutes_distinctes(symbol):
+    """Symptôme direct de la régression : trois exercices partageant une seule
+    date de dépôt."""
+    dates = [filed for _val, filed in extract(symbol, "revenue").values()]
+    assert len(set(dates)) == len(dates), f"{symbol} : dates de dépôt confondues {dates}"
+
+
+@pytest.mark.parametrize("symbol", ["AAPL", "JNJ", "XOM"])
+def test_le_depot_suit_toujours_la_cloture(symbol):
+    """Une date de dépôt antérieure à la clôture qu'elle publie serait du
+    look-ahead ; très postérieure, c'est un signal qui arrive en retard."""
+    for year, (_val, filed) in extract(symbol, "revenue").items():
+        assert filed[:4] in (str(year), str(year + 1)), (
+            f"{symbol} exercice {year} déposé le {filed} : écart anormal"
+        )
 
 
 def test_trimestre_isole_du_10k_ecarte():
@@ -180,16 +204,32 @@ def test_duree_et_fenetres():
     assert not sec_xbrl.in_duration_window(None, sec_xbrl.ANNUAL_DURATION_DAYS)
 
 
-def test_restatement_gagne_sur_la_publication_d_origine():
-    """La règle « dépôt le plus récent gagne » doit survivre au changement de
-    clé : deux faits décrivant la MÊME période, publiés à deux dates."""
+def test_la_publication_d_origine_gagne_sur_le_comparatif():
+    """Deux faits décrivant la MÊME période, publiés à deux dates : c'est le
+    chiffre d'ORIGINE qui est retenu, avec SA date.
+
+    Prendre la valeur révisée (111) tout en la datant de 2022-02-01 ferait
+    lire au backtest une correction publiée un an plus tard ; la prendre avec
+    sa vraie date (2023-02-01) retarderait l'exercice 2021 d'un an. Le seul
+    couple cohérent est (valeur d'origine, date d'origine)."""
     facts = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [
         {"start": "2021-01-01", "end": "2021-12-31", "val": 100.0,
          "fy": 2021, "fp": "FY", "form": "10-K", "filed": "2022-02-01"},
         {"start": "2021-01-01", "end": "2021-12-31", "val": 111.0,
          "fy": 2022, "fp": "FY", "form": "10-K", "filed": "2023-02-01"},
     ]}}}}}
-    assert values_only(module_04.extract_annual_values(facts, ["Revenues"], True)) == {2021: 111.0}
+    extrait = module_04.extract_annual_values(facts, ["Revenues"], True)
+    assert extrait == {2021: (100.0, "2022-02-01")}
+
+
+def test_earliest_entry_ignore_les_dates_manquantes():
+    """Une entrée sans date de dépôt ne doit pas gagner avec une chaîne vide."""
+    entrees = [
+        {"val": 1.0, "filed": ""},
+        {"val": 2.0, "filed": "2022-02-01"},
+    ]
+    assert sec_xbrl.earliest_entry(entrees)["val"] == 2.0
+    assert sec_xbrl.earliest_entry([]) is None
 
 
 def test_priorite_entre_tags_candidats():

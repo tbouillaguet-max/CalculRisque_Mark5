@@ -260,7 +260,15 @@ def main() -> None:
     try:
         for i, row in enumerate(to_process, start=1):
             key = _key(row)
-            logger.info("[%d/%d] %s %s %s%s...", i, len(to_process), row["symbol"], row.get("period_type"), row.get("fiscal_year"), f" {row.get('fiscal_quarter')}" if row.get("fiscal_quarter") else "")
+            # pd.notna et non la seule valeur de vérité : fiscal_quarter est
+            # NaN sur les lignes annuelles, et un NaN est "vrai" en Python --
+            # le log affichait donc "INTU FY 2016 nan".
+            quarter = row.get("fiscal_quarter")
+            suffixe = f" {quarter}" if pd.notna(quarter) and quarter else ""
+            logger.info(
+                "[%d/%d] %s %s %s%s...", i, len(to_process),
+                row["symbol"], row.get("period_type"), row.get("fiscal_year"), suffixe,
+            )
             try:
                 result = evaluate_period(row)
             except Exception as exc:  # noqa: BLE001

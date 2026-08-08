@@ -206,10 +206,45 @@ def entries_in_duration_window(entries: Sequence[dict], window: Tuple[int, int])
 def best_entry(entries: Sequence[dict]) -> Optional[dict]:
     """Entrée retenue quand plusieurs décrivent la même période : celle du
     dépôt le plus récent. C'est la règle "restatement gagnant" -- une valeur
-    republiée dans un 10-K ultérieur remplace celle d'origine."""
+    republiée dans un dépôt ultérieur remplace celle d'origine.
+
+    À n'utiliser que pour départager des doublons AU SEIN D'UN MÊME dépôt (ou
+    entre dépôts décrivant la même période à la même date). Pour choisir entre
+    la publication d'origine d'un exercice et ses reprises en comparatif des
+    années suivantes, voir earliest_entry -- et la raison pour laquelle c'est
+    elle qu'il faut."""
     if not entries:
         return None
     return max(entries, key=lambda e: e.get("filed") or "")
+
+
+def earliest_entry(entries: Sequence[dict]) -> Optional[dict]:
+    """Entrée de la PREMIÈRE publication : la valeur telle qu'elle a été
+    rendue publique pour la première fois, avec sa date de dépôt d'origine.
+
+    POURQUOI PAS LE DÉPÔT LE PLUS RÉCENT. Un exercice apparaît dans son propre
+    10-K, puis en comparatif dans les deux suivants -- trois dépôts, à trois
+    dates séparées d'un an. Retenir le plus récent donnait à l'exercice 2021
+    la date de dépôt du 10-K 2023 : trois exercices se retrouvaient
+    "connaissables" le même jour, chacun jusqu'à deux ans après sa vraie
+    publication. Pour un backtest point-in-time c'est doublement faux -- le
+    signal arrive bien trop tard, et 07b_validation_qualitative.py va chercher
+    le 10-K déposé à cette date, donc le mauvais document.
+
+    La VALEUR et la DATE doivent venir du même dépôt, sinon on date une
+    information de quand elle n'existait pas encore. Prendre la première
+    publication donne le couple cohérent : le chiffre que le marché avait, à
+    la date où il l'avait.
+
+    Contrepartie assumée : un exercice révisé plus tard garde son chiffre
+    d'origine. C'est le comportement voulu ici -- c'est celui-là qui était
+    connu à l'époque, et retenir la révision reviendrait à faire lire au
+    backtest une correction publiée des années plus tard."""
+    if not entries:
+        return None
+    # Une entrée sans date de dépôt ne peut pas prétendre être la première :
+    # elle passe en dernier plutôt que de gagner avec une chaîne vide.
+    return min(entries, key=lambda e: e.get("filed") or "9999-99-99")
 
 
 def best_entry_in_duration_window(entries: Sequence[dict], window: Tuple[int, int]) -> Optional[dict]:
