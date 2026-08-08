@@ -111,6 +111,7 @@ from scipy.stats import norm
 from ib_insync import IB, Stock, Option, Contract, util
 
 import config
+import ib_connect
 
 IB_HOST = "127.0.0.1"
 IB_PORT = 4002
@@ -327,7 +328,7 @@ def recover_from_session_poisoning(ib: IB, auto_restart_gateway: bool = False, e
         pass
 
     time.sleep(5)
-    ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=20)
+    ib_connect.connect(port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST, ib=ib)
     ib.reqMarketDataType(MARKET_DATA_TYPE)
     logger.info("Reconnecté après récupération de session.")
     _session_poisoned.clear()
@@ -380,10 +381,15 @@ def filter_universe_by_valuation_gap(universe: pd.DataFrame, threshold_pct: floa
 
 
 def connect_ib() -> IB:
+    # errorEvent branché AVANT la connexion, et l'instance est passée à
+    # ib_connect pour qu'un éventuel repli la reconnecte EN PLACE plutôt que
+    # d'en rendre une neuve, qui perdrait ce branchement.
     ib = IB()
-    ib.RequestTimeout = IB_REQUEST_TIMEOUT_SEC
     ib.errorEvent += _on_ib_error
-    ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=20)
+    ib_connect.connect(
+        port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST,
+        request_timeout=IB_REQUEST_TIMEOUT_SEC, ib=ib,
+    )
     ib.reqMarketDataType(MARKET_DATA_TYPE)
     logger.info("Connecté à IBKR sur %s:%s (clientId=%s), marketDataType=%s", IB_HOST, IB_PORT, IB_CLIENT_ID, MARKET_DATA_TYPE)
     return ib
@@ -408,7 +414,7 @@ def ensure_connected(ib: IB, max_attempts: int = 6) -> None:
         logger.warning("Connexion IBKR perdue. Reconnexion tentative %d/%d dans %ds...", attempt, max_attempts, wait)
         time.sleep(wait)
         try:
-            ib.connect(IB_HOST, IB_PORT, clientId=IB_CLIENT_ID, timeout=20)
+            ib_connect.connect(port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST, ib=ib)
             ib.reqMarketDataType(MARKET_DATA_TYPE)
             logger.info("Reconnecté à IBKR.")
         except Exception as exc:  # noqa: BLE001

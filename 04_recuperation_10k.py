@@ -200,11 +200,16 @@ def extract_annual_values(
         else:
             per_year = sec_xbrl.collect_annual_entries(facts, tag_spec, metric_is_flow)
         for year, entries in per_year.items():
-            # Départage INTRA-tag : dépôt le plus récent (restatement gagnant).
-            # Il opère enfin, puisque les entrées regroupées ici décrivent
-            # toutes la même période -- ce sont bien des republications de la
-            # même valeur, pas trois exercices différents.
-            best = sec_xbrl.best_entry(entries)
+            # Départage INTRA-tag : PREMIÈRE publication de cet exercice.
+            #
+            # Un exercice apparaît dans son propre 10-K, puis en comparatif
+            # dans les deux suivants. Retenir le dépôt le plus récent -- ce que
+            # faisait la première version de ce correctif -- donnait à
+            # l'exercice 2021 la date de dépôt du 10-K 2023 : trois exercices
+            # devenaient "connaissables" le même jour, chacun jusqu'à deux ans
+            # trop tard. La valeur et sa date doivent venir du MÊME dépôt (cf.
+            # sec_xbrl.earliest_entry).
+            best = sec_xbrl.earliest_entry(entries)
             if best is None:
                 continue
             current = by_year.get(year)
