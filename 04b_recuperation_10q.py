@@ -103,27 +103,11 @@ REFRESH_DAYS_DEFAULT = 7
 TICKERS_JSON_URL = "https://www.sec.gov/files/company_tickers.json"
 COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
-# Mêmes tags que 04_recuperation_10k.py::XBRL_TAGS -- garder les deux en
-# synchronisation si un tag candidat est ajouté/retiré d'un côté.
-XBRL_TAGS: Dict[str, List[str]] = {
-    "revenue": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
-    "ebit": ["OperatingIncomeLoss"],
-    "net_income": ["NetIncomeLoss"],
-    "total_assets": ["Assets"],
-    "total_liabilities": ["Liabilities"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue"],
-    "short_term_debt": ["DebtCurrent", "ShortTermBorrowings"],
-    "long_term_debt": ["LongTermDebtNoncurrent", "LongTermDebt"],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "CapitalExpenditures"],
-    "da": ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet"],
-    "income_tax_expense": ["IncomeTaxExpenseBenefit"],
-    "interest_expense": ["InterestExpense"],
-    "shares_outstanding": [
-        "CommonStockSharesOutstanding", "dei:EntityCommonStockSharesOutstanding", "CommonStockSharesIssued",
-    ],
-    "current_assets": ["AssetsCurrent"],
-    "current_liabilities": ["LiabilitiesCurrent"],
-}
+# Tags et classification flux/stock : définis dans sec_xbrl, partagés avec 04.
+# Les deux scripts en avaient une copie que ce commentaire demandait de
+# "garder en synchronisation" à la main -- exactement le genre d'invariant qui
+# se perd au premier tag ajouté d'un seul côté.
+XBRL_TAGS: Dict[str, List[str]] = sec_xbrl.XBRL_TAGS
 
 # Flux (montant SUR la période -> le TTM en fait la SOMME) vs stock/bilan
 # (montant À une date -> le TTM en garde la DERNIÈRE valeur connue). Voir
@@ -338,9 +322,15 @@ def build_quarterly_table(facts: dict, symbol: str, cik: str) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
-    df = df.apply(compute_derived, axis=1)
-    return df
+    # compute_derived prend le DataFrame ENTIER (il est vectorisé côté 04).
+    # L'appel d'origine était `df.apply(compute_derived, axis=1)`, qui lui
+    # passait chaque LIGNE sous forme de Series : `series.columns` n'existe
+    # pas, donc AttributeError -- et comme extract_quarterly_for_ticker est
+    # enveloppé dans un try/except par ticker, l'échec se contentait
+    # d'afficher "ECHEC pour X" et TOUS les tickers échouaient. Résultat :
+    # financials_ttm.parquet n'était jamais produit, et tout le pipeline
+    # retombait sur l'annuel seul.
+    return compute_derived(pd.DataFrame(rows))
 
 
 def compute_ttm(quarterly: pd.DataFrame) -> pd.DataFrame:
@@ -368,6 +358,14 @@ def compute_ttm(quarterly: pd.DataFrame) -> pd.DataFrame:
                 row[metric] = vals.sum(min_count=TTM_WINDOW)  # None si un seul trimestre manque cette métrique
             for metric in STOCK_METRICS:
                 row[metric] = latest[metric]
+            # Provenance de l'EBIT : reprise du dernier trimestre de la
+            # fenêtre. Ce n'est ni un flux (rien à sommer) ni un stock, mais
+            # elle doit suivre l'agrégat -- sinon compute_derived, revoyant un
+            # ebit déjà renseigné, l'étiquetterait "operating_income" alors
+            # qu'il a pu être reconstruit trimestre par trimestre.
+            if "ebit_source" in window.columns:
+                sources = window["ebit_source"].dropna()
+                row["ebit_source"] = sources.iloc[-1] if len(sources) else None
             row["filed_date"] = window["filed_date"].max()
             row["ttm_quarters_used"] = ", ".join(f"{y}{q}" for y, q in zip(window["fiscal_year"], window["fiscal_quarter"]))
             ttm_rows.append(row)
@@ -375,9 +373,11 @@ def compute_ttm(quarterly: pd.DataFrame) -> pd.DataFrame:
     if not ttm_rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(ttm_rows)
-    df = df.apply(compute_derived, axis=1)
-    return df
+    # Même correctif que build_quarterly_table : le DataFrame entier, pas
+    # ligne par ligne. Les métriques dérivées sont RErecalculées sur les
+    # agrégats TTM (et non sommées trimestre par trimestre), ce qui est le
+    # comportement voulu pour des ratios comme tax_rate ou cost_of_debt.
+    return compute_derived(pd.DataFrame(ttm_rows))
 
 
 # ----------------------------------------------------------------------------
