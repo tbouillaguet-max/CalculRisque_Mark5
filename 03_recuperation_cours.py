@@ -4,15 +4,35 @@ précédent) depuis START_YEAR jusqu'à aujourd'hui, pour l'univers américain
 (config.UNIVERSE_FILE), via l'API IBKR (ib_insync).
 
 Incrémental : le fichier existant (config.PRICES_FILE) est chargé en début
-de run et fusionné avec les nouvelles données à la fin (jamais écrasé en
-totalité). Une année < année en cours est une clôture définitive : une fois
-en cache, elle n'est plus jamais re-téléchargée. Seule l'année en cours peut
-avoir besoin d'un rafraîchissement (nouveaux jours de bourse depuis le
-dernier run), et seulement si le dernier point en cache date de plus de
+de run et fusionné avec les nouvelles données (jamais écrasé en totalité).
+Une année < année en cours est une clôture définitive : une fois en cache,
+elle n'est plus jamais re-téléchargée. Seule l'année en cours peut avoir
+besoin d'un rafraîchissement (nouveaux jours de bourse depuis le dernier
+run), et seulement si le dernier point en cache date de plus de
 --refresh-days jours (voir determine_fetch_start_year). Un ticker déjà
 entièrement à jour ne déclenche AUCUN appel IBKR ; si tout l'univers est à
 jour, le script ne se connecte même pas à IBKR. --force-refresh retrouve
 l'ancien comportement (retélécharge tout, pour tous les tickers).
+
+Deux corrections récentes, sans lesquelles cet incrémental ne tenait pas ses
+promesses :
+
+    - UNE ANNÉE ABSENTE N'EST PAS UNE ANNÉE À RETÉLÉCHARGER. Toute année de
+      [start_year, année en cours] absente du cache était considérée comme
+      manquante, et le script repartait de la plus ancienne. Une entreprise
+      entrée en bourse en 2014 n'ayant jamais de cours 2010-2013, ces années
+      restaient éternellement "manquantes" : chaque run retéléchargeait
+      l'historique complet de tous les tickers concernés, soit plus d'une
+      heure de requêtes pour ne rien apprendre. Un état de suivi
+      (data/prices/fetch_state_prices.json) mémorise l'année la plus ancienne
+      déjà RÉCLAMÉE par symbole : une année réclamée et toujours absente est
+      un fait établi, pas un manque à combler.
+
+    - LE FICHIER EST ÉCRIT EN COURS DE ROUTE. Le parquet n'était écrit qu'une
+      fois la boucle terminée : une interruption (Ctrl+C, coupure de session
+      IBKR, plantage) faisait perdre l'intégralité du run. Il est désormais
+      réécrit tous les CHECKPOINT_EVERY_ROWS points, et systématiquement en
+      fin de run même sur erreur.
 
 Corrections / changements par rapport à RecuperationCourDeBourseMark1 :
     - Exchange map réduite aux places US (config.EXCHANGE_MAP) ; les valeurs
@@ -41,6 +61,7 @@ Usage :
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -60,6 +81,10 @@ IB_PORT_DEFAULT = 4002
 IB_CLIENT_ID = 3
 
 RETRY_PER_TICKER = 3
+# Lignes accumulées avant réécriture du parquet. À ~11s de pacing IBKR par
+# ticker, un univers complet dépasse l'heure : sans sauvegarde intermédiaire,
+# une interruption faisait perdre tout le run.
+CHECKPOINT_EVERY_ROWS = 200
 HIST_REQUEST_PAUSE_SEC = 11  # pacing IBKR pour reqHistoricalData (~55 req/10min)
 
 REQUIRED_COLUMNS = {"RIC", "Instrument_Name", "Country", "Currency", "Exchange"}
@@ -172,6 +197,7 @@ def extract_year_end_close(history: pd.DataFrame) -> pd.DataFrame:
 
 def determine_fetch_start_year(
     existing: pd.DataFrame, symbol: str, start_year: int, end_year: int, refresh_days: int,
+    requested_from: Optional[int] = None,
 ) -> Optional[int]:
     """Détermine à partir de quelle année (re)récupérer les cours de ce
     symbole, ou None si le cache couvre déjà tout ce dont on a besoin.
@@ -180,17 +206,112 @@ def determine_fetch_start_year(
     `existing`, elles ne sont jamais recomptées dans le besoin. Seule
     end_year (année en cours, pas encore clôturée) peut nécessiter un
     rafraîchissement, et seulement si son dernier point en cache a plus de
-    refresh_days jours."""
+    refresh_days jours.
+
+    CORRIGÉ -- UNE ANNÉE ABSENTE N'EST PAS UNE ANNÉE À RETÉLÉCHARGER.
+    L'ancienne version traitait toute année de [start_year, end_year] absente
+    du cache comme "manquante", et repartait de la PLUS ANCIENNE d'entre
+    elles. Or une entreprise entrée en bourse en 2014 n'aura JAMAIS de cours
+    2010-2013 : ces années restaient éternellement "manquantes", et chaque run
+    retéléchargeait les 17 années complètes de tous les tickers concernés.
+    D'où le "0/503 tickers déjà à jour" malgré un cache de 7 882 lignes -- et
+    une heure et demie de requêtes IBKR gaspillées à chaque lancement.
+
+    `requested_from` (état de suivi, voir load_fetch_state) est l'année la plus
+    ancienne DÉJÀ DEMANDÉE pour ce symbole. Une année >= requested_from et
+    toujours absente du cache a donc été réclamée à IBKR qui n'avait rien :
+    c'est un fait établi, pas un manque à combler. Seules restent à récupérer
+    les années jamais demandées (l'utilisateur a abaissé --start-year) et
+    celles postérieures au dernier millésime en cache."""
     cached = existing[existing["symbol"] == symbol] if not existing.empty else existing
-    cached_years = set(cached["year"]) if not cached.empty else set()
+    cached_years = {int(y) for y in cached["year"].dropna()} if not cached.empty else set()
 
-    missing_years = [y for y in range(start_year, end_year + 1) if y not in cached_years]
-    if missing_years:
-        return min(missing_years)
+    if not cached_years:
+        return start_year
 
-    last_date = pd.to_datetime(cached.loc[cached["year"] == end_year, "date"].iloc[0])
+    # Années jamais réclamées à IBKR : --start-year a été abaissé depuis le
+    # dernier run, il y a peut-être là de l'historique à récupérer.
+    if requested_from is not None and start_year < requested_from:
+        return start_year
+    if requested_from is None and min(cached_years) > start_year:
+        # Pas d'état de suivi (cache antérieur à son introduction) : on ne peut
+        # pas savoir si l'historique manquant a déjà été réclamé. Prudence --
+        # on ne redemande PAS, au risque de manquer quelques années anciennes,
+        # plutôt que de retélécharger tout l'univers à chaque run. Un
+        # --force-refresh ponctuel les récupérera.
+        logger.debug(
+            "%s : cache démarrant en %d alors que --start-year vaut %d, sans état de suivi. "
+            "Années antérieures supposées déjà réclamées.", symbol, min(cached_years), start_year,
+        )
+
+    # Millésimes postérieurs au dernier connu : les seuls réellement nouveaux.
+    derniere_connue = max(cached_years)
+    if derniere_connue < end_year:
+        return derniere_connue + 1
+
+    # Tout est là jusqu'à l'année en cours : reste à savoir si sa clôture
+    # provisoire est assez fraîche.
+    points_annee_courante = cached.loc[cached["year"] == end_year, "date"]
+    if points_annee_courante.empty:
+        return end_year
+    last_date = pd.to_datetime(points_annee_courante.iloc[0])
     age_days = (pd.Timestamp.now().normalize() - last_date.normalize()).days
     return end_year if age_days > refresh_days else None
+
+
+def fetch_state_path(output_dir: Path) -> Path:
+    return output_dir / "fetch_state_prices.json"
+
+
+def load_fetch_state(output_dir: Path) -> dict:
+    """{symbole: {"requested_from": année, "last_attempt": iso}}.
+
+    Mémorise l'année la plus ancienne DÉJÀ RÉCLAMÉE à IBKR pour chaque
+    symbole. Sans cette trace, impossible de distinguer "cette année n'a
+    jamais été demandée" de "elle a été demandée et IBKR n'avait rien" -- et
+    c'est cette confusion qui faisait retélécharger tout l'historique à chaque
+    run (voir determine_fetch_start_year)."""
+    path = fetch_state_path(output_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("État de suivi illisible (%s), on repart de zéro.", exc)
+        return {}
+
+
+def save_fetch_state(output_dir: Path, state: dict) -> None:
+    path = fetch_state_path(output_dir)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        logger.warning("État de suivi non écrit (%s) : le prochain run redemandera plus large.", exc)
+
+
+def merge_and_save(existing: pd.DataFrame, new_rows: list[dict], output_file: Path) -> pd.DataFrame:
+    """Fusionne les nouvelles lignes au cache et écrit le parquet.
+
+    Appelée périodiquement pendant le run et pas seulement à la fin : à ~11
+    secondes de pacing IBKR par ticker, un univers complet demande plus d'une
+    heure, et une interruption (Ctrl+C, coupure de session, plantage) faisait
+    jusqu'ici perdre TOUT le travail du run -- le fichier n'était écrit qu'une
+    fois la boucle terminée."""
+    if not new_rows:
+        return existing
+    df_new = pd.DataFrame(new_rows)
+    combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
+    combined = (
+        combined.sort_values(["symbol", "year"])
+        .drop_duplicates(subset=["symbol", "year"], keep="last")  # les nouvelles valeurs l'emportent
+        .reset_index(drop=True)
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(output_file, index=False, engine="pyarrow")
+    return combined
 
 
 def process_ticker(ib: IB, row: pd.Series, start_year: int, end_year: int) -> list[dict]:
@@ -256,10 +377,14 @@ def main() -> None:
     if not existing.empty:
         logger.info("Cache existant chargé : %s (%d lignes, %d symboles).", output_file, len(existing), existing["symbol"].nunique())
 
+    state = load_fetch_state(args.output_dir)
+
     plan = []  # (row, fetch_start_year) ; fetch_start_year=None => rien à faire pour ce ticker
     for _, row in universe.iterrows():
+        symbol = row["ib_symbol"]
         fetch_start_year = args.start_year if args.force_refresh else determine_fetch_start_year(
-            existing, row["ib_symbol"], args.start_year, end_year, args.refresh_days,
+            existing, symbol, args.start_year, end_year, args.refresh_days,
+            requested_from=state.get(symbol, {}).get("requested_from"),
         )
         plan.append((row, fetch_start_year))
 
@@ -277,7 +402,9 @@ def main() -> None:
 
     ib = connect_ib(args.port)
     all_rows: list[dict] = []
+    non_sauvegardees: list[dict] = []
     ok_count, fail_count = 0, 0
+    now_iso = datetime.now().isoformat(timespec="seconds")
 
     try:
         for idx, (row, fetch_start_year) in enumerate(to_process):
@@ -293,16 +420,41 @@ def main() -> None:
                     if attempt < RETRY_PER_TICKER:
                         logger.debug("  -> tentative %d échouée pour %s (%s), nouvel essai...", attempt + 1, symbol, exc)
                         ib.sleep(2)
+
             if rows is not None:
                 all_rows.extend(rows)
+                non_sauvegardees.extend(rows)
                 ok_count += 1
                 logger.info("  -> %d années récupérées pour %s", len(rows), symbol)
+                # L'année réclamée est notée même quand IBKR ne renvoie rien
+                # pour une partie de la plage : c'est précisément ce "demandé,
+                # rien reçu" qu'il faut mémoriser pour ne pas le redemander à
+                # chaque run (cf. determine_fetch_start_year).
+                ancienne = state.get(symbol, {}).get("requested_from")
+                state[symbol] = {
+                    "requested_from": min(fetch_start_year, ancienne) if ancienne else fetch_start_year,
+                    "last_attempt": now_iso,
+                }
             else:
                 fail_count += 1
                 logger.warning("  -> ECHEC pour %s : %s (ticker ignoré, on continue)", symbol, last_exc)
+
+            if len(non_sauvegardees) >= CHECKPOINT_EVERY_ROWS:
+                existing = merge_and_save(existing, non_sauvegardees, output_file)
+                save_fetch_state(args.output_dir, state)
+                logger.info("  (point de sauvegarde : %d lignes au total dans %s)", len(existing), output_file)
+                non_sauvegardees = []
     finally:
-        ib.disconnect()
-        logger.info("Déconnecté d'IBKR.")
+        # Toujours exécuté, y compris sur Ctrl+C ou coupure de session : le
+        # travail déjà fait ne doit jamais être perdu.
+        if non_sauvegardees:
+            existing = merge_and_save(existing, non_sauvegardees, output_file)
+        save_fetch_state(args.output_dir, state)
+        try:
+            ib.disconnect()
+            logger.info("Déconnecté d'IBKR.")
+        except Exception:  # noqa: BLE001
+            pass
 
     logger.info(
         "Terminé. OK: %d | Échecs: %d | Déjà à jour (ignorés): %d | Nouvelles lignes: %d",
@@ -316,18 +468,10 @@ def main() -> None:
             logger.info("Rien de nouveau à écrire : fichier existant conservé tel quel (%s).", output_file)
         return
 
-    df_new = pd.DataFrame(all_rows)
-    combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
-    combined = (
-        combined.sort_values(["symbol", "year"])
-        .drop_duplicates(subset=["symbol", "year"], keep="last")  # les nouvelles valeurs l'emportent
-        .reset_index(drop=True)
-    )
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(output_file, index=False, engine="pyarrow")
+    combined = existing
     logger.info(
         "Fichier écrit : %s (%d lignes au total, %d nouvelles/mises à jour ce run).",
-        output_file, len(combined), len(df_new),
+        output_file, len(combined), len(all_rows),
     )
 
 
