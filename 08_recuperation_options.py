@@ -157,7 +157,15 @@ AV_QUOTA_FILENAME = "alpha_vantage_quota.json"
 
 logger = logging.getLogger("us_options")
 
-NOISY_ERROR_CODES = {300, 2103, 2104, 2105, 2106, 2107, 2108, 2119, 2157, 2158}
+# 200 = "No security definition has been found for the request". C'est la
+# réponse NORMALE d'IBKR à une combinaison (strike, échéance) qui n'est pas
+# cotée, et qualify_contracts_in_batches sonde délibérément une grille
+# théorique dont une partie n'existe pas : la grille vient de
+# reqSecDefOptParams, qui renvoie l'UNION des strikes toutes échéances
+# confondues, alors qu'une échéance lointaine (LEAP) n'est cotée que sur des
+# strikes espacés de 5 ou 10$. C'est donc un résultat de sondage attendu, pas
+# un incident -- il n'a rien à faire en ERROR dans les logs.
+NOISY_ERROR_CODES = {200, 300, 2103, 2104, 2105, 2106, 2107, 2108, 2119, 2157, 2158}
 NOISY_MESSAGE_MARKERS = ("delayed market data is available",)
 
 
@@ -184,6 +192,12 @@ def setup_logging(output_dir: Path) -> None:
         h.addFilter(noisy_filter)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=handlers)
     logger.info("Log file: %s", log_path)
+
+
+# En dessous de ce rendement de qualification, la grille théorique sonde
+# surtout des contrats inexistants : le détail passe en debug pour ne pas
+# noyer le log, mais la mesure reste disponible.
+LOW_QUALIFY_YIELD_PCT = 25.0
 
 
 class PermanentTickerError(RuntimeError):
@@ -767,13 +781,25 @@ def build_candidate_contracts(stock: Contract, chain, spot: float, min_days: int
     lo, hi = spot * (1 - band_pct), spot * (1 + band_pct)
     valid_strikes = [s for s in chain.strikes if lo <= s <= hi]
 
+    # exchange="SMART" et NON chain.exchange (PSE, CBOE...) : reqSecDefOptParams
+    # renvoie une entrée PAR PLACE, mais dont les listes strikes/expirations
+    # sont l'UNION de ce qui est coté toutes places confondues. Bâtir la grille
+    # sur une place précise demandait donc à IBKR des contrats qui existent
+    # ailleurs mais pas là -- d'où un flot d'erreurs 200 ("No security
+    # definition has been found"), et surtout des contrats bien réels perdus
+    # parce qu'ils ne sont pas listés sur CETTE place.
+    #
+    # SMART résout le contrat là où il est effectivement coté, ce qui est aussi
+    # la façon dont il serait négocié. Les strikes et échéances, eux, viennent
+    # toujours de `chain` (l'entrée non-SMART, plus complète -- cf.
+    # get_option_chain).
     contracts = []
     for expiry in valid_expiries:
         for strike in valid_strikes:
             for right in ("C", "P"):
                 contracts.append(Option(
                     symbol=stock.symbol, lastTradeDateOrContractMonth=expiry, strike=strike,
-                    right=right, exchange=chain.exchange, currency=stock.currency,
+                    right=right, exchange="SMART", currency=stock.currency,
                     tradingClass=chain.tradingClass, multiplier=chain.multiplier,
                 ))
     return contracts
@@ -785,7 +811,13 @@ def qualify_contracts_in_batches(ib: IB, contracts: list[Option], batch_size: in
     ne sont pas réellement cotées (pas toutes les échéances n'ont pas tous
     les strikes) : ib_insync les laisse simplement de côté sans lever
     d'erreur bloquante, ce qui remplace naturellement l'ancien
-    filter_contracts (déjà appliqué en amont, dans build_candidate_contracts)."""
+    filter_contracts (déjà appliqué en amont, dans build_candidate_contracts).
+
+    Chaque combinaison inexistante fait répondre à IBKR une erreur 200 ("No
+    security definition has been found") : c'est le résultat NORMAL du
+    sondage, filtré des logs par NoisyIBFilter. Le rendement du sondage est
+    en revanche journalisé -- un rendement très bas signale une grille de
+    strikes mal calibrée, ce qui coûte des requêtes pour rien."""
     qualified: list[Option] = []
     for i in range(0, len(contracts), batch_size):
         batch = contracts[i:i + batch_size]
@@ -793,6 +825,14 @@ def qualify_contracts_in_batches(ib: IB, contracts: list[Option], batch_size: in
             qualified.extend(c for c in ib.qualifyContracts(*batch) if c.conId)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Qualification du lot %d-%d échouée (%s), on continue.", i, i + len(batch), exc)
+
+    if contracts:
+        rendement = len(qualified) / len(contracts) * 100
+        niveau = logger.info if rendement >= LOW_QUALIFY_YIELD_PCT else logger.debug
+        niveau(
+            "%s : %d/%d contrats candidats réellement cotés (%.0f%%).",
+            contracts[0].symbol, len(qualified), len(contracts), rendement,
+        )
     return qualified
 
 
