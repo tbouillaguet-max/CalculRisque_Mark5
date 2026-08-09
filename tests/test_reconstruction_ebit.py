@@ -187,6 +187,99 @@ def test_04b_reconstruit_l_ebit_et_en_garde_la_trace():
     )
 
 
+# --------------------------------------------------------------------------- #
+# net_debt : ne plus se vider dès qu'une composante manque
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("colonnes,attendu", [
+    ({"long_term_debt": 100.0, "short_term_debt": 20.0, "cash": 50.0}, 70.0),
+    ({"long_term_debt": 100.0, "short_term_debt": None, "cash": 50.0}, 50.0),
+    ({"long_term_debt": 100.0, "short_term_debt": 20.0, "cash": None}, 120.0),
+    ({"long_term_debt": None, "short_term_debt": None, "cash": 50.0}, -50.0),
+])
+def test_net_debt_somme_ce_qui_est_connu(colonnes, attendu):
+    """Une seule composante non taguée suffisait à vider net_debt (renseigné
+    sur 61% des lignes seulement). Or 07 fait `net_debt or 0` : ces NaN
+    devenaient "ni dette ni trésorerie" au calcul -- une colonne vide dans le
+    parquet ET une hypothèse silencieuse au DCF."""
+    out = module_04.compute_derived(frame(**colonnes))
+    assert out["net_debt"].iloc[0] == pytest.approx(attendu)
+
+
+def test_net_debt_reste_vide_si_rien_n_est_connu():
+    """On ne fabrique pas un zéro : sans aucun des trois postes, la valeur est
+    réellement inconnue."""
+    out = module_04.compute_derived(frame(long_term_debt=None, short_term_debt=None, cash=None))
+    assert pd.isna(out["net_debt"].iloc[0])
+
+
+# --------------------------------------------------------------------------- #
+# Diagnostic de couverture
+# --------------------------------------------------------------------------- #
+
+def _lignes_couverture() -> pd.DataFrame:
+    lignes = []
+    for annee in range(2010, 2016):
+        # PARTIELLE : rien avant 2013, exploitable ensuite.
+        lignes.append({"symbol": "PARTIELLE", "year": annee, "ebit": None if annee < 2013 else 100.0})
+        # AUCUNE : jamais d'EBIT.
+        lignes.append({"symbol": "AUCUNE", "year": annee, "ebit": None})
+        # COMPLETE : aucun trou.
+        lignes.append({"symbol": "COMPLETE", "year": annee, "ebit": 80.0})
+    return pd.DataFrame(lignes)
+
+
+def test_le_resume_distingue_manque_partiel_et_total(caplog):
+    """Compter les entreprises ayant AU MOINS UNE période manquante affichait
+    quasiment tout l'univers comme perdu, alors qu'il ne manquait que les
+    exercices les plus anciens."""
+    with caplog.at_level("WARNING"):
+        module_04.log_coverage(_lignes_couverture())
+
+    resume = next(m for m in caplog.messages if "lignes sans EBIT" in m)
+    assert "2 entreprises touchées" in resume       # COMPLETE n'est pas comptée
+    assert "1 gardent au moins un exercice" in resume
+    assert "1 n'en ont AUCUN" in resume
+    assert any("AUCUNE" in m and "COMPLETE" not in m for m in caplog.messages)
+
+
+def test_le_resume_ventile_par_exercice(caplog):
+    """Un déficit concentré sur les exercices anciens est normal (le balisage
+    XBRL ne s'est généralisé qu'à partir de ~2011) et ne demande aucune
+    action ; sur les années récentes, si."""
+    with caplog.at_level("INFO"):
+        module_04.log_coverage(_lignes_couverture())
+    assert any("par exercice" in m for m in caplog.messages)
+
+
+def test_une_seule_categorie_pour_la_provenance_absente(caplog):
+    """La fusion avec le cache existant mélange pd.NA (lignes de ce run) et
+    np.nan (lignes antérieures à la colonne) : value_counts les affichait
+    comme deux catégories distinctes."""
+    import numpy as np
+
+    df = pd.DataFrame([
+        {"symbol": "A", "year": 2020, "ebit": 100.0, "ebit_source": pd.NA},
+        {"symbol": "B", "year": 2020, "ebit": 100.0, "ebit_source": np.nan},
+        {"symbol": "C", "year": 2020, "ebit": 100.0, "ebit_source": "operating_income"},
+    ])
+    with caplog.at_level("INFO"):
+        module_04.log_coverage(df)
+
+    provenance = next(m for m in caplog.messages if "Provenance de l'EBIT" in m)
+    repartition = provenance.split(":", 1)[1]
+    assert repartition.count("non renseigné") == 1
+    # Les deux libellés que value_counts affichait en catégories distinctes.
+    assert "'nan'" not in repartition and "<NA>" not in repartition
+
+
+def test_aucun_avertissement_quand_la_couverture_est_complete(caplog):
+    df = pd.DataFrame([{"symbol": "A", "year": 2020, "ebit": 100.0, "ebit_source": "operating_income"}])
+    with caplog.at_level("WARNING"):
+        module_04.log_coverage(df)
+    assert not any("sans EBIT" in m for m in caplog.messages)
+
+
 def test_compute_derived_refuse_une_ligne_isolee():
     """Garde-fou explicite : la fonction est vectorisée et prend le DataFrame
     entier. C'est l'oubli qui a cassé 04b."""
