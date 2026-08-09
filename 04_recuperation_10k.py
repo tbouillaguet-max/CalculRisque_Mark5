@@ -310,7 +310,26 @@ def compute_derived(df: pd.DataFrame) -> pd.DataFrame:
     ebit, df["ebit_source"] = _reconstruct_ebit(raw, zeroed, raw_source)
     df["ebit"] = ebit
 
-    df["net_debt"] = total_debt - zeroed("cash")
+    # net_debt = dette brute - trésorerie, avec les composantes MANQUANTES
+    # traitées comme nulles dès qu'AU MOINS UNE des trois est connue.
+    #
+    # L'ancien calcul propageait le NaN : un seul des trois postes non tagué
+    # (fréquent -- beaucoup d'émetteurs ne taguent pas DebtCurrent) suffisait à
+    # vider net_debt, qui n'était renseigné que sur 61% des lignes. Or
+    # 07_calcul_dcf.py fait `row.get("net_debt") or 0` : ces NaN devenaient 0
+    # au calcul, c'est-à-dire "entreprise sans dette NI trésorerie". On avait
+    # donc le pire des deux -- une colonne vide dans le parquet ET une
+    # hypothèse silencieuse au calcul. Sommer ce qui est connu est strictement
+    # plus proche de la réalité, et NaN ne subsiste que si l'entreprise n'a
+    # tagué aucun des trois postes.
+    debt_raw = [raw("long_term_debt"), raw("short_term_debt")]
+    cash_raw = raw("cash")
+    au_moins_une = cash_raw.notna()
+    for composante in debt_raw:
+        au_moins_une = au_moins_une | composante.notna()
+    df["net_debt"] = (
+        sum(composante.fillna(0) for composante in debt_raw) - cash_raw.fillna(0)
+    ).where(au_moins_une)
     # EBIT réellement manquant (None/NaN) -> EBITDA laissé à None plutôt que
     # d'être silencieusement égal à la D&A seule (cf. rapport, erreur 2.3).
     df["ebitda"] = (ebit + da).where(ebit.notna())
@@ -524,6 +543,12 @@ def main() -> None:
 DCF_REQUIRED_METRICS = ("ebit", "shares_outstanding", "capex", "da", "net_debt")
 
 
+def a_un_ebit_serie(df: pd.DataFrame) -> pd.Series:
+    if "ebit" not in df.columns:
+        return pd.Series(False, index=df.index)
+    return pd.to_numeric(df["ebit"], errors="coerce").notna()
+
+
 def log_coverage(df: pd.DataFrame) -> None:
     """Taux de renseignement par métrique, et provenance de l'EBIT.
 
@@ -542,8 +567,19 @@ def log_coverage(df: pd.DataFrame) -> None:
         logger.info("  %-20s %5.1f%% (%d/%d)", metric, renseignees / len(df) * 100, renseignees, len(df))
 
     if "ebit_source" in df.columns:
-        repartition = df["ebit_source"].value_counts(dropna=False).to_dict()
-        logger.info("Provenance de l'EBIT : %s", repartition)
+        # Un seul libellé pour l'absence de provenance : la fusion avec le
+        # cache existant mélange pd.NA (lignes de ce run) et np.nan (lignes
+        # antérieures à l'ajout de la colonne), que value_counts affichait
+        # comme deux catégories distinctes.
+        source = df["ebit_source"].where(df["ebit_source"].notna(), "non renseigné")
+        logger.info("Provenance de l'EBIT : %s", source.value_counts().to_dict())
+        anciennes = int((source == "non renseigné").sum() - (~a_un_ebit_serie(df)).sum())
+        if anciennes > 0:
+            logger.info(
+                "Dont %d ligne(s) issues du cache antérieur (ticker non réinterrogé ce run) : "
+                "elles ont un EBIT mais pas de provenance. Un run --force-refresh complet les "
+                "réécrira.", anciennes,
+            )
         reconstruits = df["ebit_source"].isin(
             ["pretax_plus_interest", "gross_profit_less_opex", "revenue_less_costs"]
         ).sum()
@@ -555,15 +591,41 @@ def log_coverage(df: pd.DataFrame) -> None:
                 reconstruits, len(df),
             )
 
-    manquant_ebit = df[pd.to_numeric(df.get("ebit"), errors="coerce").isna()] if "ebit" in df else df.iloc[0:0]
-    if len(manquant_ebit):
-        symboles = sorted(manquant_ebit["symbol"].unique())
+    a_un_ebit = a_un_ebit_serie(df)
+    manquantes = int((~a_un_ebit).sum())
+    if not manquantes:
+        return
+
+    # Distinguer "quelques exercices manquants" de "aucun exercice
+    # exploitable" : seule la seconde situation prive réellement une
+    # entreprise de DCF. Les confondre -- ce que faisait la première version
+    # de ce résumé -- affichait quasiment tout l'univers comme perdu alors
+    # qu'il ne manquait que ses années les plus anciennes.
+    touchees = set(df.loc[~a_un_ebit, "symbol"].unique())
+    par_symbole = a_un_ebit.groupby(df["symbol"]).any()
+    sans_aucun = sorted(s for s in touchees if not par_symbole.get(s, False))
+    partielles = len(touchees) - len(sans_aucun)
+
+    logger.warning(
+        "%d/%d lignes sans EBIT, sur %d entreprises touchées : %d gardent au moins un "
+        "exercice exploitable (seules leurs périodes manquantes sont perdues), %d n'en ont "
+        "AUCUN et n'auront donc jamais de DCF.",
+        manquantes, len(df), len(touchees), partielles, len(sans_aucun),
+    )
+    if sans_aucun:
         logger.warning(
-            "%d ligne(s) restent sans EBIT (%d entreprises) : aucune de leurs périodes "
-            "n'aura de DCF. Entreprises concernées (extrait) : %s%s",
-            len(manquant_ebit), len(symboles), ", ".join(symboles[:15]),
-            "..." if len(symboles) > 15 else "",
+            "Entreprises sans aucun EBIT exploitable : %s%s",
+            ", ".join(sans_aucun[:25]), "..." if len(sans_aucun) > 25 else "",
         )
+
+    # Répartition par année : un déficit concentré sur les exercices anciens
+    # est normal (le balisage XBRL ne s'est généralisé qu'à partir de ~2011)
+    # et ne demande aucune action ; un déficit sur les années récentes, si.
+    if "year" in df.columns:
+        par_annee = (~a_un_ebit).groupby(df["year"]).mean().sort_index()
+        recentes = {int(y): f"{p * 100:.0f}%" for y, p in par_annee.items() if p > 0.10}
+        if recentes:
+            logger.info("Part de lignes sans EBIT par exercice (>10%%) : %s", recentes)
 
 
 if __name__ == "__main__":
