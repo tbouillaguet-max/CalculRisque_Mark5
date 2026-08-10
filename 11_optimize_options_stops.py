@@ -1,5 +1,5 @@
 """
-Grid-search sur (stop_loss_pct, take_profit_pct) pour une stratégie options.
+Grid-search sur (stop-loss, prise de gain) pour une stratégie options.
 
 Rejoue le backtest de 10_backtest_options.py pour CHAQUE binôme stop-loss /
 take-profit d'une grille, sur les MÊMES données chargées UNE SEULE FOIS (le
@@ -11,7 +11,13 @@ métrique choisie (Sharpe par défaut).
 Tous les autres réglages du moteur (échéance, base des stops, roulement,
 etc.) restent ceux résolus par 10_backtest_options.resolve_engine_settings --
 donc ceux imposés par la stratégie (engine_defaults) sauf override explicite
-ici. Seuls stop_loss_pct/take_profit_pct varient d'une combinaison à l'autre.
+ici. Seuls le stop-loss et la prise de gain varient d'une combinaison à l'autre.
+
+La PRISE DE GAIN n'a pas la même unité selon la stratégie (--take-profit-mode) :
+un %% de mouvement du sous-jacent pour une stratégie ATM, une FRACTION du chemin
+vers la valeur théorique pour une stratégie de convergence -- où take_profit_pct
+est inerte et où le balayer ne mesurerait rien. Le mode retenu est journalisé au
+lancement et reporté dans la colonne `take_profit_mode` du CSV.
 
 Usage :
     python 11_optimize_options_stops.py
@@ -56,6 +62,11 @@ _cli = importlib.import_module("10_backtest_options")
 
 DEFAULT_STOP_LOSS_GRID = [-10.0, -15.0, -20.0, -25.0, -30.0, -35.0, -40.0, -50.0]
 DEFAULT_TAKE_PROFIT_GRID = [20.0, 30.0, 40.0, 60.0, 80.0, 100.0, 150.0, 200.0]
+# Fractions du chemin vers la valeur théorique, pour les stratégies qui visent
+# une convergence (cf. OptionsStrategy.targets_convergence). Au-delà de 1,0 on
+# exige un DÉPASSEMENT de la valeur théorique -- inclus pour vérifier que
+# l'optimum ne s'y trouve pas, pas parce que c'est recommandé.
+DEFAULT_CONVERGENCE_GRID = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.2]
 
 # Métriques pour lesquelles une valeur PLUS GRANDE est toujours meilleure --
 # y compris max_drawdown_pct, négatif, où -10 (peu de perte) > -35. Un tri
@@ -99,23 +110,31 @@ def _load_data(args: argparse.Namespace) -> dict:
 
 def _run_combo(
     stop_loss_pct: float,
-    take_profit_pct: float,
+    take_profit: float,
     strategy_name: str,
     strategy_params: dict,
     baseline_settings: dict,
     engine_kwargs: dict,
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
+    take_profit_is_convergence: bool = False,
 ) -> dict:
     """Une combinaison = un run complet. Isolé en fonction de module (plutôt
     que méthode/closure) pour rester picklable par ProcessPoolExecutor --
     mais les données volumineuses (_DATA) ne sont PAS des arguments : elles
-    viennent du fork, voir le commentaire sur _DATA plus haut."""
-    row = {"stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct, "error": None}
+    viennent du fork, voir le commentaire sur _DATA plus haut.
+
+    `take_profit` porte selon le mode soit un seuil fixe en % (take_profit_pct),
+    soit une fraction de convergence -- voir --take-profit-mode."""
+    row = {"stop_loss_pct": stop_loss_pct, "take_profit": take_profit, "error": None}
     try:
         strategy_cls = OPTIONS_STRATEGY_REGISTRY[strategy_name]
         strategy = strategy_cls(**strategy_params)
-        settings = {**baseline_settings, "stop_loss_pct": stop_loss_pct, "take_profit_pct": take_profit_pct}
+        settings = {**baseline_settings, "stop_loss_pct": stop_loss_pct}
+        if take_profit_is_convergence:
+            engine_kwargs = {**engine_kwargs, "take_profit_convergence_fraction": take_profit}
+        else:
+            settings["take_profit_pct"] = take_profit
 
         engine = OptionsBacktestEngine(
             price_panel=_DATA["price_panel"],
@@ -155,7 +174,7 @@ def _run_combo(
         if not trades.empty and "exit_reason" in trades.columns:
             row["exits_by_reason"] = trades["exit_reason"].value_counts().to_dict()
     except Exception as exc:  # noqa: BLE001 -- une combinaison qui plante ne doit pas tuer la grille
-        logger.exception("Échec pour stop_loss=%s take_profit=%s", stop_loss_pct, take_profit_pct)
+        logger.exception("Échec pour stop_loss=%s take_profit=%s", stop_loss_pct, take_profit)
         row["error"] = str(exc)
     return row
 
@@ -184,10 +203,10 @@ def print_heatmap(results: pd.DataFrame, objective: str) -> None:
     bord de grille (signe qu'il faut l'élargir)."""
     if results.empty:
         return
-    pivot = results.pivot_table(index="stop_loss_pct", columns="take_profit_pct", values=objective)
+    pivot = results.pivot_table(index="stop_loss_pct", columns="take_profit", values=objective)
     pivot = pivot.sort_index(ascending=False)
     with pd.option_context("display.width", 200, "display.max_columns", 50, "display.float_format", "{:.2f}".format):
-        print(f"\n=== Heatmap {objective} (lignes=stop_loss_pct, colonnes=take_profit_pct) ===")
+        print(f"\n=== Heatmap {objective} (lignes=stop_loss_pct, colonnes=take_profit) ===")
         print(pivot)
 
 
@@ -197,7 +216,17 @@ def main() -> None:
     parser.add_argument("--start-date", type=str, default=None)
     parser.add_argument("--end-date", type=str, default=None)
     parser.add_argument("--stop-loss-grid", type=float, nargs="+", default=None, help="Valeurs négatives, ex: -10 -20 -30.")
-    parser.add_argument("--take-profit-grid", type=float, nargs="+", default=None)
+    parser.add_argument(
+        "--take-profit-grid", type=float, nargs="+", default=None,
+        help="Unité selon --take-profit-mode : des %% de mouvement du sous-jacent en mode 'pct', "
+             "des FRACTIONS de convergence (ex: 0.6 0.8 1.0) en mode 'convergence'.",
+    )
+    parser.add_argument(
+        "--take-profit-mode", choices=("auto", "pct", "convergence"), default="auto",
+        help="Quel paramètre de prise de gain balayer. 'auto' (défaut) choisit 'convergence' pour "
+             "les stratégies qui visent une valeur théorique et 'pct' pour les autres : sur une "
+             "stratégie de convergence, take_profit_pct est INERTE et le balayer ne mesurerait rien.",
+    )
     parser.add_argument("--objective", default="sharpe_ratio", choices=OBJECTIVE_CHOICES)
     parser.add_argument("--min-trades", type=int, default=15, help="Combinaisons avec moins de trades écartées du classement (pas du CSV).")
     parser.add_argument("--top-n", type=int, default=15)
@@ -212,6 +241,7 @@ def main() -> None:
     parser.add_argument("--fee-bump-max-extra-pct", type=float, default=config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT)
     parser.add_argument("--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT)
     parser.add_argument("--max-delta-notional-pct", type=float, default=config.OPTIONS_MAX_DELTA_NOTIONAL_PCT)
+    parser.add_argument("--max-trade-dollar", type=float, default=config.OPTIONS_MAX_TRADE_DOLLAR)
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
         default=config.OPTIONS_WHOLE_CONTRACTS,
@@ -225,11 +255,38 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     stop_loss_grid = args.stop_loss_grid or DEFAULT_STOP_LOSS_GRID
-    take_profit_grid = args.take_profit_grid or DEFAULT_TAKE_PROFIT_GRID
     if any(v >= 0 for v in stop_loss_grid):
         logger.warning("stop_loss_grid contient des valeurs >= 0 : un stop-loss se définit normalement en négatif.")
 
     strategy_cls = OPTIONS_STRATEGY_REGISTRY[args.strategy]
+
+    # Sur une stratégie de convergence, c'est la fraction de convergence qui
+    # déclenche la prise de gain : balayer take_profit_pct produirait une
+    # grille entière de résultats IDENTIQUES, qu'on lirait comme un plateau
+    # alors que c'est simplement un paramètre sans effet.
+    convergence_strategy = getattr(strategy_cls, "targets_convergence", False)
+    mode = args.take_profit_mode
+    if mode == "auto":
+        mode = "convergence" if convergence_strategy else "pct"
+    if mode == "convergence" and not convergence_strategy:
+        raise SystemExit(
+            f"--take-profit-mode convergence demandé, mais '{args.strategy}' ne vise pas de valeur "
+            f"théorique : sa prise de gain passe par take_profit_pct (mode 'pct')."
+        )
+    if mode == "pct" and convergence_strategy:
+        logger.warning(
+            "'%s' vise une convergence : take_profit_pct y est INERTE tant que "
+            "--take-profit-convergence-fraction n'est pas mis à 0. Les résultats de cette "
+            "grille seront identiques d'une colonne à l'autre.", args.strategy,
+        )
+    take_profit_is_convergence = mode == "convergence"
+    take_profit_grid = args.take_profit_grid or (
+        DEFAULT_CONVERGENCE_GRID if take_profit_is_convergence else DEFAULT_TAKE_PROFIT_GRID
+    )
+    logger.info(
+        "Prise de gain balayée en mode '%s' (%s).",
+        mode, "fraction de convergence" if take_profit_is_convergence else "%% du sous-jacent",
+    )
 
     # Réglages moteur autres que stop_loss/take_profit, résolus UNE FOIS via
     # la même logique que 10_backtest_options.py (engine_defaults de la
@@ -263,6 +320,7 @@ def main() -> None:
         whole_contracts=args.whole_contracts,
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
+        max_trade_dollar=args.max_trade_dollar,
     )
 
     global _DATA
@@ -274,12 +332,14 @@ def main() -> None:
         args.strategy, len(grid), len(stop_loss_grid), len(take_profit_grid),
     )
 
+    unite = "" if take_profit_is_convergence else "%"
     rows: list[dict] = []
     if args.workers <= 1:
         for i, (sl, tp) in enumerate(grid, 1):
-            logger.info("[%d/%d] stop_loss=%s%% take_profit=%s%%", i, len(grid), sl, tp)
+            logger.info("[%d/%d] stop_loss=%s%% take_profit=%s%s", i, len(grid), sl, tp, unite)
             rows.append(_run_combo(
-                sl, tp, args.strategy, strategy_params, baseline_settings, engine_kwargs, start_date, end_date,
+                sl, tp, args.strategy, strategy_params, baseline_settings, engine_kwargs,
+                start_date, end_date, take_profit_is_convergence,
             ))
     else:
         # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
@@ -290,15 +350,17 @@ def main() -> None:
                 pool.submit(
                     _run_combo, sl, tp, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
+                    take_profit_is_convergence,
                 ): (sl, tp)
                 for sl, tp in grid
             }
             for i, future in enumerate(as_completed(futures), 1):
                 sl, tp = futures[future]
-                logger.info("[%d/%d] terminé : stop_loss=%s%% take_profit=%s%%", i, len(grid), sl, tp)
+                logger.info("[%d/%d] terminé : stop_loss=%s%% take_profit=%s%s", i, len(grid), sl, tp, unite)
                 rows.append(future.result())
 
-    results = pd.DataFrame(rows).sort_values(["stop_loss_pct", "take_profit_pct"]).reset_index(drop=True)
+    results = pd.DataFrame(rows).sort_values(["stop_loss_pct", "take_profit"]).reset_index(drop=True)
+    results.insert(2, "take_profit_mode", mode)
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = args.output_csv or (config.DIR_BACKTEST_OPTIONS / f"optimize_{args.strategy}_{run_id}.csv")
@@ -317,7 +379,7 @@ def main() -> None:
         sys.exit(1)
 
     display_cols = [
-        "stop_loss_pct", "take_profit_pct", "num_trades", "win_rate_pct", "profit_factor",
+        "stop_loss_pct", "take_profit", "num_trades", "win_rate_pct", "profit_factor",
         "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "avg_holding_days", "alpha_pct",
     ]
@@ -330,18 +392,18 @@ def main() -> None:
 
     best = ranked.iloc[0]
     at_stop_edge = best["stop_loss_pct"] in (min(stop_loss_grid), max(stop_loss_grid))
-    at_tp_edge = best["take_profit_pct"] in (min(take_profit_grid), max(take_profit_grid))
+    at_tp_edge = best["take_profit"] in (min(take_profit_grid), max(take_profit_grid))
     if at_stop_edge or at_tp_edge:
         logger.warning(
             "L'optimum (stop_loss=%s%%, take_profit=%s%%) est en BORD de grille -- "
             "élargis --stop-loss-grid/--take-profit-grid pour vérifier qu'il ne s'agit "
             "pas d'un optimum tronqué par la plage testée.",
-            best["stop_loss_pct"], best["take_profit_pct"],
+            best["stop_loss_pct"], best["take_profit"],
         )
     logger.info(
         "Meilleure combinaison (%s=%.3f) : stop_loss=%s%%, take_profit=%s%%, "
         "%d trades, sharpe=%.2f, calmar=%.2f, max_drawdown=%.1f%%.",
-        args.objective, best[args.objective], best["stop_loss_pct"], best["take_profit_pct"],
+        args.objective, best[args.objective], best["stop_loss_pct"], best["take_profit"],
         best["num_trades"], best.get("sharpe_ratio") or float("nan"),
         best.get("calmar_ratio") or float("nan"), best.get("max_drawdown_pct") or float("nan"),
     )

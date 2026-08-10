@@ -26,6 +26,15 @@ def register_options_strategy(name: str):
 
 
 class OptionsStrategy(ABC):
+    # True quand la stratégie vise une VALEUR THÉORIQUE (elle renseigne
+    # "strike_reference_price" dans ses cibles) et non un simple mouvement du
+    # sous-jacent. Le moteur prend alors ses gains à une fraction du chemin
+    # parcouru vers cette valeur (OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION)
+    # plutôt qu'à un seuil fixe, ce qui rend `take_profit_pct` INERTE pour
+    # elle. Déclaré ici pour que les outils d'optimisation sachent quel
+    # paramètre a réellement un effet, au lieu de balayer le mauvais.
+    targets_convergence = False
+
     def __init__(self, **params):
         self.params = params
 

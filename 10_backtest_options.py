@@ -146,6 +146,20 @@ def main() -> None:
              "atteint, même si --min-deployment-pct n'est pas satisfait. 0 pour désactiver.",
     )
     parser.add_argument(
+        "--max-trade-dollar", type=float, default=config.OPTIONS_MAX_TRADE_DOLLAR,
+        help="Montant maximal décaissé par ORDRE D'ACHAT, frais inclus (défaut: %(default)s). "
+             "Plafond par ordre et non par position : une ligne peut le dépasser en cumulant "
+             "plusieurs renforcements. Jamais appliqué aux ventes. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--take-profit-convergence-fraction", type=float,
+        default=config.OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION,
+        help="Fraction du chemin vers la valeur théorique déclenchant la prise de gain, pour les "
+             "stratégies qui visent une convergence (défaut: %(default)s). Sans effet sur une "
+             "stratégie ATM (valuation_gap_options), qui garde --take-profit-pct. 0 pour "
+             "revenir au seuil fixe partout.",
+    )
+    parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
         default=config.OPTIONS_WHOLE_CONTRACTS,
         help="Autorise des contrats fractionnaires (irréaliste : les options se négocient "
@@ -273,6 +287,8 @@ def main() -> None:
         max_fee_pct_of_trade=args.max_fee_pct_of_trade,
         min_deployment_pct=args.min_deployment_pct,
         max_delta_notional_pct=args.max_delta_notional_pct,
+        max_trade_dollar=args.max_trade_dollar,
+        take_profit_convergence_fraction=args.take_profit_convergence_fraction,
         fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
@@ -322,6 +338,8 @@ def main() -> None:
         "slippage_pct_of_premium": args.slippage_pct_of_premium,
         "min_deployment_pct": args.min_deployment_pct,
         "max_delta_notional_pct": args.max_delta_notional_pct,
+        "max_trade_dollar": args.max_trade_dollar,
+        "take_profit_convergence_fraction": args.take_profit_convergence_fraction,
         **engine_settings,
         "real_snapshot_tolerance_days": args.real_snapshot_tolerance_days,
         "start_date": str(engine.calendar[0].date()), "end_date": str(engine.calendar[-1].date()),
@@ -334,8 +352,10 @@ def main() -> None:
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
-        "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "truncated_orders_count", "truncated_orders_pct", "capped_orders_count", "avg_cash_pct",
         "avg_delta_notional_pct", "max_delta_notional_pct_observed",
+        "total_commission_dollar", "total_slippage_dollar",
+        "total_friction_dollar", "total_friction_pct_of_initial",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])

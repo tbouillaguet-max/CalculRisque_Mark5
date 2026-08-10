@@ -23,17 +23,28 @@ plus des différences. Ce qui la sépare de valuation_gap_options :
        peu de pairs pour une médiane robuste ; ces lignes (source="dcf_fallback")
        sont écartées ici -- la thèse porte sur un écart aux COMPARABLES
        sectoriels, pas sur un écart à une actualisation de flux.
-    2. ÉCART RAPPORTÉ AU THÉORIQUE, pas au cours (gap_basis="theoretical").
-       Les deux conventions ne retiennent pas les mêmes entreprises : à 20%,
-       théorique 120 / cours 100 donne +16,7% en base théorique (écarté) contre
-       +20,0% en base cours (retenu).
+    2. ÉCART EN LOG, symétrique : 100 x ln(théorique / cours)
+       (gap_basis="log"). "Moitié prix" et "double prix" comptent pour la même
+       conviction au signe près, et le seuil filtre les deux sens à identité.
+       Les deux conventions en pourcentage conservées pour rejouer un run
+       ancien ("theoretical", "close") sont asymétriques en miroir l'une de
+       l'autre : chacune borne un côté et laisse l'autre libre, ce qui
+       déformait la sélection ET le classement en faveur d'une direction (voir
+       config.OPTIONS_MULTIPLES_GAP_BASIS pour le détail chiffré).
     3. STRIKE à mi-chemin entre valeur théorique et cours, au lieu d'ATM. Il
        est donc systématiquement hors de la monnaie, de la moitié de l'écart :
        l'option ne devient gagnante que si le titre parcourt au moins la moitié
        du chemin vers sa valeur théorique. C'est délibéré -- une convergence
        partielle suffit, mais un simple bruit de marché ne suffit pas. Cette
-       fragilité supplémentaire à un mouvement adverse justifie des seuils de
-       stop plus resserrés (-25%/+30% contre -20%/+80%).
+       fragilité supplémentaire à un mouvement adverse justifie un stop-loss
+       plus resserré (-25% contre -20%).
+       Le TAKE-PROFIT, lui, n'est pas un seuil fixe : la position est prise en
+       gain à OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION du chemin vers la valeur
+       théorique (80% par défaut). Un seuil fixe n'était pas atteignable de la
+       même façon des deux côtés -- côté put, la convergence complète ne vaut
+       que -16,7% de cours au seuil d'entrée, si bien qu'un take-profit à +25%
+       ou +30% exigeait un dépassement de la cible et ne se déclenchait
+       pratiquement jamais (cf. config.OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION).
     4. SORTIES pilotées par le signal (le moteur est configuré en
        exit_when_signal_lost, cf. engine_defaults) : une position dont l'écart
        est repassé sous le seuil est VENDUE au rebalancement suivant, sans
@@ -59,10 +70,13 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 
 import config
-from backtest.strategies.base import capped_weights, inflation_adjusted_gap
+from backtest.strategies.base import (
+    capped_weights, inflation_adjusted_gap, inflation_adjusted_log_gap,
+)
 from backtest.strategies.options_base import OptionsStrategy, register_options_strategy
 
 logger = logging.getLogger("backtest.strategies.valuation_gap_multiples_options")
@@ -70,6 +84,11 @@ logger = logging.getLogger("backtest.strategies.valuation_gap_multiples_options"
 
 @register_options_strategy("valuation_gap_multiples_options")
 class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
+    # Le strike vise la valeur théorique (cf. generate_option_targets) : c'est
+    # la fraction de convergence qui déclenche la prise de gain, pas
+    # take_profit_pct (cf. OptionsStrategy.targets_convergence).
+    targets_convergence = True
+
     # Réglages moteur que cette stratégie suppose (voir la docstring de
     # backtest/options_engine.py). Appliqués par 10_backtest_options.py sauf
     # si l'option correspondante est passée explicitement en ligne de commande.
@@ -107,8 +126,8 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             tenor_days=tenor_days, gap_basis=gap_basis, multiples_only=multiples_only,
             weight_cap_pct=weight_cap_pct, **kwargs,
         )
-        if gap_basis not in ("theoretical", "close"):
-            raise ValueError(f"gap_basis attend 'theoretical' ou 'close', reçu {gap_basis!r}.")
+        if gap_basis not in ("log", "theoretical", "close"):
+            raise ValueError(f"gap_basis attend 'log', 'theoretical' ou 'close', reçu {gap_basis!r}.")
         self.entry_threshold_pct = entry_threshold_pct
         self.tenor_days = int(tenor_days)
         self.gap_basis = gap_basis
@@ -138,23 +157,31 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             return df.assign(_gap=[], _abs_gap=[], _conviction=[])
 
         theoretical, close = df["valuation_theoretical_per_share"], df["close"]
-        base = theoretical if self.gap_basis == "theoretical" else close
         # Écart corrigé de l'inflation sur l'horizon du contrat (2 ans par
         # défaut, donc un effet marqué) : la valeur théorique étant nominale,
         # la convergence se fait vers une valeur inflatée -- ce qui aide un
-        # call et pénalise un put (cf. base.inflation_adjusted_gap).
-        df = df.assign(_gap=inflation_adjusted_gap(
-            (theoretical - close) / base * 100, df["published_date"],
-            self.tenor_days / 365.0,
-        ))
+        # call et pénalise un put.
+        if self.gap_basis == "log":
+            # 100 x ln(V/P) : symétrique par construction (cf.
+            # config.OPTIONS_MULTIPLES_GAP_BASIS). La correction d'inflation
+            # devient additive en log (cf. base.inflation_adjusted_log_gap).
+            df = df.assign(_gap=inflation_adjusted_log_gap(
+                np.log(theoretical / close) * 100, df["published_date"],
+                self.tenor_days / 365.0,
+            ))
+        else:
+            base = theoretical if self.gap_basis == "theoretical" else close
+            df = df.assign(_gap=inflation_adjusted_gap(
+                (theoretical - close) / base * 100, df["published_date"],
+                self.tenor_days / 365.0,
+            ))
         df = df.assign(_abs_gap=df["_gap"].abs())
-        # Score de conviction plafonné en ENTRÉE : en base "theoretical",
-        # l'écart est BORNÉ à +100% du côté sous-évalué (le cours ne peut pas
-        # descendre sous zéro) mais NON BORNÉ du côté survalorisé -- une
-        # valeur théorique proche de zéro donne un écart de plusieurs
-        # milliers de %. On écrête donc ce score AVANT pondération pour
-        # qu'une seule ligne aberrante ne domine pas le calcul du poids,
-        # sans toucher à l'ordre de sélection (fait sur l'écart brut).
+        # Score de conviction plafonné en ENTRÉE, pour qu'une seule ligne
+        # aberrante ne domine pas le calcul du poids, sans toucher à l'ordre
+        # de sélection (fait sur l'écart brut). En base "log" le plafond mord
+        # symétriquement dans les deux sens (100 points = un rapport de 2,72x) ;
+        # dans les bases en pourcentage, il ne bornait en pratique qu'un seul
+        # côté -- l'autre étant déjà borné par construction.
         # Ce plafond sur le score d'ENTRÉE ne borne pas à lui seul le poids
         # final (clipper puis normaliser ne garantit aucun pourcentage
         # précis) -- c'est capped_weights, plus bas, qui plafonne réellement
