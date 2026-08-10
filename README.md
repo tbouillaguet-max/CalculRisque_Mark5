@@ -116,6 +116,11 @@ interpréter des résultats :
     - Un signal DCF vieux de plus de `BACKTEST_SIGNAL_MAX_AGE_DAYS` (config.py,
       400 jours par défaut) n'est plus considéré comme une base valable pour
       une NOUVELLE entrée (mais n'affecte pas une position déjà ouverte).
+    - Le nombre de positions simultanées n'est **pas** plafonné : toutes les
+      entreprises retenues par la stratégie sont ouvertes. La concentration
+      reste bornée par le seul plafond de pondération
+      (`BACKTEST_MAX_WEIGHT_PER_POSITION_PCT`), qui limite la part du
+      portefeuille d'UNE ligne sans limiter leur nombre.
 
 Résultats sauvegardés intégralement sous `data/backtest/<run_id>/` :
 `equity_curve.parquet`, `positions_history.parquet`, `trades.parquet`,
@@ -129,8 +134,8 @@ de `Strategy` (`backtest/strategies/base.py`) et décorée par
 `backtest/strategies/__init__.py`. Elle devient disponible via
 `python 09_backtest.py --strategy mon_nom` sans toucher au moteur : la
 stratégie ne gère que le choix des candidats et leur pondération relative,
-l'engine gère uniformément le capital, les plafonds de positions, le
-stop-loss/take-profit et les coûts de transaction pour toutes les stratégies.
+l'engine gère uniformément le capital, le stop-loss/take-profit et les coûts
+de transaction pour toutes les stratégies.
 
 ## Backtest OPTIONS (06b, 10)
 
@@ -156,7 +161,7 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
     - Entrée : cherche un snapshot RÉEL archivé par `08_recuperation_options.py`
       à proximité de la date (fenêtre `OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS`,
       14 jours par défaut) ; sinon simule par Black-Scholes (strike ATM,
-      échéance ~9 mois, volatilité réalisée glissante en repli). **Lance
+      échéance 2 ans, volatilité réalisée glissante en repli). **Lance
       régulièrement `08_recuperation_options.py` sur un compte paper trading
       pour accumuler des snapshots réels au fil du temps** : plus il y en a,
       moins le backtest s'appuie sur du Black-Scholes simulé.
@@ -181,13 +186,29 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       `valuation_gap_multiples_options` (échéance 2 ans), et reste optionnel
       ailleurs. Le coût en temps est nul (volatilité glissante précalculée en
       une passe vectorisée sur tout le panel de cours).
+    - **Échéance 2 ans à l'entrée** (`OPTIONS_TARGET_TENOR_DAYS`), avec un
+      **point de décision à 9 mois de l'expiration**
+      (`OPTIONS_ROLL_WHEN_DAYS_LEFT`) : la position y est réexaminée à l'aune du
+      signal courant. Écart toujours au-dessus du seuil d'entrée → le contrat
+      est roulé sur une nouvelle échéance pleine, à exposition inchangée ;
+      écart repassé sous le seuil (ou retourné de sens) → la position est
+      clôturée (`exit_reason` `signal_lost`). On ne porte donc jamais un
+      contrat sur sa dernière année de vie, là où la valeur temps s'érode le
+      plus vite. `--roll-when-days-left 0` désactive ce réexamen (les positions
+      vont alors jusqu'à l'expiration).
     - Stop-loss/take-profit sur la PRIME (`OPTIONS_STOP_LOSS_PCT`/
-      `OPTIONS_TAKE_PROFIT_PCT`, -50%/+100% par défaut -- des seuils bien
-      plus larges que pour les actions, effet de levier oblige), expiration
-      (réglée à la valeur intrinsèque), ou disparition des données du
-      sous-jacent. Même règle "jamais fermé juste parce que l'écart s'est
-      refermé" que la stratégie actions -- position gelée jusqu'à un de ces
-      déclencheurs.
+      `OPTIONS_TAKE_PROFIT_PCT`, -20%/+80% par défaut), expiration (réglée à
+      la valeur intrinsèque), ou disparition des données du sous-jacent. Entre
+      deux réexamens de roulement, un écart qui se referme ne ferme pas la
+      position : elle reste gelée jusqu'à l'un de ces déclencheurs.
+      Attention : appliqué à la prime d'un contrat 2 ans, le −20% peut être
+      atteint par la seule érosion de la valeur temps (~20% en 15 mois à cours
+      inchangé sur une ATM). `--stop-basis underlying` mesure les seuils sur le
+      cours du sous-jacent à la place.
+    - Le nombre de positions simultanées n'est pas plafonné, comme pour le
+      moteur actions : toutes les entreprises retenues par la stratégie sont
+      ouvertes. Le levier reste borné par `OPTIONS_MAX_DELTA_NOTIONAL_PCT` et
+      la concentration par le plafond de pondération.
     - Une nouvelle stratégie options s'ajoute de la même façon que pour les
       actions : fichier dans `backtest/strategies/`, classe héritant de
       `OptionsStrategy` (`backtest/strategies/options_base.py`), décorée par
@@ -209,9 +230,9 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | Signal | multiples, **DCF en repli** | **multiples seuls** (repli DCF écarté) |
 | Écart de ±20% rapporté à | cours de bourse | **valeur théorique** |
 | Strike | ATM | **à mi-chemin théorique/cours** |
-| Échéance | ~9 mois | **2 ans, roulée à 9 mois** |
-| Stop-loss / take-profit | −50% / +100% de la **prime** | **−25% / +30% du cours du sous-jacent** |
-| Écart refermé | position gelée | **vendue au trimestre suivant** |
+| Échéance | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois |
+| Stop-loss / take-profit | −20% / +80% de la **prime** | **−25% / +30% du cours du sous-jacent** |
+| Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | **vendue au trimestre suivant** |
 | Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
 
 Comme la valorisation boursière (nb d'actions × cours) et la valorisation
@@ -260,10 +281,11 @@ les applique automatiquement, sauf si l'option correspondante est passée
 explicitement en ligne de commande (`--stop-basis`, `--roll-when-days-left`,
 `--no-exit-when-signal-lost`, `--target-tenor-days`...).
 
-Côté moteur (`backtest/options_engine.py`), ces comportements sont **optionnels
-et désactivés par défaut** : `valuation_gap_options` est strictement inchangée
-(vérifié : sorties identiques au bit près sur le banc synthétique, à la seule
-résolution du dtype `expiry` près, µs → ns).
+Côté moteur (`backtest/options_engine.py`), seul le roulement est actif par
+défaut (`OPTIONS_ROLL_WHEN_DAYS_LEFT`, donc pour les deux stratégies) ; la
+vente sur perte de signal, les stops sur le sous-jacent et la réévaluation
+quotidienne restent **optionnels et désactivés par défaut**, propres à
+`valuation_gap_multiples_options`.
 
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).

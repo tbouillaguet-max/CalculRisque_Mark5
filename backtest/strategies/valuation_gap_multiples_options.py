@@ -91,7 +91,6 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
     def __init__(
         self,
         entry_threshold_pct: float = config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT,
-        max_positions: int = config.OPTIONS_MAX_POSITIONS,
         tenor_days: int = config.OPTIONS_MULTIPLES_TENOR_DAYS,
         gap_basis: str = config.OPTIONS_MULTIPLES_GAP_BASIS,
         multiples_only: bool = True,
@@ -99,14 +98,13 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         **kwargs,
     ):
         super().__init__(
-            entry_threshold_pct=entry_threshold_pct, max_positions=max_positions,
+            entry_threshold_pct=entry_threshold_pct,
             tenor_days=tenor_days, gap_basis=gap_basis, multiples_only=multiples_only,
             weight_cap_pct=weight_cap_pct, **kwargs,
         )
         if gap_basis not in ("theoretical", "close"):
             raise ValueError(f"gap_basis attend 'theoretical' ou 'close', reçu {gap_basis!r}.")
         self.entry_threshold_pct = entry_threshold_pct
-        self.max_positions = max_positions
         self.tenor_days = int(tenor_days)
         self.gap_basis = gap_basis
         self.multiples_only = bool(multiples_only)
@@ -116,9 +114,9 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
 
     # ------------------------------------------------------------------ #
     def _candidates(self, signals: pd.DataFrame) -> pd.DataFrame:
-        """Entreprises dont l'écart justifie une position, sans plafonnement
-        du nombre de positions (celui-ci est appliqué par les cibles, pas par
-        l'éligibilité -- voir OptionsStrategy.eligible_directions)."""
+        """Entreprises dont l'écart justifie une position. Aucun plafond sur
+        le nombre de positions simultanées : toutes les candidates retenues
+        ici sont ouvertes (voir OptionsStrategy.eligible_directions)."""
         df = signals
         if self.multiples_only:
             if "source" not in df.columns:
@@ -173,8 +171,10 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
             return {}
 
         # Classement par l'écart BRUT (conviction), dimensionnement par
-        # l'écart PLAFONNÉ (cf. _candidates).
-        candidates = candidates.sort_values("_abs_gap", ascending=False).head(self.max_positions)
+        # l'écart PLAFONNÉ (cf. _candidates). Ordre décroissant conservé pour
+        # la lisibilité des sorties, mais aucune troncature : toutes les
+        # candidates sont retenues.
+        candidates = candidates.sort_values("_abs_gap", ascending=False)
         if candidates["_conviction"].sum() <= 0:
             return {}
 

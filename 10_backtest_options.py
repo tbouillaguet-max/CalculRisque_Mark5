@@ -67,10 +67,9 @@ ENGINE_SETTING_FALLBACKS = {
     "stop_loss_pct": config.OPTIONS_STOP_LOSS_PCT,
     "take_profit_pct": config.OPTIONS_TAKE_PROFIT_PCT,
     "target_tenor_days": config.OPTIONS_TARGET_TENOR_DAYS,
-    "max_positions": config.OPTIONS_MAX_POSITIONS,
     "stop_basis": "premium",
     "exit_when_signal_lost": False,
-    "roll_when_days_left": None,
+    "roll_when_days_left": config.OPTIONS_ROLL_WHEN_DAYS_LEFT,
     "daily_rebalance": False,
     "vol_mode": "frozen",
     "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
@@ -157,7 +156,6 @@ def main() -> None:
     # à la ligne de commande). Voir resolve_engine_settings.
     parser.add_argument("--stop-loss-pct", type=float, default=None, help="Négatif, ex: -50. Base fixée par --stop-basis.")
     parser.add_argument("--take-profit-pct", type=float, default=None)
-    parser.add_argument("--max-positions", type=int, default=None)
     parser.add_argument("--entry-threshold-pct", type=float, default=None)
     parser.add_argument("--target-tenor-days", type=int, default=None)
     parser.add_argument(
@@ -171,7 +169,8 @@ def main() -> None:
     parser.add_argument("--no-exit-when-signal-lost", dest="exit_when_signal_lost", action="store_false")
     parser.add_argument(
         "--roll-when-days-left", type=int, default=None,
-        help="Roule la position sur une échéance pleine à N jours de l'expiration (0 = jamais).",
+        help="Réexamine la position à N jours de l'expiration : roulée sur une échéance pleine "
+             "si elle passe encore les filtres de la stratégie, clôturée sinon (0 = jamais).",
     )
     parser.add_argument(
         "--daily-rebalance", dest="daily_rebalance", action="store_true", default=None,
@@ -200,11 +199,6 @@ def main() -> None:
     parser.add_argument(
         "--no-momentum-filter", dest="momentum_min_pct", action="store_const", const=None,
         help="Désactive le filtre momentum.",
-    )
-    parser.add_argument(
-        "--min-positions", type=int, default=config.BACKTEST_MIN_POSITIONS,
-        help="Nombre minimal d'entreprises visées : si trop peu passent le seuil d'entrée, "
-             "on complète avec les plus proches de leur valeur théorique. 0 pour désactiver.",
     )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
@@ -256,7 +250,7 @@ def main() -> None:
     # stratégie recevrait les valeurs par défaut d'une autre, au lieu des
     # siennes (les deux stratégies options n'ont ni le même seuil ni la même
     # base de calcul de l'écart).
-    strategy_params = {"max_positions": engine_settings["max_positions"], "min_positions": args.min_positions}
+    strategy_params = {}
     if args.entry_threshold_pct is not None:
         strategy_params["entry_threshold_pct"] = args.entry_threshold_pct
     strategy_params.update(parse_strategy_params(args.strategy_param))
@@ -283,7 +277,6 @@ def main() -> None:
         whole_contracts=args.whole_contracts,
         stop_loss_pct=engine_settings["stop_loss_pct"],
         take_profit_pct=engine_settings["take_profit_pct"],
-        max_positions=engine_settings["max_positions"],
         target_tenor_days=engine_settings["target_tenor_days"],
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
