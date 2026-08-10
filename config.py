@@ -39,6 +39,7 @@ Backtest (voir README.md pour le détail) :
     10_backtest_options.py      -> backtest options (call/put, dimensionné par delta)
     11_optimize_options_stops.py -> grid-search stop-loss/take-profit sur ce moteur
     12_analyse_put_call.py      -> décomposition CALL/PUT d'un run sauvegardé
+    13_diagnostic_friction.py   -> plan 2x2 thèse / friction / churn
 
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
@@ -47,6 +48,7 @@ s'enchaîner sans transformation manuelle entre les deux.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -574,28 +576,55 @@ OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
 # points, tous voulus :
 #   1. signal = multiples sectoriels SEULS (les lignes en repli DCF de 06b sont
 #      écartées) ;
-#   2. écart rapporté à la valeur THÉORIQUE, pas au cours (voir plus bas) ;
+#   2. écart mesuré en LOG, symétrique (voir OPTIONS_MULTIPLES_GAP_BASIS) ;
 #   3. strike à mi-chemin entre valeur théorique et cours, pas ATM (pari sur une
 #      convergence progressive, pas sur un mouvement immédiat) ;
-#   4. seuils de stop plus resserrés (-25%/+30% contre -20%/+80%), et écart
-#      refermé vendu au rebalancement suivant au lieu d'attendre le réexamen
-#      de roulement.
-OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = 20.0
+#   4. stop-loss plus resserré (-25% contre -20%), prise de gain à une FRACTION
+#      DU CHEMIN vers la valeur théorique au lieu d'un seuil fixe (voir
+#      OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION), et écart refermé vendu au
+#      rebalancement suivant au lieu d'attendre le réexamen de roulement.
+# Seuil exprimé en POINTS DE LOG (100 x ln(V/P)), pas en pourcentage d'écart :
+# 18,23 = 100 x ln(1,20), soit un cours à 120% de la valeur théorique côté put,
+# et à 1/1,20 = 83,3% côté call. Voir OPTIONS_MULTIPLES_GAP_BASIS pour pourquoi
+# l'unité a changé.
+OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = math.log(1.20) * 100
 
-# Base de calcul de l'écart : "theoretical" -> (théorique - cours)/théorique,
-# "close" -> (théorique - cours)/cours (convention historique de gap_pct en
-# 06b, utilisée par valuation_gap_options). Les deux ne sélectionnent pas les
-# mêmes entreprises : à 20%, théo=120/cours=100 donne +16,7% en base théorique
-# (écarté) contre +20,0% en base cours (retenu).
-OPTIONS_MULTIPLES_GAP_BASIS = "theoretical"
+# Base de calcul de l'écart.
+#
+# "log" (défaut) -> 100 x ln(théorique / cours). SYMÉTRIQUE par construction :
+#   "moitié prix" et "double prix" donnent la même conviction au signe près
+#   (ln(2) = -ln(0,5)), et le seuil filtre les deux sens à identité.
+#
+# Les deux conventions historiques ci-dessous sont conservées pour pouvoir
+# rejouer un run antérieur, mais elles sont toutes les deux ASYMÉTRIQUES -- en
+# miroir l'une de l'autre, pas l'une plus que l'autre :
+#
+#   "theoretical" -> (théorique - cours)/théorique. Borné à +100% côté call
+#       (le cours ne descend pas sous zéro), NON borné côté put.
+#   "close"       -> (théorique - cours)/cours. Borné à -100% côté put,
+#       NON borné côté call.
+#
+# L'asymétrie ne portait pas que sur le classement : elle déformait la
+# SÉLECTION. À seuil 20% en base "theoretical", un call exigeait un cours à
+# <=80% de la théorique (ln = 0,223) là où un put se contentait de >=120%
+# (ln = 0,182) -- le put était structurellement plus facile à qualifier, et
+# recevait en prime une conviction plus élevée du côté non borné. Le livre
+# penchait donc vers le put par pure convention de calcul, pas par signal.
+OPTIONS_MULTIPLES_GAP_BASIS = "log"
 
-# Appliqués au COURS DU SOUS-JACENT (comme OPTIONS_STOP_LOSS_PCT depuis le
-# passage aux entrées 2 ans, cf. OPTIONS_STOP_BASIS), et orientés dans le sens
-# de la position : pour un PUT, "le titre monte de 25%" est la perte et "le
-# titre baisse de 30%" le gain (voir options_engine._position_move_pct). Plus
-# resserrés que ceux de valuation_gap_options : le strike hors de la monnaie
-# rend la thèse plus fragile à un mouvement adverse.
+# STOP-LOSS appliqué au COURS DU SOUS-JACENT (comme OPTIONS_STOP_LOSS_PCT
+# depuis le passage aux entrées 2 ans, cf. OPTIONS_STOP_BASIS), et orienté dans
+# le sens de la position : pour un PUT, "le titre monte de 25%" est la perte
+# (voir options_engine._position_move_pct). Plus resserré que celui de
+# valuation_gap_options : le strike hors de la monnaie rend la thèse plus
+# fragile à un mouvement adverse.
 OPTIONS_MULTIPLES_STOP_LOSS_PCT = -25.0
+
+# TAKE-PROFIT INERTE pour cette stratégie : visant une valeur théorique, elle
+# prend ses gains à une fraction du chemin parcouru vers celle-ci
+# (OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION), pas à un seuil fixe. Conservé
+# pour le cas où l'on remettrait la fraction de convergence à 0, ce qui
+# rétablit le seuil fixe partout.
 OPTIONS_MULTIPLES_TAKE_PROFIT_PCT = 30.0
 
 # Échéance visée à l'entrée, et seuil de roulement : à 9 mois de l'échéance, la
@@ -608,11 +637,41 @@ OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT = 270
 
 # Plafond appliqué à l'écart QUAND IL SERT À DIMENSIONNER une position (pas
 # quand il sert à sélectionner : le classement reste fait sur l'écart brut).
-# En base "theoretical", l'écart est borné à +100% du côté sous-évalué mais
-# NON borné du côté survalorisé -- une valeur théorique proche de zéro donne
-# un écart de plusieurs milliers de %, et une seule ligne capterait alors
-# l'essentiel du capital. None ou 0 désactive le plafond.
+# En base "log", 100 points de log = un rapport de e^1 = 2,72 : au-delà de
+# 2,72x de sous- ou survalorisation, toutes les lignes reçoivent la même
+# conviction. Le plafond mord donc SYMÉTRIQUEMENT dans les deux sens, là où
+# en base "theoretical" il ne bornait en pratique que le côté put (le côté
+# call était déjà borné à +100% par construction). None ou 0 le désactive.
 OPTIONS_MULTIPLES_WEIGHT_CAP_PCT = 100.0
+
+# Fraction du chemin vers la valeur théorique à partir de laquelle une
+# position est prise en gain, POUR LES STRATÉGIES QUI VISENT UNE CONVERGENCE
+# (celles qui passent un strike_reference_price -- valuation_gap_multiples_options
+# aujourd'hui). Les autres (valuation_gap_options, ATM) continuent d'utiliser
+# OPTIONS_TAKE_PROFIT_PCT.
+#
+# POURQUOI un take-profit relatif. Un seuil fixe en % du sous-jacent n'est pas
+# atteignable de la même façon des deux côtés, par pure géométrie : une
+# position entrée au seuil (cours à 120% de la théorique) converge
+# complètement en -16,7% de cours, alors qu'un call entré au seuil (cours à
+# 83,3%) converge en +20,0%. Un take-profit fixe à +25% était donc ATTEIGNABLE
+# côté call et exigeait un DÉPASSEMENT de la cible côté put -- le take-profit
+# du put ne se déclenchait quasiment jamais, et la jambe ne savait pas prendre
+# ses gains.
+#
+# À 0,80, un put entré à P = 1,20 V sort à P = 1,04 V (-13,3% de cours) et un
+# call entré à P = 0,83 V sort à P = 0,96 V (+20,0% de cours) : atteignable des
+# deux côtés, et proportionnel à l'écart réellement constaté à l'entrée.
+# 0 ou None désactive le mécanisme (retour au seuil fixe pour tout le monde).
+OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION = 0.80
+
+# Montant maximal DÉCAISSÉ PAR ORDRE D'ACHAT (prime x contrats x multiplicateur,
+# frais inclus). Plafond par ORDRE, pas par position : une ligne peut dépasser
+# ce montant en cumulant plusieurs renforcements sur des jours différents --
+# c'est BACKTEST_MAX_WEIGHT_PER_POSITION_PCT qui borne la taille d'une position.
+# Ne s'applique jamais aux VENTES : plafonner une sortie interdirait de
+# liquider une position devenue grosse. 0 ou None désactive le plafond.
+OPTIONS_MAX_TRADE_DOLLAR = 15_000.0
 
 
 # ----------------------------------------------------------------------------

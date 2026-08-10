@@ -151,6 +151,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
     10_backtest_options.py            -> moteur de backtest options
     11_optimize_options_stops.py      -> grid-search stop-loss/take-profit sur ce moteur
     12_analyse_put_call.py            -> décomposition CALL/PUT d'un run sauvegardé
+    13_diagnostic_friction.py         -> plan 2x2 thèse / friction / churn
 
 ```bash
 python 05_calcul_multiples.py
@@ -235,10 +236,11 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | | `valuation_gap_options` | `valuation_gap_multiples_options` |
 |---|---|---|
 | Signal | multiples, **DCF en repli** | **multiples seuls** (repli DCF écarté) |
-| Écart de ±20% rapporté à | cours de bourse | **valeur théorique** |
+| Mesure de l'écart | ±20% rapporté au cours | **100 × ln(théorique/cours)**, symétrique |
 | Strike | ATM | **à mi-chemin théorique/cours** |
 | Échéance | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois |
-| Stop-loss / take-profit | −20% / +80% du cours du sous-jacent | **−25% / +30%** du cours du sous-jacent |
+| Stop-loss | −20% du cours du sous-jacent | **−25%** du cours du sous-jacent |
+| Take-profit | +80% du cours du sous-jacent | **80% du chemin vers la théorique** |
 | Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | **vendue au trimestre suivant** |
 | Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
 
@@ -337,6 +339,125 @@ par pur hasard d'échantillon. Si la meilleure combinaison retenue tombe en
 bord de grille, un avertissement invite à élargir `--stop-loss-grid`/
 `--take-profit-grid` -- un optimum au bord de la plage testée n'est pas prouvé
 être un optimum réel.
+
+### Score d'écart symétrique (base `log`)
+
+L'écart de `valuation_gap_multiples_options` se mesure en **points de log** :
+`100 × ln(théorique / cours)`, seuil d'entrée à `100 × ln(1,20) ≈ 18,23`.
+
+Les deux conventions en pourcentage conservées (`--strategy-param
+gap_basis=theoretical` ou `close`, pour rejouer un run ancien) sont
+**asymétriques en miroir l'une de l'autre** — aucune des deux n'est neutre :
+
+| | base `theoretical` | base `close` | base `log` |
+|---|---|---|---|
+| côté CALL | borné à **+100%** | non borné | non borné |
+| côté PUT | non borné | borné à **−100%** | non borné |
+| symétrique ? | non | non | **oui** |
+
+L'asymétrie ne déformait pas que le classement, elle déformait la
+**sélection** : à seuil 20% en base `theoretical`, un CALL exigeait un cours à
+≤80% de la théorique (|ln| = 0,223) là où un PUT se contentait de ≥120%
+(|ln| = 0,182). Le PUT était donc structurellement plus facile à qualifier —
+et recevait en prime une conviction plus élevée du côté non borné. Le livre
+penchait vers le PUT par convention de calcul, pas par signal.
+
+**Ce que le passage au log ne change pas** : la correction d'inflation reste
+asymétrique, et c'est voulu. La valeur théorique est nominale, donc la
+convergence se fait vers `V × (1+π)^T` — la dérive des prix aide un CALL et
+durcit la thèse d'un PUT. En log cette correction devient simplement additive
+(`+ T × ln(1+π)`, cf. `base.inflation_adjusted_log_gap`). Le log supprime
+l'asymétrie **de convention** ; il laisse intacte celle qui a un contenu
+**économique**.
+
+### Take-profit par fraction de convergence
+
+Pour les stratégies qui visent une valeur théorique, le take-profit n'est plus
+un seuil fixe mais une **fraction du chemin parcouru** vers cette valeur
+(`OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION`, 0,80 par défaut).
+
+Un seuil fixe n'est pas atteignable de la même façon des deux côtés, par pure
+géométrie. Au seuil d'entrée, la convergence **complète** vaut :
+
+| | position entrée à | convergence complète | take-profit fixe +25% |
+|---|---|---|---|
+| CALL | cours = 83,3% de V | **+20,0%** de cours | atteignable |
+| PUT | cours = 120% de V | **−16,7%** de cours | exige un **dépassement** |
+
+Le take-profit fixe (+30%, ou même +25%) ne se déclenchait donc pratiquement
+jamais côté PUT : la jambe ne savait pas prendre ses gains. À 0,80, un PUT
+entré à P = 1,20 V sort à P = 1,04 V (−13,3% de cours) et un CALL entré à
+P = 0,83 V sort à P = 0,96 V (+20,0%) — atteignable des deux côtés, et
+proportionnel à l'écart réellement constaté à l'entrée.
+
+Le **stop-loss**, lui, reste un seuil fixe en % du sous-jacent : il décrit une
+perte, pas un degré d'avancement de la thèse. `valuation_gap_options` (ATM,
+sans valeur théorique cible) garde `--take-profit-pct` inchangé.
+
+Conséquence pour l'optimisation : sur une stratégie de convergence,
+`take_profit_pct` est **inerte**. `11_optimize_options_stops.py` le détecte
+(`OptionsStrategy.targets_convergence`) et balaie la fraction de convergence
+à la place — `--take-profit-mode` force le choix, et le mode retenu est
+reporté dans le CSV.
+
+### Neutralité directionnelle de la file d'exécution
+
+Les achats du jour s'exécutent en **alternance CALL / PUT**, chaque côté trié
+par montant décroissant (les ventes passent toujours en premier : leur produit
+finance les achats du même jour).
+
+Auparavant l'ordre d'exécution suivait l'ordre d'insertion, c'est-à-dire le
+classement par conviction de la stratégie. Or quand le cash s'épuise en cours
+de file, `_affordable` tronque **les derniers servis** : un classement qui
+place systématiquement une direction en tête la finance intégralement et
+laisse l'autre absorber toute la troncature. Le classement par conviction
+devenait ainsi un **filtre directionnel**, alors qu'il n'est censé exprimer
+qu'une conviction.
+
+L'alternance est **déterministe** et non aléatoire : un mélange par tirage
+rendrait un run non reproductible d'une exécution à l'autre, ce qui
+interdirait toute comparaison de paramètres. Une direction vide ne réserve
+rien — l'autre prend tout le budget.
+
+### Plafond par ordre (`OPTIONS_MAX_TRADE_DOLLAR`)
+
+Aucun **ordre d'achat** ne décaisse plus de 15 000 $ (frais inclus).
+C'est un plafond **par ordre, pas par position** : une ligne peut le dépasser
+en cumulant plusieurs renforcements sur des jours différents — c'est
+`BACKTEST_MAX_WEIGHT_PER_POSITION_PCT` qui borne la taille d'une position.
+Jamais appliqué aux **ventes** : plafonner une sortie interdirait de liquider
+une position devenue grosse, exactement quand il faut pouvoir sortir.
+
+Les ordres ramenés à ce plafond sont comptés séparément des ordres tronqués
+faute de cash (`capped_orders_count` vs `truncated_orders_count`) : les deux
+causes n'ont rien à voir et les confondre rendrait le diagnostic illisible.
+
+### Diagnostic de friction (13_diagnostic_friction.py)
+
+Le moteur accumule désormais la friction payée, décomposée, et la publie jour
+par jour dans l'equity_curve (`total_commission`, `total_slippage`) comme en
+cumul dans `metrics.json` (`total_friction_dollar`,
+`total_friction_pct_of_initial`). Le slippage est compté **des deux côtés** :
+la prime est payée majorée à l'achat et encaissée minorée à la vente.
+
+`13_diagnostic_friction.py` rejoue la stratégie sur les 4 combinaisons du plan
+`slippage × {réel, 0}` par `rebalancement quotidien × {activé, désactivé}` et
+sépare les trois postes :
+
+```bash
+python 13_diagnostic_friction.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
+```
+
+    thèse    = rendement du run slippage 0 + rebalancement désactivé
+    friction = écart imputable au seul slippage, à rebalancement égal
+    churn    = écart imputable au seul rebalancement quotidien, à slippage égal
+
+Les deux ne se corrigent pas de la même façon — la friction en tradant moins
+gros ou moins souvent, le churn en ne réagissant qu'aux publications — d'où
+l'intérêt de ne pas les confondre dans un seul chiffre de perte. Les
+commissions et frais tiers restent payés dans **les quatre cases** (les
+annuler ne décrirait plus aucun courtier réel) : la colonne « pure thèse » est
+un plafond, pas un contrefactuel atteignable.
 
 ### Décomposition CALL / PUT (12_analyse_put_call.py)
 

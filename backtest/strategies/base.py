@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -79,6 +80,39 @@ def inflation_adjusted_gap(
 
     inflation = published_date.map(config.inflation_known_at) / 100
     return ((1 + gap_pct / 100) * (1 + inflation) ** horizon_years - 1) * 100
+
+
+def inflation_adjusted_log_gap(
+    log_gap: pd.Series,
+    published_date: pd.Series,
+    horizon_years: float,
+    enabled: bool | None = None,
+) -> pd.Series:
+    """Équivalent de inflation_adjusted_gap pour un écart exprimé en POINTS DE
+    LOG (100 x ln(V/P)), tel que le produit valuation_gap_multiples_options.
+
+    La correction ne peut pas être la même fonction : inflation_adjusted_gap
+    applique `(1 + g/100) x (1+pi)^T - 1`, une formule qui suppose que
+    `1 + g/100` vaut le rapport V/P. En log, ce n'est pas le cas -- l'appliquer
+    telle quelle traiterait 18,23 points de log comme un écart de 18,23%.
+
+    La correction devient ADDITIVE, ce qui est la forme naturelle en log. La
+    convergence se fait vers V x (1+pi)^T, donc :
+
+        ln( V x (1+pi)^T / P ) = ln(V/P) + T x ln(1+pi)
+
+    Même conclusion économique que la version en pourcentage, et pour la même
+    raison : le terme s'ajoute au score, ce qui rapproche du seuil une
+    entreprise sous-évaluée (call) et l'en éloigne une survalorisée (put). La
+    dérive nominale du titre joue contre la thèse baissière -- c'est
+    précisément ce que la correction doit faire apparaître."""
+    if enabled is None:
+        enabled = config.INFLATION_ADJUST_GAP
+    if not enabled or horizon_years <= 0:
+        return log_gap
+
+    inflation = published_date.map(config.inflation_known_at) / 100
+    return log_gap + np.log1p(inflation) * horizon_years * 100
 
 
 def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter: int = 20) -> pd.Series:

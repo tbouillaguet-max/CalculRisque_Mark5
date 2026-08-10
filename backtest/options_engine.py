@@ -121,6 +121,7 @@ l'expiration ou à la disparition des données.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from dataclasses import dataclass
@@ -249,6 +250,8 @@ class OptionsBacktestEngine:
         max_fee_pct_of_trade: Optional[float] = config.OPTIONS_MAX_FEE_PCT_OF_TRADE,
         min_deployment_pct: Optional[float] = config.OPTIONS_MIN_DEPLOYMENT_PCT,
         max_delta_notional_pct: Optional[float] = config.OPTIONS_MAX_DELTA_NOTIONAL_PCT,
+        max_trade_dollar: Optional[float] = config.OPTIONS_MAX_TRADE_DOLLAR,
+        take_profit_convergence_fraction: Optional[float] = config.OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION,
         whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
         contract_multiplier: float = config.OPTIONS_CONTRACT_MULTIPLIER,
@@ -294,6 +297,12 @@ class OptionsBacktestEngine:
         self.max_fee_pct_of_trade = max_fee_pct_of_trade
         self.min_deployment_pct = min_deployment_pct
         self.max_delta_notional_pct = max_delta_notional_pct
+        # 0 / None : pas de plafond par ordre (cf. config.OPTIONS_MAX_TRADE_DOLLAR).
+        self.max_trade_dollar = max_trade_dollar if max_trade_dollar and max_trade_dollar > 0 else None
+        self.take_profit_convergence_fraction = (
+            take_profit_convergence_fraction
+            if take_profit_convergence_fraction and take_profit_convergence_fraction > 0 else None
+        )
         self.whole_contracts = whole_contracts
         # Contrats négociés par mois civil : détermine le palier dégressif.
         self._monthly_contracts: dict[tuple[int, int], float] = {}
@@ -339,6 +348,24 @@ class OptionsBacktestEngine:
         # Voir execution_diagnostics (même raisonnement que le moteur actions).
         self.buy_orders_count = 0
         self.truncated_orders_count = 0
+        # Ordres ramenés au plafond par ordre (max_trade_dollar), comptés à
+        # part de truncated_orders_count : les deux causes de réduction n'ont
+        # rien à voir (manque de cash contre plafond volontaire) et les
+        # confondre rendrait le diagnostic de friction illisible.
+        self.capped_orders_count = 0
+
+        # FRICTION CUMULÉE, décomposée. Tant qu'on ne sait pas si la perte
+        # vient de la thèse ou du coût de la mettre en oeuvre, tout réglage se
+        # fait à l'aveugle : ces deux compteurs sont publiés jour par jour dans
+        # l'equity_curve (colonnes total_commission / total_slippage) et en
+        # cumul dans execution_diagnostics.
+        #
+        # Le slippage est compté DES DEUX CÔTÉS : le moteur paie la prime
+        # majorée de slippage_rate à l'achat et l'encaisse minorée à la vente
+        # (cf. _open_or_resize et _reduce_position). Ne compter que l'achat
+        # sous-estimerait la friction de moitié.
+        self.total_commission = 0.0
+        self.total_slippage = 0.0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -465,17 +492,72 @@ class OptionsBacktestEngine:
     # ------------------------------------------------------------------ #
     # Exécution des ordres décidés la veille
     # ------------------------------------------------------------------ #
+    def _order_direction(self, symbol: str) -> Optional[str]:
+        """Sens d'un ordre en attente. Il vient de la spec déposée par le
+        rebalancement quand il y en a une, sinon de la position détenue : un
+        roulement est mis en file sans spec (cf. _check_rolls) et garde
+        forcément le sens du contrat qu'il renouvelle."""
+        spec = self._pending_spec.get(symbol)
+        if spec and spec.get("option_type"):
+            return spec["option_type"]
+        pos = self.positions.get(symbol)
+        return pos.option_type if pos else None
+
+    def _execution_order(self) -> list[tuple[str, _PendingOrder]]:
+        """Ordre d'exécution de la file du jour.
+
+        1. VENTES D'ABORD. Leur produit finance les achats du même jour (le
+           capital libéré par une sortie est immédiatement réinvestissable,
+           cf. _rebalance) : sans cela, la garde de cash de _affordable
+           tronquerait des achats pourtant couverts par une vente déjà décidée.
+
+        2. ACHATS EN ALTERNANCE CALL / PUT, chaque côté trié par montant
+           décroissant. Les achats étaient auparavant exécutés dans l'ordre
+           d'insertion, qui est celui du classement par conviction de la
+           stratégie -- or ce classement n'est pas neutre en direction. Quand
+           le cash s'épuise en cours de file, _affordable tronque les DERNIERS
+           servis : un classement qui place systématiquement une direction en
+           tête la finance intégralement et laisse l'autre absorber toute la
+           troncature. Le classement devenait ainsi un filtre directionnel,
+           alors qu'il n'est censé exprimer qu'une conviction.
+
+           Alternance DÉTERMINISTE plutôt qu'aléatoire : un mélange par tirage
+           rendrait un run non reproductible d'une exécution à l'autre, ce qui
+           interdirait toute comparaison de paramètres. Ici la première CALL et
+           la première PUT passent avant la deuxième de chaque côté, et le
+           résultat ne dépend que de la file.
+
+           Une direction vide ne réserve rien : l'autre prend tout le budget."""
+        sells, calls, puts, unknown = [], [], [], []
+        for symbol, order in self.pending_orders.items():
+            if order.target_dollar <= 0:
+                sells.append((symbol, order))
+                continue
+            direction = self._order_direction(symbol)
+            if direction == "CALL":
+                calls.append((symbol, order))
+            elif direction == "PUT":
+                puts.append((symbol, order))
+            else:
+                unknown.append((symbol, order))
+
+        calls.sort(key=lambda kv: kv[1].target_dollar, reverse=True)
+        puts.sort(key=lambda kv: kv[1].target_dollar, reverse=True)
+
+        interleaved = [
+            order
+            for pair in itertools.zip_longest(calls, puts)
+            for order in pair
+            if order is not None
+        ]
+        return sells + interleaved + unknown
+
     def _execute_pending_orders(self, today: pd.Timestamp) -> None:
         if not self.pending_orders:
             return
 
         still_pending: dict[str, _PendingOrder] = {}
-        # Ventes d'abord, achats ensuite : leur produit finance les achats du
-        # même jour (le capital libéré par une sortie est immédiatement
-        # réinvestissable, cf. _rebalance). Sans cet ordre, la garde de cash
-        # de _affordable tronquerait des achats pourtant couverts par une
-        # vente déjà décidée, en fonction du seul ordre d'insertion.
-        ordered = sorted(self.pending_orders.items(), key=lambda kv: kv[1].target_dollar > 0)
+        ordered = self._execution_order()
         for symbol, order in ordered:
             spot = self.prices.open_at(symbol, today)
             if spot is None:
@@ -822,6 +904,41 @@ class OptionsBacktestEngine:
         key = (today.year, today.month)
         self._monthly_contracts[key] = self._monthly_contracts.get(key, 0.0) + abs(contracts)
 
+    def _record_costs(self, contracts: float, mid_premium: float, multiplier: float, commission: float) -> None:
+        """Comptabilise la friction d'un ordre EXÉCUTÉ, à sa taille finale.
+
+        Appelé après _affordable et _cap_order_size (donc après toute
+        réduction) et seulement là où le cash bouge réellement : un ordre
+        abandonné ne coûte rien, et l'inclure gonflerait la friction d'ordres
+        qui n'ont jamais eu lieu."""
+        self.total_commission += commission
+        self.total_slippage += abs(contracts) * multiplier * max(mid_premium, 0.0) * self.slippage_rate
+
+    def _cap_order_size(self, contracts: float, cost_of) -> float:
+        """Ramène un ACHAT au plafond par ordre (config.OPTIONS_MAX_TRADE_DOLLAR).
+
+        Distinct de _affordable, qui borne au cash disponible : ici le capital
+        existe, on refuse simplement de le concentrer sur un seul ordre. Même
+        forme d'appel (`cost_of` est une fonction, pas un montant) parce que la
+        commission a un minimum par ordre et n'est donc pas proportionnelle à
+        la taille -- réduire de moitié ne divise pas le coût par deux."""
+        if self.max_trade_dollar is None or contracts <= 0:
+            return contracts
+        if cost_of(contracts) <= self.max_trade_dollar:
+            return contracts
+
+        self.capped_orders_count += 1
+        scaled = contracts * (self.max_trade_dollar / cost_of(contracts))
+        if self.whole_contracts:
+            scaled = float(int(scaled))
+        for _ in range(64):
+            if scaled <= 0:
+                return 0.0
+            if cost_of(scaled) <= self.max_trade_dollar:
+                return scaled
+            scaled = scaled - 1.0 if self.whole_contracts else scaled * 0.95
+        return 0.0
+
     def _affordable(self, contracts: float, cost_of) -> tuple[float, float]:
         """Ramène un achat au cash réellement disponible : ce backtest est
         NON margé (pas de vente à découvert ni d'achat à crédit), or rien
@@ -907,10 +1024,21 @@ class OptionsBacktestEngine:
 
             if cost_of(target_contracts) < MIN_TRADE_DOLLAR:
                 return
+            # Plafond par ordre AVANT la contrainte de cash : le plafond est
+            # une règle de gestion, le cash une limite matérielle -- appliquer
+            # le second en premier laisserait un ordre au-dessus du plafond
+            # dès que le cash est abondant.
+            target_contracts = self._cap_order_size(target_contracts, cost_of)
+            if target_contracts <= 0:
+                return
             target_contracts, cost = self._affordable(target_contracts, cost_of)
             if target_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                 return
             self.cash -= cost
+            self._record_costs(
+                target_contracts, contract["premium"], multiplier,
+                cost - target_contracts * multiplier * gross_premium,
+            )
             self._record_contract_volume(target_contracts, today)
             # Prix de revient TOUT COMPRIS par action (commission d'ordre
             # répartie sur les contrats effectivement achetés) : conserve la
@@ -978,10 +1106,17 @@ class OptionsBacktestEngine:
 
                 if not self._fee_ratio_ok(delta_contracts, gross_premium, multiplier, today, "buy"):
                     return
+                delta_contracts = self._cap_order_size(delta_contracts, cost_of)
+                if delta_contracts <= 0:
+                    return
                 delta_contracts, cost = self._affordable(delta_contracts, cost_of)
                 if delta_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                     return
                 self.cash -= cost
+                self._record_costs(
+                    delta_contracts, current_premium, multiplier,
+                    cost - delta_contracts * multiplier * gross_premium,
+                )
                 self._record_contract_volume(delta_contracts, today)
                 effective_premium = cost / (delta_contracts * multiplier)
                 new_contracts = existing.contracts + delta_contracts
@@ -1025,6 +1160,7 @@ class OptionsBacktestEngine:
         proceeds = max(gross_value - commission, 0.0)
         effective_premium = proceeds / (contracts_to_sell * pos.multiplier)
         self.cash += proceeds
+        self._record_costs(contracts_to_sell, current_premium, pos.multiplier, commission)
         self._record_contract_volume(contracts_to_sell, today)
         pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
         self.trades.append({
@@ -1076,21 +1212,60 @@ class OptionsBacktestEngine:
         move_pct = (close - reference) / reference * 100
         return move_pct if pos.option_type == "CALL" else -move_pct
 
+    def _convergence_fraction(self, pos: OptionPosition, today: pd.Timestamp) -> Optional[float]:
+        """Part du chemin parcourue vers la valeur théorique depuis l'entrée :
+        0 = rien, 1 = convergence complète. None si la position ne vise pas de
+        convergence (contrat ATM, aucun strike_reference_price) ou si l'écart
+        d'entrée est dégénéré.
+
+        Naturellement orientée, sans distinction call/put : les deux termes du
+        rapport changent de signe ensemble. Pour un put, la valeur théorique
+        est SOUS le cours d'entrée (écart négatif) et une baisse du cours donne
+        un numérateur négatif -- le rapport reste positif et croît vers 1."""
+        if not self.take_profit_convergence_fraction or pos.strike_reference_price is None:
+            return None
+        entry_spot = pos.stop_reference_spot or pos.entry_spot
+        if not entry_spot:
+            return None
+        gap_at_entry = pos.strike_reference_price - entry_spot
+        # Écart quasi nul : la convergence n'a plus de sens (et le rapport
+        # exploserait). Le seuil d'entrée l'exclut en pratique, mais un
+        # roulement repose la référence sur une théorique rafraîchie qui peut,
+        # elle, avoir rejoint le cours.
+        if abs(gap_at_entry) < 1e-9 * max(abs(entry_spot), 1.0):
+            return None
+        close = self.prices.close_at(pos.symbol, today)
+        if close is None:
+            return None
+        return (close - entry_spot) / gap_at_entry
+
     def _check_stop_loss_take_profit(self, today: pd.Timestamp) -> set[str]:
         """Décidé à la clôture de today, exécuté à l'ouverture du jour
         suivant (mis en file via pending_orders, comme un rebalancement) --
         même règle "pas de look-ahead" que le reste du moteur : on ne
         clôture jamais une position au prix exact qui vient de déclencher
-        le seuil."""
+        le seuil.
+
+        Le STOP-LOSS se mesure toujours en variation (cf. _position_move_pct).
+        Le TAKE-PROFIT, lui, se mesure en fraction de convergence dès que la
+        position vise une valeur théorique : un seuil fixe en % n'est pas
+        atteignable de la même façon des deux côtés, si bien que la jambe put
+        ne prenait pratiquement jamais ses gains (cf.
+        config.OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION)."""
         triggered = set()
         for symbol, pos in list(self.positions.items()):
             move_pct = self._position_move_pct(pos, today)
-            if move_pct is None:
-                continue
-            if move_pct <= self.stop_loss_pct:
+            if move_pct is not None and move_pct <= self.stop_loss_pct:
                 self.pending_orders[symbol] = _PendingOrder(0.0, "stop_loss", today)
                 triggered.add(symbol)
-            elif move_pct >= self.take_profit_pct:
+                continue
+
+            convergence = self._convergence_fraction(pos, today)
+            if convergence is not None:
+                if convergence >= self.take_profit_convergence_fraction:
+                    self.pending_orders[symbol] = _PendingOrder(0.0, "take_profit", today)
+                    triggered.add(symbol)
+            elif move_pct is not None and move_pct >= self.take_profit_pct:
                 self.pending_orders[symbol] = _PendingOrder(0.0, "take_profit", today)
                 triggered.add(symbol)
         return triggered
@@ -1323,13 +1498,25 @@ class OptionsBacktestEngine:
                 truncated_pct, self.truncated_orders_count, self.buy_orders_count,
             )
 
+        total_friction = self.total_commission + self.total_slippage
+        initial_nav = self.equity_curve_rows[0]["nav"] if self.equity_curve_rows else None
         return {
             "buy_orders_count": self.buy_orders_count,
             "truncated_orders_count": self.truncated_orders_count,
             "truncated_orders_pct": float(truncated_pct),
+            "capped_orders_count": self.capped_orders_count,
             "avg_cash_pct": float(sum(cash_pct) / len(cash_pct)) if cash_pct else None,
             "avg_delta_notional_pct": float(sum(delta_pct) / len(delta_pct)) if delta_pct else None,
             "max_delta_notional_pct_observed": float(max(delta_pct)) if delta_pct else None,
+            # Friction totale, et son poids rapporté au capital de départ : le
+            # chiffre qui dit si une perte vient de la thèse ou de son coût
+            # d'exécution.
+            "total_commission_dollar": float(self.total_commission),
+            "total_slippage_dollar": float(self.total_slippage),
+            "total_friction_dollar": float(total_friction),
+            "total_friction_pct_of_initial": (
+                float(total_friction / initial_nav * 100) if initial_nav else None
+            ),
         }
 
     # ------------------------------------------------------------------ #
@@ -1358,6 +1545,10 @@ class OptionsBacktestEngine:
             "num_positions": len(self.positions),
             "delta_notional": delta_notional,
             "delta_notional_pct": (delta_notional / nav * 100) if nav > 0 else None,
+            # Friction payée depuis le début du run (cumuls monotones : la
+            # friction d'un jour donné s'obtient par simple différence).
+            "total_commission": self.total_commission,
+            "total_slippage": self.total_slippage,
         })
 
     def _record_positions(self, today: pd.Timestamp) -> None:
