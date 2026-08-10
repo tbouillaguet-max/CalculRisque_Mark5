@@ -149,6 +149,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
                                           blendé comme 06), DCF (07) en repli
                                           quand le secteur a trop peu de pairs
     10_backtest_options.py            -> moteur de backtest options
+    11_optimize_options_stops.py      -> grid-search stop-loss/take-profit sur ce moteur
 
 ```bash
 python 05_calcul_multiples.py
@@ -297,6 +298,44 @@ la vente sur perte de signal et la réévaluation quotidienne restent
 
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).
+
+### Optimisation stop-loss / take-profit (11_optimize_options_stops.py)
+
+Rejoue le backtest pour **tous les binômes** (stop_loss_pct, take_profit_pct)
+d'une grille, sur des données chargées une seule fois, et classe les
+résultats par une métrique choisie (Sharpe par défaut) :
+
+```bash
+python 11_optimize_options_stops.py
+python 11_optimize_options_stops.py --strategy valuation_gap_multiples_options
+python 11_optimize_options_stops.py --start-date 2015-01-01 --objective calmar_ratio
+python 11_optimize_options_stops.py \
+    --stop-loss-grid -10 -15 -20 -25 -30 -35 -40 -50 \
+    --take-profit-grid 20 30 40 60 80 100 150 200
+python 11_optimize_options_stops.py --workers 4   # parallélise sur des process (fork)
+```
+
+Tous les autres réglages moteur (échéance, base des stops, roulement...)
+restent ceux résolus par `10_backtest_options.resolve_engine_settings` --
+donc ceux imposés par `engine_defaults` de la stratégie choisie, sauf
+override explicite. Seuls stop_loss_pct/take_profit_pct varient d'une
+combinaison à l'autre.
+
+Sorties :
+    - `data/backtest_options/optimize_<stratégie>_<horodatage>.csv` : une
+      ligne par binôme, toutes les métriques (Sharpe, Sortino, Calmar, CAGR,
+      max drawdown, profit factor, win rate, nombre de trades...).
+    - Console : tableau des `--top-n` meilleures combinaisons, et une
+      heatmap texte (stop_loss en lignes, take_profit en colonnes) pour
+      repérer un plateau ou un optimum en bord de grille.
+
+`--min-trades` (15 par défaut) écarte du CLASSEMENT (pas du CSV) les
+combinaisons trop peu tradées pour être statistiquement significatives : un
+stop si serré qu'il ne laisse que 3 trades peut afficher un Sharpe flatteur
+par pur hasard d'échantillon. Si la meilleure combinaison retenue tombe en
+bord de grille, un avertissement invite à élargir `--stop-loss-grid`/
+`--take-profit-grid` -- un optimum au bord de la plage testée n'est pas prouvé
+être un optimum réel.
 
 **Correctif** : `07_calcul_dcf.py::calculer_dcf` calculait
 `equity_value = ev - dette_nette + cash`, alors que `net_debt` (produit par
