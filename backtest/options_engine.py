@@ -138,6 +138,21 @@ logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
 
+# Plancher de prime pour un DIMENSIONNEMENT par division (montant $ visé /
+# prime) -- distinct du garde-fou `premium <= 0` déjà en place ailleurs.
+# math.erfc (utilisé par options_pricing._norm_cdf) traverse une bande de
+# flottants SUBNORMAUX (~1e-310 à 5e-324, non nuls) avant de tomber
+# exactement à 0.0 : une option assez loin de la monnaie -- strike extrême,
+# lui-même non borné (cf. OPTIONS_MULTIPLES_GAP_BASIS, valuation_theoretical_
+# per_share peut être aberrante) -- peut donc pricer une prime qui PASSE le
+# test "> 0" tout en étant trop petite pour diviser sans déborder : share /
+# (multiplier x 1e-310) dépasse le plus grand double représentable et donne
+# `inf`, que int() refuse de convertir (OverflowError). En dessous de ce
+# plancher, la position est traitée comme si sa prime était nulle : aucune
+# taille finie ne représente correctement un contrat à ce point hors de la
+# monnaie.
+MIN_PREMIUM_FOR_SIZING = 1e-6
+
 # Sorties qui ont lieu QUOI QU'IL ARRIVE, même quand les frais dépassent la
 # valeur résiduelle du contrat : à l'échéance il n'y a plus rien à détenir (le
 # contrat est abandonné sans frais), et sur une disparition des cours du
@@ -680,7 +695,11 @@ class OptionsBacktestEngine:
                 if pos is None or spot is None:
                     continue
                 premium = self._current_premium(pos, today, spot=spot)
-                if premium is None or premium <= 0:
+                # Pas seulement `<= 0` : une prime SUBNORMALE (non nulle mais
+                # proche de la limite basse des flottants) fait déborder la
+                # division ci-dessous vers l'infini avant même d'atteindre
+                # _round_contracts (cf. MIN_PREMIUM_FOR_SIZING).
+                if premium is None or premium < MIN_PREMIUM_FOR_SIZING:
                     continue
 
                 gross_premium = premium * (1 + self.slippage_rate)
@@ -797,9 +816,19 @@ class OptionsBacktestEngine:
         config.OPTIONS_WHOLE_CONTRACTS). Arrondi au plus proche : c'est la
         taille réalisable la plus proche de l'exposition visée. Une cible
         sous un demi-contrat donne 0, donc pas d'ordre -- une position trop
-        petite pour un seul contrat n'est tout simplement pas prenable."""
+        petite pour un seul contrat n'est tout simplement pas prenable.
+
+        Filet de sécurité : `contracts` est le résultat d'une division par une
+        prime, et une prime Black-Scholes peut légitimement sous-couler vers
+        un flottant SUBNORMAL non nul (cf. MIN_PREMIUM_FOR_SIZING) -- un appel
+        qui n'aurait pas encore ce garde-fou en amont ferait déborder la
+        division vers `inf`, que `int()` refuse de convertir (OverflowError).
+        Point de passage unique avant tout `int()` : neutraliser ici couvre
+        aussi un futur appelant qui l'oublierait."""
         if not self.whole_contracts:
             return contracts
+        if not math.isfinite(contracts):
+            return 0.0
         return float(int(contracts + 0.5)) if contracts > 0 else 0.0
 
     def _size_contracts(self, raw_contracts: float, premium_per_share: float, today: pd.Timestamp) -> float:
