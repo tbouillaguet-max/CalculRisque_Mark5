@@ -202,3 +202,44 @@ def test_drawdown_maximal_superieur_a_moins_cent_pourcent(panel, evenements):
     assert drawdown > -100.0
     assert (equity_curve["nav"] > 0).all()
     assert (equity_curve["cash"] >= -1e-6).all()
+
+
+# --------------------------------------------------------------------------- #
+# Point de décision à roll_when_days_left de l'échéance
+# --------------------------------------------------------------------------- #
+
+def _moteur_avec_reexamen(gap_du_second_signal: float):
+    """Une entrée sur un écart large, puis un second dépôt qui ramène l'écart
+    à `gap_du_second_signal`. L'échéance est courte et le seuil de réexamen
+    proche pour que le point de décision tombe dans le calendrier simulé."""
+    from backtest.strategies.valuation_gap_options import ValuationGapOptionsStrategy
+
+    panel = cours({"AAA": serie_bruitee(100.0, 200, graine=13)})
+    dates = panel.close.index
+    evenements = pd.concat([
+        signaux(["AAA"], dates[2].strftime("%Y-%m-%d"), gap_pct=80.0),
+        signaux(["AAA"], dates[15].strftime("%Y-%m-%d"), gap_pct=gap_du_second_signal),
+    ], ignore_index=True)
+
+    return moteur(
+        panel, evenements, {"AAA": "CALL"},
+        strategy=ValuationGapOptionsStrategy(),
+        target_tenor_days=60, roll_when_days_left=20,
+        stop_loss_pct=-95.0, take_profit_pct=1000.0, min_deployment_pct=None,
+    )
+
+
+def test_le_reexamen_cloture_une_position_qui_ne_passe_plus_les_filtres():
+    """Écart repassé sous le seuil d'entrée : au point de décision la position
+    est VENDUE, au lieu d'être portée jusqu'à son expiration."""
+    _, _, trades, _ = _moteur_avec_reexamen(gap_du_second_signal=0.0).run()
+    assert (trades["exit_reason"] == "signal_lost").any()
+    assert not (trades["exit_reason"] == "roll").any()
+
+
+def test_le_reexamen_roule_une_position_qui_passe_encore_les_filtres():
+    """Même scénario, écart toujours au-dessus du seuil : le contrat est
+    renouvelé plutôt que liquidé."""
+    _, _, trades, _ = _moteur_avec_reexamen(gap_du_second_signal=80.0).run()
+    assert (trades["exit_reason"] == "roll").any()
+    assert not (trades["exit_reason"] == "signal_lost").any()

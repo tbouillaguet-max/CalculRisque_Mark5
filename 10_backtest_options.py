@@ -69,7 +69,7 @@ ENGINE_SETTING_FALLBACKS = {
     "target_tenor_days": config.OPTIONS_TARGET_TENOR_DAYS,
     "stop_basis": "premium",
     "exit_when_signal_lost": False,
-    "roll_when_days_left": None,
+    "roll_when_days_left": config.OPTIONS_ROLL_WHEN_DAYS_LEFT,
     "daily_rebalance": False,
     "vol_mode": "frozen",
     "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
@@ -169,7 +169,8 @@ def main() -> None:
     parser.add_argument("--no-exit-when-signal-lost", dest="exit_when_signal_lost", action="store_false")
     parser.add_argument(
         "--roll-when-days-left", type=int, default=None,
-        help="Roule la position sur une échéance pleine à N jours de l'expiration (0 = jamais).",
+        help="Réexamine la position à N jours de l'expiration : roulée sur une échéance pleine "
+             "si elle passe encore les filtres de la stratégie, clôturée sinon (0 = jamais).",
     )
     parser.add_argument(
         "--daily-rebalance", dest="daily_rebalance", action="store_true", default=None,

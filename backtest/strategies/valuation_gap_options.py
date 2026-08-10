@@ -9,6 +9,11 @@ l'engine, voir backtest/options_engine.py). Aucune limite sur le nombre de
 positions simultanées : toutes les candidates au-dessus du seuil sont
 retenues.
 
+Contrats achetés à 2 ans (config.OPTIONS_TARGET_TENOR_DAYS) et réexaminés à 9
+mois de l'échéance (config.OPTIONS_ROLL_WHEN_DAYS_LEFT) : roulés sur une
+nouvelle échéance pleine si l'écart passe encore le seuil d'entrée, clôturés
+sinon.
+
 Le signal (multiples sectoriels en priorité, DCF en repli) vient de
 06b_calcul_valorisation_combinee.py, pas du DCF seul (backtest/strategies/valuation_gap.py).
 """
