@@ -150,6 +150,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
                                           quand le secteur a trop peu de pairs
     10_backtest_options.py            -> moteur de backtest options
     11_optimize_options_stops.py      -> grid-search stop-loss/take-profit sur ce moteur
+    12_analyse_put_call.py            -> décomposition CALL/PUT d'un run sauvegardé
 
 ```bash
 python 05_calcul_multiples.py
@@ -336,6 +337,51 @@ par pur hasard d'échantillon. Si la meilleure combinaison retenue tombe en
 bord de grille, un avertissement invite à élargir `--stop-loss-grid`/
 `--take-profit-grid` -- un optimum au bord de la plage testée n'est pas prouvé
 être un optimum réel.
+
+### Décomposition CALL / PUT (12_analyse_put_call.py)
+
+Le résumé de `10_backtest_options.py` agrège les deux paris en un seul NAV :
+il dit combien la stratégie gagne, jamais **laquelle des deux jambes** le
+gagne. Or un call parie sur une convergence à la hausse et un put sur la
+baisse d'un titre survalorisé : sur un marché haussier de long terme, la
+seconde peut saigner en silence pendant que la première la masque. Ce script
+rouvre un run déjà sauvegardé et sépare tout ce qui peut l'être :
+
+```bash
+python 10_backtest_options.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
+python 12_analyse_put_call.py            # dernier run de cette stratégie
+python 12_analyse_put_call.py --run-id 20260810_143000 --export
+```
+
+Cinq tableaux :
+    1. **Métriques habituelles en trois colonnes** ALL / CALL / PUT (mêmes
+       définitions que `metrics.py`, donc lisibles ligne à ligne).
+    2. **Répartition des valorisations** : prime immobilisée par chaque jambe
+       (moyenne, pic, part du portefeuille, jours d'exposition).
+    3. **Répartition des volumes de trade** : nombre de trades, contrats,
+       montants décaissés/encaissés, P&L réalisé, et leurs parts en %.
+    4. **P&L par (jambe, motif de sortie)** — le tableau qui localise
+       réellement la perte : un `stop_loss` négatif dit que les seuils coupent
+       au mauvais moment, une `expiry` négative que le pari ne se réalise pas
+       dans le temps imparti.
+    5. **P&L réalisé par année et par jambe**.
+
+`--export` écrit en plus ces tableaux en CSV dans le répertoire du run, avec
+la contribution cumulée quotidienne de chaque jambe (pour voir *quand* une
+jambe décroche, ce qu'aucun agrégat de fin de période ne montre).
+
+**Ce que mesure une colonne de jambe.** La contribution d'une jambe est son
+P&L réalisé cumulé + son P&L latent du jour. L'identité
+`NAV = capital initial + réalisé + latent` est **exacte** (le moteur
+incorpore commission et slippage à `entry_premium`), et le script la vérifie
+à chaque exécution plutôt que de la supposer — il affiche l'écart de
+réconciliation et avertit s'il dépasse 0,01% du capital. Pour rendre Sharpe
+et drawdown calculables par jambe, chaque jambe est rejouée comme un
+portefeuille partant du **capital initial complet** et ne recevant que son
+propre P&L : ce n'est donc pas « ce qu'aurait donné une stratégie qui
+n'achète que des calls » (le dimensionnement aurait été tout autre), mais la
+**contribution** de la jambe, dans une unité comparable à l'agrégat. Seule la
+ligne `leg_pnl_dollar` s'additionne entre CALL et PUT.
 
 **Correctif** : `07_calcul_dcf.py::calculer_dcf` calculait
 `equity_value = ev - dette_nette + cash`, alors que `net_debt` (produit par

@@ -38,6 +38,7 @@ Backtest (voir README.md pour le détail) :
     09_backtest.py              -> backtest actions (écart DCF)
     10_backtest_options.py      -> backtest options (call/put, dimensionné par delta)
     11_optimize_options_stops.py -> grid-search stop-loss/take-profit sur ce moteur
+    12_analyse_put_call.py      -> décomposition CALL/PUT d'un run sauvegardé
 
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
