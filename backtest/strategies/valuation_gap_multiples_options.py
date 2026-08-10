@@ -12,8 +12,12 @@ Le rapport entre les deux ne dépend pas du nombre d'actions (identique des
 deux côtés) : l'écart se calcule donc directement par action, sur les
 colonnes déjà produites par 06b, sans reconstruire de capitalisation.
 
-Différences assumées avec valuation_gap_options (l'autre stratégie options,
-inchangée) :
+L'échéance 2 ans, le roulement à 9 mois et les stops mesurés sur le cours du
+sous-jacent, propres à cette stratégie à l'origine, sont devenus le
+comportement par défaut du moteur (config.OPTIONS_TARGET_TENOR_DAYS,
+OPTIONS_ROLL_WHEN_DAYS_LEFT, OPTIONS_STOP_BASIS) : les engine_defaults
+ci-dessous les redéclarent pour que la thèse reste explicite, mais ce ne sont
+plus des différences. Ce qui la sépare de valuation_gap_options :
 
     1. MULTIPLES SEULS. 06b se rabat sur le DCF quand un secteur compte trop
        peu de pairs pour une médiane robuste ; ces lignes (source="dcf_fallback")
@@ -23,17 +27,18 @@ inchangée) :
        Les deux conventions ne retiennent pas les mêmes entreprises : à 20%,
        théorique 120 / cours 100 donne +16,7% en base théorique (écarté) contre
        +20,0% en base cours (retenu).
-    3. CONTRAT VISÉ : strike à mi-chemin entre valeur théorique et cours,
-       échéance 2 ans. Le strike est donc systématiquement hors de la monnaie,
-       de la moitié de l'écart : l'option ne devient gagnante que si le titre
-       parcourt au moins la moitié du chemin vers sa valeur théorique. C'est
-       délibéré -- une convergence partielle suffit, mais un simple bruit de
-       marché ne suffit pas.
+    3. STRIKE à mi-chemin entre valeur théorique et cours, au lieu d'ATM. Il
+       est donc systématiquement hors de la monnaie, de la moitié de l'écart :
+       l'option ne devient gagnante que si le titre parcourt au moins la moitié
+       du chemin vers sa valeur théorique. C'est délibéré -- une convergence
+       partielle suffit, mais un simple bruit de marché ne suffit pas. Cette
+       fragilité supplémentaire à un mouvement adverse justifie des seuils de
+       stop plus resserrés (-25%/+30% contre -20%/+80%).
     4. SORTIES pilotées par le signal (le moteur est configuré en
-       exit_when_signal_lost + roulement, cf. engine_defaults) : une position
-       dont l'écart est repassé sous le seuil est VENDUE au rebalancement
-       suivant, contrairement au comportement "position gelée" de l'autre
-       stratégie.
+       exit_when_signal_lost, cf. engine_defaults) : une position dont l'écart
+       est repassé sous le seuil est VENDUE au rebalancement suivant, sans
+       attendre le réexamen de roulement qui la clôturerait de toute façon à 9
+       mois de l'échéance dans l'autre stratégie.
     5. RÉÉVALUATION QUOTIDIENNE (daily_rebalance=True, cf. engine_defaults et
        la docstring de options_engine.py) : l'éligibilité est recalculée
        chaque jour de bourse avec le cours DU JOUR, pas seulement aux dates

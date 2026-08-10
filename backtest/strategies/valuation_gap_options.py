@@ -12,7 +12,10 @@ retenues.
 Contrats achetés à 2 ans (config.OPTIONS_TARGET_TENOR_DAYS) et réexaminés à 9
 mois de l'échéance (config.OPTIONS_ROLL_WHEN_DAYS_LEFT) : roulés sur une
 nouvelle échéance pleine si l'écart passe encore le seuil d'entrée, clôturés
-sinon.
+sinon. Stop-loss/take-profit mesurés sur le COURS DU SOUS-JACENT
+(config.OPTIONS_STOP_BASIS) : sur une échéance aussi longue, les mêmes seuils
+appliqués à la prime se déclencheraient sur la seule érosion de la valeur
+temps.
 
 Le signal (multiples sectoriels en priorité, DCF en repli) vient de
 06b_calcul_valorisation_combinee.py, pas du DCF seul (backtest/strategies/valuation_gap.py).

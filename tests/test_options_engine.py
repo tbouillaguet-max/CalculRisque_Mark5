@@ -243,3 +243,27 @@ def test_le_reexamen_roule_une_position_qui_passe_encore_les_filtres():
     _, _, trades, _ = _moteur_avec_reexamen(gap_du_second_signal=80.0).run()
     assert (trades["exit_reason"] == "roll").any()
     assert not (trades["exit_reason"] == "signal_lost").any()
+
+
+def test_les_deux_strategies_achetent_a_deux_ans_avec_reexamen_a_neuf_mois():
+    """Câblage config -> CLI -> moteur. Rien ici n'est vérifié par les tests de
+    comportement ci-dessus (le banc leur impose des échéances courtes), et une
+    échéance qui régresserait silencieusement à 9 mois ne casserait rien."""
+    import argparse
+    import importlib
+
+    import config
+    from backtest.strategies import OPTIONS_STRATEGY_REGISTRY
+
+    resolve = importlib.import_module("10_backtest_options").resolve_engine_settings
+    aucune_option = argparse.Namespace()
+
+    for nom, cls in OPTIONS_STRATEGY_REGISTRY.items():
+        settings, _ = resolve(cls, aucune_option)
+        assert settings["target_tenor_days"] == 730, nom
+        assert settings["roll_when_days_left"] == 270, nom
+        assert settings["stop_basis"] == "underlying", nom
+
+    # L'inflation attendue est corrigée sur l'horizon du CONTRAT : l'écart
+    # d'une stratégie directionnelle dépend donc de l'échéance retenue.
+    assert config.OPTIONS_TARGET_TENOR_DAYS == 730

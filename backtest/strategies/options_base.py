@@ -4,7 +4,7 @@ des stratégies actions (backtest/strategies/base.py) : les deux types
 d'instruments ont des mécaniques trop différentes (expiration, greeks,
 prime) pour partager une seule interface -- voir backtest/options_engine.py
 pour ce que le moteur gère uniformément (dimensionnement par delta, stop-loss/
-take-profit sur la prime, positions gelées, coûts).
+take-profit, roulement, positions gelées, coûts).
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class OptionsStrategy(ABC):
         réutilisée telle quelle par options_engine.py).
 
         Deux clés OPTIONNELLES permettent de choisir un autre contrat que
-        l'ATM à ~9 mois retenu par défaut (voir options_engine._select_contract) :
+        l'ATM à 2 ans retenu par défaut (voir options_engine._select_contract) :
             "strike_reference_price" : le strike visé est à mi-chemin entre ce
                 prix et le spot d'exécution (une stratégie qui vise la
                 convergence vers sa valeur théorique y met cette valeur).

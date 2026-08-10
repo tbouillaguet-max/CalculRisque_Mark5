@@ -67,7 +67,7 @@ ENGINE_SETTING_FALLBACKS = {
     "stop_loss_pct": config.OPTIONS_STOP_LOSS_PCT,
     "take_profit_pct": config.OPTIONS_TAKE_PROFIT_PCT,
     "target_tenor_days": config.OPTIONS_TARGET_TENOR_DAYS,
-    "stop_basis": "premium",
+    "stop_basis": config.OPTIONS_STOP_BASIS,
     "exit_when_signal_lost": False,
     "roll_when_days_left": config.OPTIONS_ROLL_WHEN_DAYS_LEFT,
     "daily_rebalance": False,
