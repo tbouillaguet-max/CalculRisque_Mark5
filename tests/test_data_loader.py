@@ -7,11 +7,16 @@ demandait pas un strike sans échéance."""
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.data_loader import OptionSnapshotIndex, PricePanel, UniverseResolver, build_benchmark_series
+from backtest.data_loader import (
+    OptionSnapshotIndex, PricePanel, UniverseResolver, build_benchmark_series,
+    build_options_signal_events,
+)
 
 
 @pytest.fixture
@@ -129,3 +134,39 @@ def test_benchmark_none_si_rien_n_est_calculable():
     panel = _panel({"AAA": [np.nan, np.nan, np.nan]})
     series, label = build_benchmark_series(panel, UniverseResolver(None, set()), symbol="SPY")
     assert series is None and label == "aucun"
+
+
+# --------------------------------------------------------------------------- #
+# build_options_signal_events : pas de colonne "fiscal_year" en double
+# --------------------------------------------------------------------------- #
+
+def _valorisation_combinee(**extra) -> pd.DataFrame:
+    base = {
+        "symbol": "AAA", "filed_date": pd.Timestamp("2020-03-15"), "year": 2019,
+        "sector": "Technologie", "close": 100.0,
+        "valuation_theoretical_per_share": 150.0, "source": "multiples", "gap_pct": 50.0,
+    }
+    return pd.DataFrame([{**base, **extra}])
+
+
+def test_options_signal_events_ne_duplique_pas_fiscal_year():
+    """06b propage le fiscal_year de multiples.parquet (05) EN PLUS de year :
+    renommer year -> fiscal_year produisait deux colonnes de même nom, et
+    pandas en droppait une sans erreur au premier .to_dict("records")."""
+    events = build_options_signal_events(_valorisation_combinee(fiscal_year=2019))
+
+    assert list(events.columns).count("fiscal_year") == 1
+    assert events["fiscal_year"].iloc[0] == 2019
+    # .to_dict("records") est ce que fait l'engine : il ne doit plus avertir.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        assert events.to_dict("records")[0]["fiscal_year"] == 2019
+
+
+def test_options_signal_events_replie_sur_year_pour_les_caches_anciens():
+    """Un cache produit par une version de 05 antérieure au TTM n'a que
+    "year" : le renommage doit rester actif pour lui."""
+    events = build_options_signal_events(_valorisation_combinee())
+
+    assert list(events.columns).count("fiscal_year") == 1
+    assert events["fiscal_year"].iloc[0] == 2019

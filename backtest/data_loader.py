@@ -381,7 +381,22 @@ def build_options_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataF
     """Un événement par (symbol, filed_date). gap_pct garde son signe (positif
     = sous-évalué -> call, négatif = survalué -> put) : c'est la stratégie
     (backtest/strategies/valuation_gap_options.py) qui décide du sens."""
-    renamed = valorisation_combinee.rename(columns={"filed_date": "published_date", "year": "fiscal_year"})
+    # "year" -> "fiscal_year" SEULEMENT si fiscal_year manque, comme le fait
+    # déjà build_signal_events pour la même raison. 06b propage les colonnes
+    # de multiples.parquet, où 05_calcul_multiples.load_financials_with_periods
+    # pose DÉJÀ fiscal_year (=year pour les lignes annuelles, et year=
+    # fiscal_year pour les lignes TTM) : renommer inconditionnellement
+    # produisait DEUX colonnes "fiscal_year", que pandas droppe ensuite sans
+    # erreur au premier .to_dict("records") (options_engine.py) -- juste un
+    # UserWarning "columns are not unique" noyé dans les logs de chaque run
+    # de 10. Les deux colonnes sont égales par construction aujourd'hui, donc
+    # rien de faux n'en sortait ; le jour où elles divergeraient, la perte
+    # serait silencieuse. Le renommage reste actif pour les caches produits
+    # par une version de 05 antérieure au TTM (04b), qui n'ont que "year".
+    to_rename = {"filed_date": "published_date"}
+    if "fiscal_year" not in valorisation_combinee.columns:
+        to_rename["year"] = "fiscal_year"
+    renamed = valorisation_combinee.rename(columns=to_rename)
     cols = [
         "symbol", "published_date", "fiscal_year", "sector", "close",
         "valuation_theoretical_per_share", "source", "gap_pct",

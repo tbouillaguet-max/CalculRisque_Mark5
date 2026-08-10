@@ -4,7 +4,7 @@ Un correctif = un commit. Ce document récapitule, pour chacun : ce qui a
 changé, quels fichiers de données sont invalidés, et dans quel ordre les
 régénérer.
 
-**Suite de tests** : 166 tests, tous verts (`python -m pytest`). Au moins un
+**Suite de tests** : 236 tests, tous verts (`python -m pytest`). Au moins un
 test par correctif du bloc A, et un banc d'essai réutilisable pour le moteur
 d'options (`tests/options_harness.py`) — c'est son absence qui expliquait
 qu'aucun des bugs du bloc C n'était couvert.
@@ -375,11 +375,36 @@ sous-jacent.
 
 ---
 
+## Hors brief — colonne `fiscal_year` dupliquée (10)
+
+Trouvé en rejouant `09` et `10` de bout en bout après coup : chaque run de
+`10` émettait des dizaines de
+`UserWarning: DataFrame columns are not unique`.
+
+`build_options_signal_events` renommait `year` → `fiscal_year`
+**inconditionnellement**, alors que `06b` propage les colonnes de
+`multiples.parquet`, où `05_calcul_multiples.load_financials_with_periods`
+pose **déjà** `fiscal_year`. Deux colonnes de même nom en sortaient, et
+pandas en supprimait une **sans erreur** au premier `.to_dict("records")`
+(`options_engine.py`). Son jumeau `build_signal_events` porte depuis
+longtemps un commentaire sur ce piège exact et évite le renommage.
+
+Une version antérieure de ce rapport le classait « aujourd'hui inoffensif —
+`06b` produit `year` seul » : c'est faux, `05` écrit bien les deux colonnes.
+Le renommage n'a désormais lieu que si `fiscal_year` est absente (caches
+produits par une version de `05` antérieure au TTM). Aucun résultat n'était
+faux — les deux colonnes sont égales par construction — mais la perte aurait
+été silencieuse le jour où elles auraient divergé.
+
+*Données invalidées* : aucune.
+
+---
+
 ## Critères d'acceptation
 
 | Critère | État |
 |---|---|
-| `python -m pytest` passe | ✅ 166 tests verts |
+| `python -m pytest` passe | ✅ 236 tests verts |
 | ≥ 1 test par correctif du bloc A | ✅ A1 (7), A2 (6), A3 (24) |
 | `09` et `10` s'exécutent sans exception | ✅ voir réserve ci-dessous |
 | `metrics.json` contient les champs de benchmark | ✅ |
@@ -405,13 +430,6 @@ même jeu (levier, drawdown) sont informatifs.
 
 Relevées en passant, **non corrigées** :
 
-- `backtest/data_loader.py::build_options_signal_events` renomme
-  `year` → `fiscal_year`. Si `06b` venait à produire aussi une colonne
-  `fiscal_year`, cela créerait deux colonnes de même nom, et pandas en
-  supprimerait une **sans erreur** (simple `UserWarning` au premier
-  `to_dict("records")`). Son jumeau `build_signal_events` porte déjà un
-  commentaire sur ce piège exact et évite le renommage ; l'option ne le fait
-  pas. Aujourd'hui inoffensif — `06b` produit `year` seul.
 - `07b_validation_qualitative.py::load_signal_periods` ne lit que
   `DCF_HISTORY_FILE`, alors que sa docstring annonce un complément par
   `VALORISATION_COMBINEE_FILE`. Depuis B4, les financières et foncières
