@@ -49,8 +49,8 @@ J et exécutés à l'ouverture de J+1 (même règle que les entrées, cf. plus
 haut) ; seules l'expiration (réglée par construction à sa date d'échéance) et
 la disparition des données (rien à attendre) sont immédiates.
 
-Le roulement (roll_when_days_left) est actif par défaut ; les trois autres
-comportements de sortie/renouvellement ci-dessous restent OPTIONNELS et
+Les stops sur le sous-jacent et le roulement sont actifs par défaut ; les deux
+autres comportements de sortie/renouvellement ci-dessous restent OPTIONNELS et
 désactivés par défaut :
 
 Référence des stops : dans les DEUX bases ci-dessous, le seuil se mesure
@@ -59,15 +59,19 @@ stop_reference_spot, figées à la première ouverture), et non depuis le prix d
 revient courant -- lequel continue d'être moyenné à chaque renfort pour le
 P&L. Un renfort ne déplace donc jamais le stop.
 
-    stop_basis="underlying"     Stop-loss/take-profit mesurés sur le COURS DU
-                                SOUS-JACENT au lieu de la prime, et orientés
-                                dans le sens de la position (pour un PUT, une
-                                HAUSSE du titre est la perte). Sur une
-                                échéance longue, des seuils serrés appliqués à
-                                la prime se déclencheraient sur la seule
-                                érosion de la valeur temps, avant que la thèse
-                                ait le temps de se réaliser -- voir le
-                                commentaire de config.OPTIONS_MULTIPLES_STOP_LOSS_PCT.
+    stop_basis="underlying"     DÉFAUT (config.OPTIONS_STOP_BASIS).
+                                Stop-loss/take-profit mesurés sur le COURS DU
+                                SOUS-JACENT, orientés dans le sens de la
+                                position (pour un PUT, une HAUSSE du titre est
+                                la perte). Sur les échéances 2 ans visées par
+                                les deux stratégies, des seuils appliqués à la
+                                prime se déclenchent sur la seule érosion de la
+                                valeur temps, avant que la thèse ait le temps de
+                                se réaliser -- voir les commentaires de
+                                config.OPTIONS_STOP_BASIS et
+                                config.OPTIONS_MULTIPLES_STOP_LOSS_PCT.
+                                stop_basis="premium" rétablit la mesure sur la
+                                prime de l'option.
 
     exit_when_signal_lost=True  Une position dont le symbole n'est plus jugé
                                 éligible par la stratégie (écart repassé sous
@@ -254,7 +258,7 @@ class OptionsBacktestEngine:
         momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         min_resize_relative_pct: Optional[float] = config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
-        stop_basis: str = "premium",
+        stop_basis: str = config.OPTIONS_STOP_BASIS,
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = config.OPTIONS_ROLL_WHEN_DAYS_LEFT,
         daily_rebalance: bool = False,

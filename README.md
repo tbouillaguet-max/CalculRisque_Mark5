@@ -149,6 +149,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
                                           blendé comme 06), DCF (07) en repli
                                           quand le secteur a trop peu de pairs
     10_backtest_options.py            -> moteur de backtest options
+    11_optimize_options_stops.py      -> grid-search stop-loss/take-profit sur ce moteur
 
 ```bash
 python 05_calcul_multiples.py
@@ -196,15 +197,18 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       contrat sur sa dernière année de vie, là où la valeur temps s'érode le
       plus vite. `--roll-when-days-left 0` désactive ce réexamen (les positions
       vont alors jusqu'à l'expiration).
-    - Stop-loss/take-profit sur la PRIME (`OPTIONS_STOP_LOSS_PCT`/
-      `OPTIONS_TAKE_PROFIT_PCT`, -20%/+80% par défaut), expiration (réglée à
-      la valeur intrinsèque), ou disparition des données du sous-jacent. Entre
-      deux réexamens de roulement, un écart qui se referme ne ferme pas la
-      position : elle reste gelée jusqu'à l'un de ces déclencheurs.
-      Attention : appliqué à la prime d'un contrat 2 ans, le −20% peut être
-      atteint par la seule érosion de la valeur temps (~20% en 15 mois à cours
-      inchangé sur une ATM). `--stop-basis underlying` mesure les seuils sur le
-      cours du sous-jacent à la place.
+    - Stop-loss/take-profit **sur le cours du SOUS-JACENT**
+      (`OPTIONS_STOP_BASIS`, `OPTIONS_STOP_LOSS_PCT`/`OPTIONS_TAKE_PROFIT_PCT`,
+      −20%/+80% par défaut), orientés dans le sens de la position (pour un PUT,
+      une hausse du titre est la perte) ; puis expiration (réglée à la valeur
+      intrinsèque) ou disparition des données du sous-jacent. Entre deux
+      réexamens de roulement, un écart qui se referme ne ferme pas la position :
+      elle reste gelée jusqu'à l'un de ces déclencheurs.
+      Adossés à la **prime**, ces seuils seraient atteints par la seule érosion
+      de la valeur temps — une ATM à 2 ans perd ~20% de sa prime en 15 mois à
+      cours strictement inchangé — et l'effet de levier ferait correspondre
+      −20% de prime à une baisse du titre de quelques points seulement.
+      `--stop-basis premium` rétablit l'ancienne base.
     - Le nombre de positions simultanées n'est pas plafonné, comme pour le
       moteur actions : toutes les entreprises retenues par la stratégie sont
       ouvertes. Le levier reste borné par `OPTIONS_MAX_DELTA_NOTIONAL_PCT` et
@@ -216,10 +220,12 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
 
 ### Stratégie `valuation_gap_multiples_options` (convergence long terme)
 
-Seconde stratégie options, à côté de `valuation_gap_options` (inchangée).
-Elle compare la valorisation théorique issue des **multiples sectoriels
-seuls** à la valorisation boursière, et parie sur la convergence de la
-seconde vers la première à horizon 2 ans :
+Seconde stratégie options, à côté de `valuation_gap_options`. Elle compare la
+valorisation théorique issue des **multiples sectoriels seuls** à la
+valorisation boursière, et parie sur la convergence de la seconde vers la
+première à horizon 2 ans. Les deux stratégies partagent désormais l'échéance
+2 ans, le roulement à 9 mois et les stops sur le sous-jacent ; ce qui les
+sépare tient au signal, au strike et au traitement d'un écart refermé :
 
 ```bash
 python 10_backtest_options.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
@@ -231,7 +237,7 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | Écart de ±20% rapporté à | cours de bourse | **valeur théorique** |
 | Strike | ATM | **à mi-chemin théorique/cours** |
 | Échéance | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois |
-| Stop-loss / take-profit | −20% / +80% de la **prime** | **−25% / +30% du cours du sous-jacent** |
+| Stop-loss / take-profit | −20% / +80% du cours du sous-jacent | **−25% / +30%** du cours du sous-jacent |
 | Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | **vendue au trimestre suivant** |
 | Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
 
@@ -241,9 +247,11 @@ nombre d'actions, leur rapport se calcule directement par action : la
 stratégie lit les colonnes de `06b_calcul_valorisation_combinee.py` sans
 reconstruire de capitalisation.
 
-**Pourquoi les stops portent sur le sous-jacent et non sur la prime.** Sur le
-cas type de la stratégie (théorique 120, cours 100 → strike 110, 2 ans, vol
-30%), le levier effectif est de 3,5x : un stop à −25% de la prime se
+**Pourquoi les stops portent sur le sous-jacent et non sur la prime** (le
+raisonnement qui vaut maintenant pour les deux stratégies, cf.
+`OPTIONS_STOP_BASIS`). Sur le cas type de cette stratégie (théorique 120,
+cours 100 → strike 110, 2 ans, vol 30%), le levier effectif est de 3,5x : un
+stop à −25% de la prime se
 déclencherait sur une baisse de seulement −7,6% du titre. Surtout, **à cours
 strictement inchangé, la seule érosion de la valeur temps fait perdre 29% à
 la prime en 9 mois** — le stop se déclencherait donc tout seul avant que la
@@ -275,20 +283,59 @@ les entreprises passant le seuil sont achetées et celles qui le repassent en
 sens inverse sont vendues. Lance `run_pipeline_quarterly.py` pour rafraîchir
 ces signaux.
 
-Ces quatre réglages de moteur font partie de la thèse de la stratégie : elle
-les déclare (attribut de classe `engine_defaults`) et `10_backtest_options.py`
-les applique automatiquement, sauf si l'option correspondante est passée
+Ces réglages de moteur font partie de la thèse de la stratégie : elle les
+déclare (attribut de classe `engine_defaults`) et `10_backtest_options.py` les
+applique automatiquement, sauf si l'option correspondante est passée
 explicitement en ligne de commande (`--stop-basis`, `--roll-when-days-left`,
 `--no-exit-when-signal-lost`, `--target-tenor-days`...).
 
-Côté moteur (`backtest/options_engine.py`), seul le roulement est actif par
-défaut (`OPTIONS_ROLL_WHEN_DAYS_LEFT`, donc pour les deux stratégies) ; la
-vente sur perte de signal, les stops sur le sous-jacent et la réévaluation
-quotidienne restent **optionnels et désactivés par défaut**, propres à
+Côté moteur (`backtest/options_engine.py`), l'échéance 2 ans, le roulement
+(`OPTIONS_ROLL_WHEN_DAYS_LEFT`) et les stops sur le sous-jacent
+(`OPTIONS_STOP_BASIS`) sont actifs par défaut, donc pour les deux stratégies ;
+la vente sur perte de signal et la réévaluation quotidienne restent
+**optionnelles et désactivées par défaut**, propres à
 `valuation_gap_multiples_options`.
 
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).
+
+### Optimisation stop-loss / take-profit (11_optimize_options_stops.py)
+
+Rejoue le backtest pour **tous les binômes** (stop_loss_pct, take_profit_pct)
+d'une grille, sur des données chargées une seule fois, et classe les
+résultats par une métrique choisie (Sharpe par défaut) :
+
+```bash
+python 11_optimize_options_stops.py
+python 11_optimize_options_stops.py --strategy valuation_gap_multiples_options
+python 11_optimize_options_stops.py --start-date 2015-01-01 --objective calmar_ratio
+python 11_optimize_options_stops.py \
+    --stop-loss-grid -10 -15 -20 -25 -30 -35 -40 -50 \
+    --take-profit-grid 20 30 40 60 80 100 150 200
+python 11_optimize_options_stops.py --workers 4   # parallélise sur des process (fork)
+```
+
+Tous les autres réglages moteur (échéance, base des stops, roulement...)
+restent ceux résolus par `10_backtest_options.resolve_engine_settings` --
+donc ceux imposés par `engine_defaults` de la stratégie choisie, sauf
+override explicite. Seuls stop_loss_pct/take_profit_pct varient d'une
+combinaison à l'autre.
+
+Sorties :
+    - `data/backtest_options/optimize_<stratégie>_<horodatage>.csv` : une
+      ligne par binôme, toutes les métriques (Sharpe, Sortino, Calmar, CAGR,
+      max drawdown, profit factor, win rate, nombre de trades...).
+    - Console : tableau des `--top-n` meilleures combinaisons, et une
+      heatmap texte (stop_loss en lignes, take_profit en colonnes) pour
+      repérer un plateau ou un optimum en bord de grille.
+
+`--min-trades` (15 par défaut) écarte du CLASSEMENT (pas du CSV) les
+combinaisons trop peu tradées pour être statistiquement significatives : un
+stop si serré qu'il ne laisse que 3 trades peut afficher un Sharpe flatteur
+par pur hasard d'échantillon. Si la meilleure combinaison retenue tombe en
+bord de grille, un avertissement invite à élargir `--stop-loss-grid`/
+`--take-profit-grid` -- un optimum au bord de la plage testée n'est pas prouvé
+être un optimum réel.
 
 **Correctif** : `07_calcul_dcf.py::calculer_dcf` calculait
 `equity_value = ev - dette_nette + cash`, alors que `net_debt` (produit par

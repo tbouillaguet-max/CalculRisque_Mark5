@@ -37,6 +37,7 @@ Backtest (voir README.md pour le détail) :
                                     en priorité, DCF en repli), signal de la stratégie options
     09_backtest.py              -> backtest actions (écart DCF)
     10_backtest_options.py      -> backtest options (call/put, dimensionné par delta)
+    11_optimize_options_stops.py -> grid-search stop-loss/take-profit sur ce moteur
 
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
@@ -384,18 +385,29 @@ OPTIONS_ROLL_WHEN_DAYS_LEFT = 270
 OPTIONS_STRIKE_BAND_PCT = 0.30      # bande de strikes considérée autour du spot (ATM y compris)
 OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (convention US)
 
-# Stop-loss/take-profit exprimés en % de variation de la PRIME (pas du cours
-# du sous-jacent comme pour la stratégie actions). Encadrement asymétrique :
-# on coupe vite une thèse qui se dégrade, on laisse courir celle qui marche.
-# ATTENTION -- appliqué à la prime, un stop serré se déclenche sur une
-# variation bien plus faible du sous-jacent (effet de levier), et la seule
-# érosion de la valeur temps suffit à l'atteindre : sur l'échéance 2 ans
-# retenue à l'entrée, une option ATM perd déjà de l'ordre de 20% de sa prime en
-# ~15 mois à cours strictement inchangé. Un -20% sur la prime peut donc sortir
-# une position dont le sous-jacent n'a pas bougé. C'est un choix assumé (couper
-# vite), et l'alternative existe : stops mesurés sur le SOUS-JACENT, comme le
-# fait valuation_gap_multiples_options (cf. OPTIONS_MULTIPLES_STOP_LOSS_PCT),
-# activables avec --stop-basis underlying.
+# Base de mesure des stop-loss/take-profit : "underlying" -> variation du COURS
+# DU SOUS-JACENT (comme la stratégie actions), "premium" -> variation de la
+# prime de l'option.
+#
+# Le sous-jacent est retenu par défaut depuis le passage des entrées à 2 ans.
+# Adossés à la prime, les seuils étaient atteints par la seule érosion de la
+# valeur temps : une option ATM à 2 ans perd de l'ordre de 20% de sa prime en
+# ~15 mois à cours STRICTEMENT INCHANGÉ -- un stop à -20% sortait donc des
+# positions dont la thèse n'avait pas bougé, avant que la convergence visée ait
+# eu le temps de se produire. L'effet de levier jouait dans le même sens : sur
+# la prime, -20% correspond à une baisse du titre de quelques points seulement.
+# Mesurés sur le cours, les seuils décrivent bien le scénario voulu ("le titre
+# a baissé de 20%" / "le titre a monté de 80%"). --stop-basis premium rétablit
+# l'ancienne base.
+OPTIONS_STOP_BASIS = "underlying"
+
+# Seuils, appliqués à la base ci-dessus et ORIENTÉS dans le sens de la position :
+# pour un PUT, "le titre monte de 20%" est la perte et "le titre baisse de 80%"
+# le gain (voir options_engine._position_move_pct). Encadrement asymétrique
+# assumé : on coupe vite une thèse qui se dégrade, on laisse courir celle qui
+# marche -- un take-profit à +80% du sous-jacent est un mouvement rare sur 2
+# ans, c'est bien l'intention (la sortie normale d'une position gagnante est le
+# réexamen à 9 mois, pas le take-profit).
 OPTIONS_STOP_LOSS_PCT = -20.0
 OPTIONS_TAKE_PROFIT_PCT = 80.0
 # Même capital que le backtest actions. Cette valeur n'est PAS neutre pour la
@@ -553,21 +565,20 @@ OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
 # ----------------------------------------------------------------------------
 # Stratégie options "multiples" (backtest/strategies/valuation_gap_multiples_options.py)
 # ----------------------------------------------------------------------------
-# Variante LONG TERME de la stratégie options, distincte de
-# valuation_gap_options (ci-dessus) sur quatre points, tous voulus :
+# Variante LONG TERME de la stratégie options. L'échéance 2 ans, le roulement à
+# 9 mois et les stops mesurés sur le cours du sous-jacent sont désormais le
+# comportement par défaut du moteur (OPTIONS_TARGET_TENOR_DAYS,
+# OPTIONS_ROLL_WHEN_DAYS_LEFT, OPTIONS_STOP_BASIS) : elle ne s'en distingue
+# plus. Ce qui la sépare de valuation_gap_options (ci-dessus) tient à quatre
+# points, tous voulus :
 #   1. signal = multiples sectoriels SEULS (les lignes en repli DCF de 06b sont
 #      écartées) ;
 #   2. écart rapporté à la valeur THÉORIQUE, pas au cours (voir plus bas) ;
-#   3. strike à mi-chemin entre valeur théorique et cours, échéance 2 ans
-#      (pari sur une convergence progressive, pas sur un mouvement immédiat) ;
-#   4. stop-loss/take-profit sur le COURS DU SOUS-JACENT, pas sur la prime.
-#
-# Le point 4 n'est pas un détail : sur une option 2 ans hors de la monnaie, le
-# levier est d'environ 3,5x et la seule érosion du temps fait perdre ~29% de la
-# prime en 9 mois à cours inchangé. Des seuils -25%/+30% appliqués à la prime
-# clôtureraient donc la position avant que la convergence visée ait le temps de
-# se produire ; appliqués au cours du sous-jacent, ils décrivent bien le
-# scénario voulu ("le titre a baissé de 25%" / "le titre a monté de 30%").
+#   3. strike à mi-chemin entre valeur théorique et cours, pas ATM (pari sur une
+#      convergence progressive, pas sur un mouvement immédiat) ;
+#   4. seuils de stop plus resserrés (-25%/+30% contre -20%/+80%), et écart
+#      refermé vendu au rebalancement suivant au lieu d'attendre le réexamen
+#      de roulement.
 OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = 20.0
 
 # Base de calcul de l'écart : "theoretical" -> (théorique - cours)/théorique,
@@ -577,9 +588,12 @@ OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = 20.0
 # (écarté) contre +20,0% en base cours (retenu).
 OPTIONS_MULTIPLES_GAP_BASIS = "theoretical"
 
-# Appliqués au COURS DU SOUS-JACENT (voir plus haut), et orientés dans le sens
+# Appliqués au COURS DU SOUS-JACENT (comme OPTIONS_STOP_LOSS_PCT depuis le
+# passage aux entrées 2 ans, cf. OPTIONS_STOP_BASIS), et orientés dans le sens
 # de la position : pour un PUT, "le titre monte de 25%" est la perte et "le
-# titre baisse de 30%" le gain (voir options_engine._check_stop_loss_take_profit).
+# titre baisse de 30%" le gain (voir options_engine._position_move_pct). Plus
+# resserrés que ceux de valuation_gap_options : le strike hors de la monnaie
+# rend la thèse plus fragile à un mouvement adverse.
 OPTIONS_MULTIPLES_STOP_LOSS_PCT = -25.0
 OPTIONS_MULTIPLES_TAKE_PROFIT_PCT = 30.0
 
