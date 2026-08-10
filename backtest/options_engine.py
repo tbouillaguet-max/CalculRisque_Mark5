@@ -124,6 +124,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -405,7 +406,19 @@ class OptionsBacktestEngine:
 
     # ------------------------------------------------------------------ #
     def run(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        for today in self.calendar:
+        # Aucune sortie entre le message de démarrage (10_backtest_options.py)
+        # et la fin de cette méthode : sur un historique de plusieurs
+        # milliers de jours de bourse -- surtout avec daily_rebalance=True
+        # (réévalue TOUT l'univers suivi CHAQUE jour, pas seulement aux dates
+        # de dépôt SEC, cf. la docstring du module), qui est désormais le
+        # réglage par défaut de la stratégie par défaut -- un run de
+        # plusieurs minutes ne se distingue pas d'un run bloqué. Un point
+        # d'avancement périodique (~20 lignes au total, quelle que soit la
+        # taille du run) suffit à lever le doute sans coût mesurable.
+        n_days = len(self.calendar)
+        log_every = max(n_days // 20, 1)
+        started_at = time.monotonic()
+        for i, today in enumerate(self.calendar):
             self._execute_pending_orders(today)
             # Le cash resté oisif est remis au travail sur les positions
             # ouvertes, TOUS LES JOURS. Cet appel vivait dans
@@ -438,6 +451,20 @@ class OptionsBacktestEngine:
 
             self._mark_to_market(today)
             self._record_positions(today)
+
+            if (i + 1) % log_every == 0 or i + 1 == n_days:
+                elapsed = time.monotonic() - started_at
+                # Débit en jours/s : à ce stade il permet d'estimer le temps
+                # restant sans avoir à attendre la fin pour savoir si le run
+                # progresse ou est bloqué.
+                rate = (i + 1) / elapsed if elapsed > 0 else float("inf")
+                remaining = (n_days - (i + 1)) / rate if rate > 0 else float("inf")
+                logger.info(
+                    "%d/%d jours de bourse (%.0f%%) -- %s, %d positions ouvertes, "
+                    "%.0fs écoulées, ~%.0fs restantes.",
+                    i + 1, n_days, (i + 1) / n_days * 100, today.date(),
+                    len(self.positions), elapsed, remaining,
+                )
 
         equity_curve = pd.DataFrame(self.equity_curve_rows)
         positions_history = pd.DataFrame(self.positions_history_rows)
