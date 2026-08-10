@@ -72,14 +72,8 @@ P&L. Un renfort ne déplace donc jamais le stop.
     exit_when_signal_lost=True  Une position dont le symbole n'est plus jugé
                                 éligible par la stratégie (écart repassé sous
                                 le seuil) est VENDUE au rebalancement suivant,
-                                au lieu de rester "gelée". L'éligibilité est
-                                demandée à la stratégie
-                                (OptionsStrategy.eligible_symbols) et non
-                                déduite de ses cibles : une position évincée
-                                par le seul plafond de positions simultanées
-                                ne doit pas être vendue comme si son signal
-                                avait disparu. Un retournement de sens
-                                (call <-> put) ferme aussi la position.
+                                au lieu de rester "gelée". Un retournement de
+                                sens (call <-> put) ferme aussi la position.
 
     roll_when_days_left=N       À N jours de l'échéance, une position encore
                                 éligible est clôturée et immédiatement
@@ -239,7 +233,6 @@ class OptionsBacktestEngine:
         slippage_pct_of_premium: float,
         stop_loss_pct: float,
         take_profit_pct: float,
-        max_positions: int,
         commission_min_per_order: float = config.OPTIONS_COMMISSION_MIN_PER_ORDER,
         commission_tiers: tuple = config.OPTIONS_COMMISSION_TIERS,
         fee_bump_max_extra_pct: Optional[float] = config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT,
@@ -297,7 +290,6 @@ class OptionsBacktestEngine:
         self.slippage_rate = slippage_pct_of_premium / 100
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
-        self.max_positions = max_positions
         self.target_tenor_days = target_tenor_days
         self.contract_multiplier = contract_multiplier
         self.real_snapshot_tolerance_days = real_snapshot_tolerance_days
@@ -324,9 +316,9 @@ class OptionsBacktestEngine:
         # {"option_type", "strike_reference_price", "tenor_days"}.
         self._pending_spec: dict[str, dict] = {}
         # {symbole: sens} encore justifiés par le signal au dernier
-        # rebalancement, indépendamment du plafond de positions simultanées.
-        # Sert à la vente sur perte de signal et au roulement ; None tant
-        # qu'aucun rebalancement n'a eu lieu (aucune position ne peut exister).
+        # rebalancement. Sert à la vente sur perte de signal et au roulement ;
+        # None tant qu'aucun rebalancement n'a eu lieu (aucune position ne
+        # peut exister).
         self._eligible_directions: Optional[dict[str, str]] = None
 
         self.trades: list[dict] = []
@@ -1256,25 +1248,12 @@ class OptionsBacktestEngine:
         )
         active_budget = max(nav_now - legacy_value, 0.0)
 
-        already_held = {s: t for s, t in targets.items() if s in self.positions}
-        new_candidates = {s: t for s, t in targets.items() if s not in self.positions}
-
-        slots_used = sum(
-            1 for sym in self.positions if sym not in targets and sym not in exclude
-        ) + len(already_held)
-        slots_for_new = max(self.max_positions - slots_used, 0)
-        if len(new_candidates) > slots_for_new:
-            new_candidates = dict(
-                sorted(new_candidates.items(), key=lambda kv: kv[1]["weight"], reverse=True)[:slots_for_new]
-            )
-
-        final_active = {**already_held, **new_candidates}
-        total_weight = sum(t["weight"] for t in final_active.values())
+        total_weight = sum(t["weight"] for t in targets.values())
         if total_weight > 0:
-            for t in final_active.values():
+            for t in targets.values():
                 t["weight"] = t["weight"] / total_weight
 
-        for symbol, t in final_active.items():
+        for symbol, t in targets.items():
             self._pending_spec[symbol] = {
                 "option_type": t["option_type"],
                 "strike_reference_price": t.get("strike_reference_price"),
@@ -1286,12 +1265,7 @@ class OptionsBacktestEngine:
         """Clôture les positions dont le signal ne justifie plus la présence :
         écart repassé sous le seuil d'entrée (le symbole a disparu des
         éligibles), ou écart qui a changé de sens (call détenu alors que le
-        signal est devenu vendeur, ou l'inverse).
-
-        Une position simplement évincée par le plafond de positions
-        simultanées reste éligible et n'est donc PAS vendue -- c'est tout
-        l'intérêt de demander les éligibles à la stratégie plutôt que de les
-        déduire de ses cibles, déjà tronquées."""
+        signal est devenu vendeur, ou l'inverse)."""
         closed = set()
         for symbol, pos in self.positions.items():
             if symbol in exclude or symbol in self.pending_orders:

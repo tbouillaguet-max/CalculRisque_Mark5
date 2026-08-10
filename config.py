@@ -300,25 +300,13 @@ VALUATION_GAP_THRESHOLD_PCT = 20.0
 BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
 BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
 BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
-BACKTEST_MAX_POSITIONS = 20        # nombre de lignes simultanées max dans le portefeuille
-
-# Nombre MINIMAL d'entreprises différentes visées. Si trop peu d'entreprises
-# passent le seuil d'entrée, les stratégies complètent avec les meilleures
-# candidates SOUS le seuil (celles dont le cours et la valeur théorique sont
-# les plus proches) plutôt que de laisser le portefeuille concentré sur
-# quelques lignes. Le classement reste fait sur l'écart : ce sont bien les
-# convictions les plus fortes disponibles qui sont retenues.
-# La stratégie actions étant long-only, elle ne descend jamais sous un écart
-# positif : compléter avec une entreprise que le modèle juge SURVALORISÉE
-# serait acheter contre son propre signal.
-# 0 ou None désactive ce plancher (comportement d'avant : seuil strict).
-BACKTEST_MIN_POSITIONS = 10
 
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
 # de l'écart ; sans plafond, un écart aberrant (valeur théorique proche de
 # zéro -> plusieurs milliers de %) capte à lui seul l'essentiel du capital.
-# 20% = 4x le poids équipondéré à 20 positions. 0 ou None désactive le plafond.
+# Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
+# concentration du portefeuille. 0 ou None le désactive.
 BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
 
 # Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
@@ -384,11 +372,15 @@ OPTIONS_STRIKE_BAND_PCT = 0.30      # bande de strikes considérée autour du sp
 OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (convention US)
 
 # Stop-loss/take-profit exprimés en % de variation de la PRIME (pas du cours
-# du sous-jacent comme pour la stratégie actions) : une option étant à effet
-# de levier, ses seuils naturels sont beaucoup plus larges.
-OPTIONS_STOP_LOSS_PCT = -50.0
-OPTIONS_TAKE_PROFIT_PCT = 100.0
-OPTIONS_MAX_POSITIONS = 20
+# du sous-jacent comme pour la stratégie actions). Encadrement asymétrique :
+# on coupe vite une thèse qui se dégrade, on laisse courir celle qui marche.
+# ATTENTION -- appliqué à la prime, un stop serré se déclenche sur une
+# variation bien plus faible du sous-jacent (effet de levier), et la seule
+# érosion de la valeur temps suffit à l'atteindre sur une échéance longue :
+# c'est précisément pourquoi valuation_gap_multiples_options (échéance 2 ans)
+# mesure ses stops sur le SOUS-JACENT (cf. OPTIONS_MULTIPLES_STOP_LOSS_PCT).
+OPTIONS_STOP_LOSS_PCT = -20.0
+OPTIONS_TAKE_PROFIT_PCT = 80.0
 # Même capital que le backtest actions. Cette valeur n'est PAS neutre pour la
 # stratégie options depuis le passage aux contrats entiers
 # (OPTIONS_WHOLE_CONTRACTS) : un contrat vaut 100 x la prime, soit ~1 000$ pour
@@ -398,7 +390,10 @@ OPTIONS_MAX_POSITIONS = 20
 # abandonnées, et celles qui passaient étaient déformées de ~80% par l'arrondi
 # -- le backtest mesurait alors la stratégie bridée par la taille minimale,
 # pas la stratégie. À 1 000 000$, plus aucune position n'est perdue et l'écart
-# d'arrondi médian tombe à ~4%.
+# d'arrondi médian tombe à ~4%. Le nombre de positions n'étant plus plafonné,
+# ce seuil se déplace avec le nombre de candidates retenues : plus elles sont
+# nombreuses, plus chacune est petite, et plus le capital doit être élevé pour
+# que l'arrondi au contrat entier reste négligeable.
 OPTIONS_INITIAL_CAPITAL = 1_000_000.0
 
 # Coûts par contrat (pas en bps du notionnel comme les actions : une option a

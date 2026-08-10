@@ -65,7 +65,7 @@ def test_options_et_actions_datent_la_radiation_pareil():
         price_panel=panel_actions, signal_events=events, universe_history=None,
         fallback_universe_symbols={"AAA"}, strategy=ToujoursAAA(),
         initial_capital=1_000_000.0, cost_bps=0.0,
-        stop_loss_pct=-99.0, take_profit_pct=1000.0, max_positions=5, momentum_min_pct=None,
+        stop_loss_pct=-99.0, take_profit_pct=1000.0, momentum_min_pct=None,
     )
     _, _, trades_actions, _ = engine.run()
     gaps = trades_actions[trades_actions["exit_reason"] == "data_gap"]
@@ -77,7 +77,7 @@ def test_options_et_actions_datent_la_radiation_pareil():
 # C5 : ordres tronqués et cash moyen
 # --------------------------------------------------------------------------- #
 
-def _moteur_actions(max_positions: int, n: int = 60) -> BacktestEngine:
+def _moteur_actions(n: int = 60) -> BacktestEngine:
     symbols = [f"S{i}" for i in range(8)]
     dates = pd.bdate_range("2020-01-01", periods=n)
     close = pd.DataFrame(
@@ -103,13 +103,13 @@ def _moteur_actions(max_positions: int, n: int = 60) -> BacktestEngine:
         price_panel=panel, signal_events=events, universe_history=None,
         fallback_universe_symbols=set(symbols), strategy=ToutLUnivers(),
         initial_capital=1_000_000.0, cost_bps=10.0,
-        stop_loss_pct=-95.0, take_profit_pct=1000.0, max_positions=max_positions,
+        stop_loss_pct=-95.0, take_profit_pct=1000.0,
         momentum_min_pct=None,
     )
 
 
 def test_les_diagnostics_sont_produits():
-    engine = _moteur_actions(max_positions=8)
+    engine = _moteur_actions()
     engine.run()
     diagnostics = engine.execution_diagnostics()
 
@@ -124,7 +124,7 @@ def test_les_diagnostics_sont_produits():
 def test_les_ordres_tronques_sont_comptes():
     """Le budget alloué par _rebalance dépasse le cash dès que des positions
     immobilisent du capital sans être vendues : la troncature doit se voir."""
-    engine = _moteur_actions(max_positions=8)
+    engine = _moteur_actions()
     engine.run()
     diagnostics = engine.execution_diagnostics()
     assert diagnostics["truncated_orders_count"] > 0, (
@@ -133,7 +133,7 @@ def test_les_ordres_tronques_sont_comptes():
 
 
 def test_avertissement_au_dela_du_seuil(caplog):
-    engine = _moteur_actions(max_positions=8)
+    engine = _moteur_actions()
     engine.run()
     with caplog.at_level("WARNING"):
         diagnostics = engine.execution_diagnostics()

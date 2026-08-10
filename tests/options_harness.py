@@ -69,7 +69,6 @@ def moteur(price_panel: PricePanel, signal_events: pd.DataFrame, directions: dic
         slippage_pct_of_premium=0.0,
         stop_loss_pct=-50.0,
         take_profit_pct=100.0,
-        max_positions=10,
         momentum_min_pct=None,
         max_fee_pct_of_trade=None,
         fee_bump_max_extra_pct=None,

@@ -116,6 +116,11 @@ interpréter des résultats :
     - Un signal DCF vieux de plus de `BACKTEST_SIGNAL_MAX_AGE_DAYS` (config.py,
       400 jours par défaut) n'est plus considéré comme une base valable pour
       une NOUVELLE entrée (mais n'affecte pas une position déjà ouverte).
+    - Le nombre de positions simultanées n'est **pas** plafonné : toutes les
+      entreprises retenues par la stratégie sont ouvertes. La concentration
+      reste bornée par le seul plafond de pondération
+      (`BACKTEST_MAX_WEIGHT_PER_POSITION_PCT`), qui limite la part du
+      portefeuille d'UNE ligne sans limiter leur nombre.
 
 Résultats sauvegardés intégralement sous `data/backtest/<run_id>/` :
 `equity_curve.parquet`, `positions_history.parquet`, `trades.parquet`,
@@ -129,8 +134,8 @@ de `Strategy` (`backtest/strategies/base.py`) et décorée par
 `backtest/strategies/__init__.py`. Elle devient disponible via
 `python 09_backtest.py --strategy mon_nom` sans toucher au moteur : la
 stratégie ne gère que le choix des candidats et leur pondération relative,
-l'engine gère uniformément le capital, les plafonds de positions, le
-stop-loss/take-profit et les coûts de transaction pour toutes les stratégies.
+l'engine gère uniformément le capital, le stop-loss/take-profit et les coûts
+de transaction pour toutes les stratégies.
 
 ## Backtest OPTIONS (06b, 10)
 
@@ -182,12 +187,14 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       ailleurs. Le coût en temps est nul (volatilité glissante précalculée en
       une passe vectorisée sur tout le panel de cours).
     - Stop-loss/take-profit sur la PRIME (`OPTIONS_STOP_LOSS_PCT`/
-      `OPTIONS_TAKE_PROFIT_PCT`, -50%/+100% par défaut -- des seuils bien
-      plus larges que pour les actions, effet de levier oblige), expiration
-      (réglée à la valeur intrinsèque), ou disparition des données du
-      sous-jacent. Même règle "jamais fermé juste parce que l'écart s'est
-      refermé" que la stratégie actions -- position gelée jusqu'à un de ces
-      déclencheurs.
+      `OPTIONS_TAKE_PROFIT_PCT`, -20%/+80% par défaut), expiration (réglée à
+      la valeur intrinsèque), ou disparition des données du sous-jacent. Même
+      règle "jamais fermé juste parce que l'écart s'est refermé" que la
+      stratégie actions -- position gelée jusqu'à un de ces déclencheurs.
+    - Le nombre de positions simultanées n'est pas plafonné, comme pour le
+      moteur actions : toutes les entreprises retenues par la stratégie sont
+      ouvertes. Le levier reste borné par `OPTIONS_MAX_DELTA_NOTIONAL_PCT` et
+      la concentration par le plafond de pondération.
     - Une nouvelle stratégie options s'ajoute de la même façon que pour les
       actions : fichier dans `backtest/strategies/`, classe héritant de
       `OptionsStrategy` (`backtest/strategies/options_base.py`), décorée par
@@ -210,7 +217,7 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | Écart de ±20% rapporté à | cours de bourse | **valeur théorique** |
 | Strike | ATM | **à mi-chemin théorique/cours** |
 | Échéance | ~9 mois | **2 ans, roulée à 9 mois** |
-| Stop-loss / take-profit | −50% / +100% de la **prime** | **−25% / +30% du cours du sous-jacent** |
+| Stop-loss / take-profit | −20% / +80% de la **prime** | **−25% / +30% du cours du sous-jacent** |
 | Écart refermé | position gelée | **vendue au trimestre suivant** |
 | Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
 

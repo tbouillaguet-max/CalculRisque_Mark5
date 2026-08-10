@@ -98,7 +98,6 @@ SEARCH_SPACE: dict[str, tuple] = {
 FIXED_PARAMS: dict = {
     "weight_cap_pct": config.OPTIONS_MULTIPLES_WEIGHT_CAP_PCT,
     "gap_basis": config.OPTIONS_MULTIPLES_GAP_BASIS,
-    "max_positions": config.OPTIONS_MAX_POSITIONS,
     "tenor_days": config.OPTIONS_MULTIPLES_TENOR_DAYS,
     "roll_when_days_left": config.OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT,
     "min_deployment_pct": 0.0,  # cf. note ci-dessus -- PAS config.OPTIONS_MIN_DEPLOYMENT_PCT
@@ -189,7 +188,6 @@ def run_trial(
     try:
         strategy = ValuationGapMultiplesOptionsStrategy(
             entry_threshold_pct=params["entry_threshold_pct"],
-            max_positions=params["max_positions"],
             tenor_days=params["tenor_days"],
             gap_basis=params["gap_basis"],
             weight_cap_pct=params["weight_cap_pct"],
@@ -210,7 +208,6 @@ def run_trial(
             fee_bump_max_extra_pct=params["fee_bump_max_extra_pct"],
             stop_loss_pct=params["stop_loss_pct"],
             take_profit_pct=params["take_profit_pct"],
-            max_positions=params["max_positions"],
             target_tenor_days=params["tenor_days"],
             realized_vol_lookback_days=params["realized_vol_lookback_days"],
             momentum_min_pct=params["momentum_min_pct"],

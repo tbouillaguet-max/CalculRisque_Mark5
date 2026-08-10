@@ -91,7 +91,6 @@ class BacktestEngine:
         cost_bps: float,
         stop_loss_pct: float,
         take_profit_pct: float,
-        max_positions: int,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
         momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
@@ -114,7 +113,6 @@ class BacktestEngine:
         self.cost_bps = cost_bps
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
-        self.max_positions = max_positions
         self.signal_max_age_days = signal_max_age_days
         self.momentum_min_pct = momentum_min_pct
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
@@ -352,8 +350,8 @@ class BacktestEngine:
                 "alloué par le rebalancement dépasse régulièrement le cash disponible, parce que "
                 "les positions gelées immobilisent du capital sans être vendues. Le portefeuille "
                 "est donc moins investi que la stratégie ne le demande (cash moyen %.1f%%). "
-                "Réduire --max-positions, ou accepter ce sous-investissement comme faisant "
-                "partie de la règle des positions gelées.",
+                "Accepter ce sous-investissement comme faisant partie de la règle des "
+                "positions gelées, ou réduire le nombre de candidates retenues par la stratégie.",
                 truncated_pct, self.truncated_orders_count, self.buy_orders_count,
                 avg_cash_pct if avg_cash_pct is not None else float("nan"),
             )
@@ -427,31 +425,13 @@ class BacktestEngine:
         )
         active_budget = max(nav_now - legacy_value, 0.0)
 
-        already_held = {s: w for s, w in target_weights.items() if s in self.positions}
-        new_candidates = {s: w for s, w in target_weights.items() if s not in self.positions}
-
-        slots_used = sum(
-            1 for sym in self.positions
-            if sym not in target_weights and sym not in exclude
-        ) + len(already_held)
-        slots_for_new = max(self.max_positions - slots_used, 0)
-        if len(new_candidates) > slots_for_new:
-            new_candidates = dict(
-                sorted(new_candidates.items(), key=lambda kv: kv[1], reverse=True)[:slots_for_new]
-            )
-
-        final_active = {**already_held, **new_candidates}
-        total_weight = sum(final_active.values())
-        # Toujours renormalisé à somme=1 (pas seulement si >1) : le plafond
-        # de positions/slots gelés peut retirer des candidats APRÈS que la
-        # stratégie a déjà normalisé ses poids à 100% (cf. ValuationGapDCFStrategy) ;
-        # sans renormalisation ici, la part du candidat écarté resterait en
-        # cash au lieu d'être réallouée aux survivants -- pas une décision
-        # délibérée de la stratégie, juste un artefact de la troncature.
+        total_weight = sum(target_weights.values())
+        # Toujours renormalisé à somme=1 (pas seulement si >1) : rien ne
+        # garantit que la stratégie a déjà normalisé ses poids à 100%.
         if total_weight > 0:
-            final_active = {s: w / total_weight for s, w in final_active.items()}
+            target_weights = {s: w / total_weight for s, w in target_weights.items()}
 
-        for symbol, weight in final_active.items():
+        for symbol, weight in target_weights.items():
             self._queue_order(symbol, weight * active_budget, "rebalance", today)
 
     # ------------------------------------------------------------------ #

@@ -69,7 +69,7 @@ def test_actions_stop_declenche_sur_la_reference_figee():
         price_panel=panel, signal_events=events, universe_history=None,
         fallback_universe_symbols={"AAA"}, strategy=ToujoursAAA(),
         initial_capital=1_000_000.0, cost_bps=0.0,
-        stop_loss_pct=-15.0, take_profit_pct=1000.0, max_positions=5,
+        stop_loss_pct=-15.0, take_profit_pct=1000.0,
         momentum_min_pct=None,
     )
     _, _, trades, _ = engine.run()
