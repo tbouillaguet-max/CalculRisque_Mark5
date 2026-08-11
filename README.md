@@ -152,6 +152,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
     11_optimize_options_stops.py      -> grid-search stop-loss/take-profit sur ce moteur
     12_analyse_put_call.py            -> décomposition CALL/PUT d'un run sauvegardé
     13_diagnostic_friction.py         -> plan 2x2 thèse / friction / churn
+    11b_optimize_rebalance_threshold.py -> grid-search sur ε (rebalancement sur dépôt SEC)
 
 ```bash
 python 05_calcul_multiples.py
@@ -215,6 +216,12 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       moteur actions : toutes les entreprises retenues par la stratégie sont
       ouvertes. Le levier reste borné par `OPTIONS_MAX_DELTA_NOTIONAL_PCT` et
       la concentration par le plafond de pondération.
+    - **Rebalancement en DEUX mécanismes disjoints** (voir la section dédiée
+      plus bas) : un mécanisme JOURNALIER qui n'ouvre que des positions
+      neuves, et un mécanisme SUR DÉPÔT SEC filtré par ε
+      (`--rebalance-log-gap-threshold`, `OPTIONS_REBALANCE_LOG_GAP_THRESHOLD`)
+      qui ne redimensionne une position déjà détenue que si son écart en log
+      a suffisamment bougé depuis le dernier trade réel dessus.
     - Une nouvelle stratégie options s'ajoute de la même façon que pour les
       actions : fichier dans `backtest/strategies/`, classe héritant de
       `OptionsStrategy` (`backtest/strategies/options_base.py`), décorée par
@@ -369,6 +376,69 @@ durcit la thèse d'un PUT. En log cette correction devient simplement additive
 (`+ T × ln(1+π)`, cf. `base.inflation_adjusted_log_gap`). Le log supprime
 l'asymétrie **de convention** ; il laisse intacte celle qui a un contenu
 **économique**.
+
+### Refonte du rebalancement : deux mécanismes disjoints
+
+Un seul point d'entrée (`_rebalance`) recalculait auparavant les poids de
+TOUTES les positions détenues à CHAQUE occasion (dépôt SEC comme
+réévaluation quotidienne), produisant un churn massif sans lien avec de
+l'information nouvelle. Le moteur (`backtest/options_engine.py`) sépare
+maintenant deux mécanismes à des périmètres volontairement différents :
+
+1. **Mécanisme JOURNALIER** (`_rebalance_daily`, jours SANS nouveau dépôt,
+   `daily_rebalance=True`) : uniquement des **ouvertures** de symboles
+   nouvellement éligibles, à leur poids ISOLÉ (`conviction_X` / somme des
+   convictions de tous les éligibles du jour — ce que la stratégie calcule
+   déjà via `base.capped_weights`). **Aucun redimensionnement** sur une
+   position déjà détenue : un mouvement de cours pur, sans nouvelle
+   publication, ouvre une opportunité neuve mais ne justifie pas de retoucher
+   une thèse déjà engagée.
+
+2. **Mécanisme SUR DÉPÔT SEC** (`_rebalance_on_signals`, 10-K/10-Q/8-K) :
+   scopé au(x) SEUL(S) symbole(s) dont le dépôt du jour vient de mettre à
+   jour `known_signals` — jamais aux autres positions détenues, même si une
+   renormalisation globale les aurait affectées. Nouveau candidat : ouvert
+   sans condition. Position déjà détenue : redimensionnée seulement si
+   l'écart en log a bougé de plus de `rebalance_log_gap_threshold` (ε,
+   `OPTIONS_REBALANCE_LOG_GAP_THRESHOLD`, 0.15 par défaut = un rapport
+   théorique/cours qui a bougé d'un facteur e^0.15 ≈ 1.16 depuis le dernier
+   trade) **depuis le dernier TRADE RÉEL sur cette position**
+   (`OptionPosition.last_rebalance_log_gap`), pas depuis le dernier signal
+   connu. En dessous du seuil, `known_signals` est mis à jour (les calculs
+   futurs utilisent la nouvelle valorisation théorique) mais aucun ordre
+   n'est généré et la référence ne bouge pas : le seuil suivant continue de
+   se mesurer depuis ce dernier trade, pour qu'une dérive lente qui ne
+   franchit jamais ε d'un coup mais s'accumule sur plusieurs dépôts
+   successifs finisse par se rattraper.
+
+Dans les deux cas, `exit_when_signal_lost` (sortie sur perte de signal ou
+retournement de direction) reste actif à son périmètre habituel : ce n'est
+pas un redimensionnement, c'est une décision d'exposition orthogonale à ce
+que ces deux mécanismes contraignent. `min_resize_relative_pct` reste un
+**second filet** après ε : un changement de conviction qui passe ε peut
+encore ne se traduire que par un micro-ajustement en nombre de contrats.
+
+**Provenance des positions** (`trades.parquet`, colonne `open_reason`) :
+`"rebalance"` (dépôt SEC), `"rebalance_daily"` (mécanisme journalier) ou
+`"roll"` (réouverture après roulement) — distinct d'`exit_reason`, qui décrit
+toujours la SORTIE et reste inchangé par cette refonte.
+
+```bash
+python 10_backtest_options.py --strategy valuation_gap_multiples_options --rebalance-log-gap-threshold 0.20
+```
+
+`11b_optimize_rebalance_threshold.py` (calqué sur
+`11_optimize_options_stops.py`) rejoue le backtest pour chaque valeur de ε
+d'une grille et rapporte, par ε : `total_friction_dollar`/
+`total_friction_pct_of_initial`, `num_trades` total et par motif,
+`num_rebalance_trades` (le churn RÉSIDUEL du mécanisme sur dépôt SEC après
+filtrage — le chiffre qui dit si ε a réellement coupé le churn), `cagr_pct`,
+`sharpe_ratio`, `max_drawdown_pct` :
+
+```bash
+python 11b_optimize_rebalance_threshold.py
+python 11b_optimize_rebalance_threshold.py --epsilon-grid 0 0.05 0.10 0.15 0.20 0.30
+```
 
 ### Take-profit par fraction de convergence
 
