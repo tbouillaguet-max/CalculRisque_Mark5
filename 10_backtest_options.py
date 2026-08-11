@@ -73,6 +73,7 @@ ENGINE_SETTING_FALLBACKS = {
     "daily_rebalance": False,
     "vol_mode": "frozen",
     "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
+    "rebalance_log_gap_threshold": config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD,
 }
 
 
@@ -206,6 +207,14 @@ def main() -> None:
              "0 désactive le filtre (comportement historique : tout changement déclenche un ordre).",
     )
     parser.add_argument(
+        "--rebalance-log-gap-threshold", type=float, default=None,
+        help="ε (points de log(V/P), défaut config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD = 0.15) : "
+             "sur le mécanisme de rebalancement SUR DÉPÔT SEC, une position déjà détenue n'est "
+             "redimensionnée que si |log(V/P) - last_rebalance_log_gap| dépasse ce seuil depuis "
+             "le dernier trade réel sur cette position. Un nouveau candidat s'ouvre toujours sans "
+             "ce test. 0 désactive le filtre (redimensionne dès que le signal a un effet).",
+    )
+    parser.add_argument(
         "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
         help="Momentum 12-1 minimal (en %%), ORIENTÉ dans le sens de la position (un titre en "
              "forte hausse est écarté côté put). Ex: -10. --no-momentum-filter pour désactiver.",
@@ -297,6 +306,7 @@ def main() -> None:
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
         min_resize_relative_pct=engine_settings["min_resize_relative_pct"],
+        rebalance_log_gap_threshold=engine_settings["rebalance_log_gap_threshold"],
         material_events_8k=material_events,
         stop_basis=engine_settings["stop_basis"],
         exit_when_signal_lost=engine_settings["exit_when_signal_lost"],
@@ -362,6 +372,12 @@ def main() -> None:
     logger.info("%s", metrics_mod.format_benchmark_summary(run_metrics, benchmark_label))
     if not trades.empty and "exit_reason" in trades.columns:
         logger.info("Répartition des sorties: %s", trades["exit_reason"].value_counts().to_dict())
+    if not trades.empty and "open_reason" in trades.columns:
+        # Origine des positions sorties : distingue les ouvertures issues du
+        # mécanisme journalier (mouvement de cours pur, sans nouveau dépôt)
+        # de celles issues d'un dépôt SEC -- cf. la docstring de
+        # backtest/options_engine.py.
+        logger.info("Positions sorties, par origine d'ouverture: %s", trades["open_reason"].value_counts().to_dict())
     if not positions_history.empty and "source" in positions_history.columns:
         logger.info("Positions par source: %s", positions_history.drop_duplicates("symbol")["source"].value_counts().to_dict())
 

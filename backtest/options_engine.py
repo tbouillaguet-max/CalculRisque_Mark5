@@ -93,17 +93,13 @@ P&L. Un renfort ne déplace donc jamais le stop.
                                 plus vite. None désactive le réexamen : les
                                 positions vont alors jusqu'à l'expiration.
 
-    daily_rebalance=True        Le rebalancement (choix des candidats et de
-                                leurs poids) est réévalué CHAQUE jour de
-                                bourse, pas seulement les jours où un nouveau
-                                signal (10-Q/10-K) tombe. L'écart utilisé pour
-                                juger de l'éligibilité d'une entreprise est
-                                alors recalculé avec son COURS DU JOUR plutôt
-                                qu'avec le cours figé à la date du dernier
-                                dépôt -- une opportunité (ou une sortie de
-                                seuil) créée par le seul mouvement du titre
-                                entre deux publications est ainsi détectée
-                                sans attendre le prochain trimestre. La
+    daily_rebalance=True        Réévalue l'éligibilité CHAQUE jour de bourse
+                                (avec le cours DU JOUR), pas seulement les
+                                jours où un nouveau signal (10-Q/10-K) tombe
+                                -- mais voir DEUX MÉCANISMES DISTINCTS
+                                ci-dessous : un jour sans nouveau dépôt
+                                n'ouvre QUE des positions neuves, il ne
+                                redimensionne JAMAIS l'existant. La
                                 valorisation théorique, elle, reste celle du
                                 dernier signal connu (inchangée tant qu'aucun
                                 nouveau dépôt n'arrive -- ce n'est pas une
@@ -113,7 +109,41 @@ P&L. Un renfort ne déplace donc jamais le stop.
                                 calculé avec le cours DU DÉPÔT (comportement
                                 historique, inchangé).
 
-Hors du point de décision ci-dessus, et sans exit_when_signal_lost, une
+DEUX MÉCANISMES DISTINCTS DE REBALANCEMENT, à des périmètres volontairement
+différents -- un seul point d'entrée qui recalculait tout à chaque occasion
+produisait un churn massif (frais + slippage) sans lien avec de l'information
+réellement nouvelle :
+
+    1. MÉCANISME JOURNALIER (_rebalance_daily, jours SANS nouveau dépôt,
+       daily_rebalance=True) : UNIQUEMENT des OUVERTURES de symboles
+       nouvellement éligibles, à leur poids ISOLÉ (conviction_X / somme des
+       convictions de tous les éligibles du jour -- ce que la stratégie
+       calcule déjà via base.capped_weights sur l'ensemble des candidats).
+       AUCUN redimensionnement sur une position déjà détenue : un mouvement
+       de cours pur, sans nouvelle publication, ouvre une opportunité neuve
+       mais ne justifie pas de retoucher une thèse déjà engagée.
+
+    2. MÉCANISME SUR DÉPÔT SEC (_rebalance_on_signals, 10-K/10-Q/8-K) :
+       scopé au(x) SEUL(S) symbole(s) dont le dépôt du jour vient de mettre à
+       jour known_signals -- jamais aux autres positions détenues (A, B, C...
+       ne sont pas touchées, même si une renormalisation globale les aurait
+       affectées). Nouveau candidat : ouvert sans condition. Position déjà
+       détenue : redimensionnée seulement si l'écart en log a bougé de plus
+       de rebalance_log_gap_threshold (ε, config.OPTIONS_REBALANCE_LOG_GAP_
+       THRESHOLD, 0.15 par défaut) DEPUIS LE DERNIER TRADE RÉEL sur cette
+       position (OptionPosition.last_rebalance_log_gap), pas depuis le
+       dernier signal connu -- en dessous, known_signals est mis à jour mais
+       aucun ordre n'est généré, et last_rebalance_log_gap ne bouge pas : le
+       seuil suivant continue de se mesurer depuis ce dernier trade, pour
+       qu'une dérive lente qui ne franchit jamais ε d'un coup s'accumule
+       correctement au fil des dépôts.
+
+    Dans LES DEUX cas, exit_when_signal_lost (sortie sur perte de signal ou
+    retournement de direction) reste actif à son périmètre habituel -- ce
+    n'est pas un redimensionnement, c'est une décision d'exposition
+    orthogonale à ce que ces deux mécanismes contraignent.
+
+Hors du point de décision de roulement, et sans exit_when_signal_lost, une
 position n'est pas fermée parce que son écart de valorisation s'est refermé :
 elle reste "gelée" jusqu'au stop-loss/take-profit, au réexamen de roulement, à
 l'expiration ou à la disparition des données.
@@ -124,6 +154,7 @@ from __future__ import annotations
 import itertools
 import logging
 import math
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -137,6 +168,21 @@ from backtest.strategies.options_base import OptionsStrategy
 logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
+
+# Plancher de prime pour un DIMENSIONNEMENT par division (montant $ visé /
+# prime) -- distinct du garde-fou `premium <= 0` déjà en place ailleurs.
+# math.erfc (utilisé par options_pricing._norm_cdf) traverse une bande de
+# flottants SUBNORMAUX (~1e-310 à 5e-324, non nuls) avant de tomber
+# exactement à 0.0 : une option assez loin de la monnaie -- strike extrême,
+# lui-même non borné (cf. OPTIONS_MULTIPLES_GAP_BASIS, valuation_theoretical_
+# per_share peut être aberrante) -- peut donc pricer une prime qui PASSE le
+# test "> 0" tout en étant trop petite pour diviser sans déborder : share /
+# (multiplier x 1e-310) dépasse le plus grand double représentable et donne
+# `inf`, que int() refuse de convertir (OverflowError). En dessous de ce
+# plancher, la position est traitée comme si sa prime était nulle : aucune
+# taille finie ne représente correctement un contrat à ce point hors de la
+# monnaie.
+MIN_PREMIUM_FOR_SIZING = 1e-6
 
 # Sorties qui ont lieu QUOI QU'IL ARRIVE, même quand les frais dépassent la
 # valeur résiduelle du contrat : à l'échéance il n'y a plus rien à détenir (le
@@ -218,6 +264,25 @@ class OptionPosition:
     _premium_asof: Optional[pd.Timestamp] = None
     _premium: Optional[float] = None
 
+    # log(V/P) au moment du DERNIER TRADE RÉEL sur cette position (ouverture,
+    # redimensionnement ou renforcement -- jamais le redéploiement de cash
+    # oisif de _deploy_idle_cash, qui la laisse intacte). Sert de référence
+    # au filtre ε du mécanisme de rebalancement sur dépôt SEC
+    # (_rebalance_on_signals, cf. la docstring du module et
+    # config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD) : None si V ou P était
+    # indisponible au moment du trade -- le filtre échoue alors ouvert
+    # (redimensionne) plutôt que de geler la position sans pouvoir jamais
+    # mesurer son churn.
+    last_rebalance_log_gap: Optional[float] = None
+    # D'où vient cette position -- "rebalance" (dépôt SEC, comportement
+    # historique), "rebalance_daily" (mécanisme journalier, ouverture sur
+    # mouvement de cours pur sans nouveau dépôt) ou "roll" (réouverture après
+    # roulement). Propagé tel quel dans trades.parquet (colonne open_reason)
+    # à la sortie : sans ça, un trade issu du mécanisme journalier était
+    # indiscernable d'un trade issu d'un dépôt SEC, alors que les deux
+    # répondent à des degrés d'information très différents.
+    open_reason: str = "rebalance"
+
 
 @dataclass
 class _PendingOrder:
@@ -261,6 +326,7 @@ class OptionsBacktestEngine:
         momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         min_resize_relative_pct: Optional[float] = config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
+        rebalance_log_gap_threshold: float = config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD,
         stop_basis: str = config.OPTIONS_STOP_BASIS,
         exit_when_signal_lost: bool = False,
         roll_when_days_left: Optional[int] = config.OPTIONS_ROLL_WHEN_DAYS_LEFT,
@@ -317,6 +383,9 @@ class OptionsBacktestEngine:
         self.momentum_min_pct = momentum_min_pct
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
         self.min_resize_relative_pct = min_resize_relative_pct
+        # ε du filtre de churn sur le mécanisme sur dépôt SEC -- voir la
+        # docstring du module et config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD.
+        self.rebalance_log_gap_threshold = rebalance_log_gap_threshold
         if stop_basis not in ("premium", "underlying"):
             raise ValueError(f"stop_basis attend 'premium' ou 'underlying', reçu {stop_basis!r}.")
         self.stop_basis = stop_basis
@@ -390,7 +459,19 @@ class OptionsBacktestEngine:
 
     # ------------------------------------------------------------------ #
     def run(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        for today in self.calendar:
+        # Aucune sortie entre le message de démarrage (10_backtest_options.py)
+        # et la fin de cette méthode : sur un historique de plusieurs
+        # milliers de jours de bourse -- surtout avec daily_rebalance=True
+        # (réévalue TOUT l'univers suivi CHAQUE jour, pas seulement aux dates
+        # de dépôt SEC, cf. la docstring du module), qui est désormais le
+        # réglage par défaut de la stratégie par défaut -- un run de
+        # plusieurs minutes ne se distingue pas d'un run bloqué. Un point
+        # d'avancement périodique (~20 lignes au total, quelle que soit la
+        # taille du run) suffit à lever le doute sans coût mesurable.
+        n_days = len(self.calendar)
+        log_every = max(n_days // 20, 1)
+        started_at = time.monotonic()
+        for i, today in enumerate(self.calendar):
             self._execute_pending_orders(today)
             # Le cash resté oisif est remis au travail sur les positions
             # ouvertes, TOUS LES JOURS. Cet appel vivait dans
@@ -412,17 +493,37 @@ class OptionsBacktestEngine:
             exited_today |= self._check_stop_loss_take_profit(today)
             exited_today |= self._check_rolls(today, exclude=exited_today)
 
+            # DEUX mécanismes de rebalancement disjoints (cf. la docstring du
+            # module) : sur dépôt SEC quand today en porte un (scopé aux
+            # seuls symboles concernés, ε-filtré sur l'existant) ; sinon,
+            # journalier si daily_rebalance est actif et qu'il existe déjà au
+            # moins un signal connu (ouvertures neuves uniquement, jamais de
+            # redimensionnement).
             todays_events = self.events_by_date.get(today)
             if todays_events:
                 self._update_known_signals(todays_events, today)
-            # En mode daily_rebalance, on réévalue tous les jours dès qu'il
-            # existe au moins un signal connu -- pas seulement les jours
-            # d'événement (cf. docstring du module).
-            if todays_events or (self.daily_rebalance and self.known_signals):
-                self._rebalance(today, exclude=exited_today)
+                exited_today |= self._rebalance_on_signals(
+                    {row["symbol"] for row in todays_events}, today, exclude=exited_today,
+                )
+            elif self.daily_rebalance and self.known_signals:
+                exited_today |= self._rebalance_daily(today, exclude=exited_today)
 
             self._mark_to_market(today)
             self._record_positions(today)
+
+            if (i + 1) % log_every == 0 or i + 1 == n_days:
+                elapsed = time.monotonic() - started_at
+                # Débit en jours/s : à ce stade il permet d'estimer le temps
+                # restant sans avoir à attendre la fin pour savoir si le run
+                # progresse ou est bloqué.
+                rate = (i + 1) / elapsed if elapsed > 0 else float("inf")
+                remaining = (n_days - (i + 1)) / rate if rate > 0 else float("inf")
+                logger.info(
+                    "%d/%d jours de bourse (%.0f%%) -- %s, %d positions ouvertes, "
+                    "%.0fs écoulées, ~%.0fs restantes.",
+                    i + 1, n_days, (i + 1) / n_days * 100, today.date(),
+                    len(self.positions), elapsed, remaining,
+                )
 
         equity_curve = pd.DataFrame(self.equity_curve_rows)
         positions_history = pd.DataFrame(self.positions_history_rows)
@@ -680,7 +781,11 @@ class OptionsBacktestEngine:
                 if pos is None or spot is None:
                     continue
                 premium = self._current_premium(pos, today, spot=spot)
-                if premium is None or premium <= 0:
+                # Pas seulement `<= 0` : une prime SUBNORMALE (non nulle mais
+                # proche de la limite basse des flottants) fait déborder la
+                # division ci-dessous vers l'infini avant même d'atteindre
+                # _round_contracts (cf. MIN_PREMIUM_FOR_SIZING).
+                if premium is None or premium < MIN_PREMIUM_FOR_SIZING:
                     continue
 
                 gross_premium = premium * (1 + self.slippage_rate)
@@ -797,9 +902,19 @@ class OptionsBacktestEngine:
         config.OPTIONS_WHOLE_CONTRACTS). Arrondi au plus proche : c'est la
         taille réalisable la plus proche de l'exposition visée. Une cible
         sous un demi-contrat donne 0, donc pas d'ordre -- une position trop
-        petite pour un seul contrat n'est tout simplement pas prenable."""
+        petite pour un seul contrat n'est tout simplement pas prenable.
+
+        Filet de sécurité : `contracts` est le résultat d'une division par une
+        prime, et une prime Black-Scholes peut légitimement sous-couler vers
+        un flottant SUBNORMAL non nul (cf. MIN_PREMIUM_FOR_SIZING) -- un appel
+        qui n'aurait pas encore ce garde-fou en amont ferait déborder la
+        division vers `inf`, que `int()` refuse de convertir (OverflowError).
+        Point de passage unique avant tout `int()` : neutraliser ici couvre
+        aussi un futur appelant qui l'oublierait."""
         if not self.whole_contracts:
             return contracts
+        if not math.isfinite(contracts):
+            return 0.0
         return float(int(contracts + 0.5)) if contracts > 0 else 0.0
 
     def _size_contracts(self, raw_contracts: float, premium_per_share: float, today: pd.Timestamp) -> float:
@@ -997,6 +1112,14 @@ class OptionsBacktestEngine:
             logger.debug("%s : signal %s ignoré, une position %s existe déjà (gelée).", symbol, option_type, existing.option_type)
             return
 
+        # Écart en log au moment de CE trade (V = dernière valorisation
+        # théorique connue, P = spot d'EXÉCUTION) : référence posée pour le
+        # filtre ε du prochain dépôt SEC sur cette position (cf.
+        # last_rebalance_log_gap, _rebalance_on_signals). Calculé une fois
+        # ici et appliqué à chaque point où un trade RÉEL se conclut plus
+        # bas -- jamais sur une tentative avortée par les gardes ci-dessous.
+        new_log_gap = self._log_gap_at(symbol, spot)
+
         contract = self._select_contract(
             symbol, option_type, spot, today,
             strike_reference_price=strike_reference_price, tenor_days=tenor_days,
@@ -1054,6 +1177,7 @@ class OptionsBacktestEngine:
                 stop_reference_premium=effective_premium, stop_reference_spot=spot,
                 strike_reference_price=strike_reference_price, tenor_days=tenor_days,
                 vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
+                last_rebalance_log_gap=new_log_gap, open_reason=reason,
             )
         else:
             existing.target_dollar = target_dollar
@@ -1075,17 +1199,15 @@ class OptionsBacktestEngine:
             )
             delta_contracts = target_contracts - existing.contracts
 
-            # Chaque dépôt de filing (10-K/10-Q) de N'IMPORTE LAQUELLE des
-            # ~500 entreprises suivies déclenche un rebalancement qui
-            # recalcule les poids de TOUTES les positions détenues (cf.
-            # _rebalance) : un changement minime sur une ligne renormalise
-            # aussi marginalement toutes les autres, ce qui met en file un
-            # micro-ajustement à chaque événement -- des centaines de trades
-            # par an qui ne font que payer commission + slippage sans changer
-            # la thèse. MIN_TRADE_DOLLAR (1$) ne bloque que les montants
-            # absolument négligeables, pas ces resizes proportionnellement
-            # mineurs. Comparaison en NOMBRE DE CONTRATS (même unité des deux
-            # côtés) plutôt qu'en dollars : target_dollar est une exposition
+            # Second filet de churn, APRÈS le filtre ε qui a déjà décidé
+            # qu'un redimensionnement était justifié (cf.
+            # _rebalance_on_signals) : un changement de conviction réel peut
+            # encore ne se traduire que par un micro-ajustement de contrats
+            # (NAV qui a un peu bougé). MIN_TRADE_DOLLAR (1$) ne bloque que
+            # les montants absolument négligeables, pas ces resizes
+            # proportionnellement mineurs. Comparaison en NOMBRE DE CONTRATS
+            # (même unité des deux côtés) plutôt qu'en dollars : target_dollar
+            # est une exposition
             # NOTIONNELLE delta-équivalente, alors que la valeur de marché de
             # la position (prime x contrats) en est une fraction systématique
             # (effet de levier) -- comparer les deux directement aurait rendu
@@ -1124,8 +1246,15 @@ class OptionsBacktestEngine:
                 # non (cf. OptionPosition.stop_reference_premium).
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
                 existing.contracts = new_contracts
+                if new_log_gap is not None:
+                    existing.last_rebalance_log_gap = new_log_gap
             else:
                 self._reduce_position(existing, -delta_contracts, today, reason, spot=spot)
+                # Réduction PARTIELLE (la position peut avoir été fermée en
+                # entier par _reduce_position, auquel cas il n'y a plus rien
+                # à mettre à jour) : même référence que la branche renfort.
+                if new_log_gap is not None and symbol in self.positions:
+                    self.positions[symbol].last_rebalance_log_gap = new_log_gap
 
     def _reduce_position(self, pos: OptionPosition, contracts_to_sell: float, today: pd.Timestamp, reason: str, spot: Optional[float] = None) -> None:
         contracts_to_sell = min(contracts_to_sell, pos.contracts)
@@ -1169,6 +1298,12 @@ class OptionsBacktestEngine:
             "pnl": pnl, "return_pct": (effective_premium - pos.entry_premium) / pos.entry_premium * 100,
             "holding_days": (today - pos.entry_date).days, "exit_reason": reason,
             "option_type": pos.option_type, "strike": pos.strike, "contracts": contracts_to_sell, "source": pos.source,
+            # D'où venait la position (cf. OptionPosition.open_reason) :
+            # distingue un trade issu du mécanisme journalier (ouverture sur
+            # mouvement de cours pur) d'un trade issu d'un dépôt SEC, deux
+            # degrés d'information très différents que exit_reason seul ne dit
+            # pas (il décrit la SORTIE, pas l'origine de la position sortie).
+            "open_reason": pos.open_reason,
         })
         pos.contracts -= contracts_to_sell
         if pos.contracts <= 1e-9:
@@ -1402,7 +1537,23 @@ class OptionsBacktestEngine:
         close_today = self.prices.close_at(sym, today)
         return {**s, "close": close_today} if close_today is not None else s
 
-    def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
+    def _current_targets(self, today: pd.Timestamp) -> tuple[pd.DataFrame, dict[str, dict], dict[str, str]]:
+        """(eligible_signals, targets, eligible_directions) au jour `today` --
+        même construction de l'univers éligible que l'ancien _rebalance
+        (comportement historique inchangé), factorisée pour être partagée par
+        les deux mécanismes de rebalancement (journalier / sur dépôt SEC, cf.
+        la docstring du module).
+
+        `targets[symbole]["weight"]` EST DÉJÀ le poids ISOLÉ conviction du
+        symbole / somme des convictions de TOUS les éligibles du jour : c'est
+        ce que calcule base.capped_weights, appliqué par la stratégie sur
+        l'ensemble `eligible_signals` (nouveaux candidats ET positions
+        détenues confondus). Aucune renormalisation supplémentaire n'a donc
+        lieu ici, contrairement à l'ancien _rebalance qui renormalisait une
+        SECONDE fois sur le seul sous-ensemble effectivement redimensionné ce
+        jour-là -- une étape propre au modèle "tout recalculer", sans objet
+        ici puisqu'on ne touche jamais qu'un symbole à la fois (cf.
+        _queue_isolated_order)."""
         universe_today = self.universe.asof(today)
         eligible_signals = pd.DataFrame([
             self._signal_row_for_rebalance(sym, s, today)
@@ -1421,44 +1572,145 @@ class OptionsBacktestEngine:
             )
         ])
         if eligible_signals.empty:
-            return
+            return eligible_signals, {}, {}
 
         current_option_types = {sym: pos.option_type for sym, pos in self.positions.items()}
         targets = self.strategy.generate_option_targets(eligible_signals, current_option_types)
-        targets = {s: t for s, t in targets.items() if s not in exclude and t["weight"] > 0}
+        targets = {s: t for s, t in targets.items() if t["weight"] > 0}
 
+        eligible_directions: dict[str, str] = {}
         if self.exit_when_signal_lost or self.roll_when_days_left:
-            self._eligible_directions = self.strategy.eligible_directions(eligible_signals)
-        if self.exit_when_signal_lost:
-            # Vendues demain à l'ouverture : exclues dès maintenant du capital
-            # "gelé" et des emplacements occupés, puisque leur valeur
-            # redeviendra du cash au même moment que les achats du jour.
-            exclude = exclude | self._close_lost_signals(today, exclude)
+            eligible_directions = self.strategy.eligible_directions(eligible_signals)
 
-        if not targets:
-            return
+        return eligible_signals, targets, eligible_directions
 
+    def _log_gap_at(self, symbol: str, price: Optional[float]) -> Optional[float]:
+        """log(V/P) au sens de la refonte du rebalancement (voir la
+        docstring du module) : V = dernière valorisation théorique CONNUE
+        (known_signals), P = le prix fourni par l'appelant.
+
+        GÉNÉRIQUE : ne dépend PAS de la convention gap_basis interne de la
+        stratégie ("log", "theoretical", "close") -- c'est une métrique de
+        CHURN commune à toute stratégie options exposant
+        valuation_theoretical_per_share dans son signal (les deux stratégies
+        du dépôt aujourd'hui), pas un signal de sélection. None si V ou P est
+        indisponible ou non positif : le filtre ε échoue alors ouvert
+        (redimensionne) plutôt que de geler silencieusement une position sans
+        pouvoir jamais mesurer son churn -- voir _rebalance_on_signals."""
+        if price is None or price <= 0:
+            return None
+        signal = self.known_signals.get(symbol)
+        if not signal:
+            return None
+        theoretical = signal.get("valuation_theoretical_per_share")
+        if theoretical is None or pd.isna(theoretical) or theoretical <= 0:
+            return None
+        return math.log(float(theoretical) / price)
+
+    def _queue_isolated_order(self, symbol: str, target: dict, today: pd.Timestamp, reason: str) -> None:
+        """Met en file un ordre sur CE SEUL symbole -- jamais de
+        redimensionnement en cascade sur les autres positions détenues,
+        contrairement à l'ancien _rebalance (voir la docstring du module).
+
+        `target["weight"]` est déjà le poids ISOLÉ (cf. _current_targets).
+        Le budget actif est le NAV net de la valeur de TOUTES LES AUTRES
+        positions détenues, gelées par construction : même notion de
+        "capital disponible pour la ligne qu'on s'apprête réellement à
+        bouger" que l'ancien _rebalance, restreinte ici à un singleton
+        plutôt qu'à l'ensemble des cibles du jour."""
         nav_now = self._current_nav(today)
-
         legacy_value = sum(
-            self._position_value(pos, today)
-            for sym, pos in self.positions.items()
-            if sym not in targets and sym not in exclude
+            self._position_value(pos, today) for sym, pos in self.positions.items() if sym != symbol
         )
         active_budget = max(nav_now - legacy_value, 0.0)
+        self._pending_spec[symbol] = {
+            "option_type": target["option_type"],
+            "strike_reference_price": target.get("strike_reference_price"),
+            "tenor_days": target.get("tenor_days"),
+        }
+        self.pending_orders[symbol] = _PendingOrder(target["weight"] * active_budget, reason, today)
 
-        total_weight = sum(t["weight"] for t in targets.values())
-        if total_weight > 0:
-            for t in targets.values():
-                t["weight"] = t["weight"] / total_weight
+    def _rebalance_daily(self, today: pd.Timestamp, exclude: set[str]) -> set[str]:
+        """MÉCANISME JOURNALIER (daily_rebalance=True, jours SANS nouveau
+        dépôt SEC) : uniquement des OUVERTURES de symboles nouvellement
+        éligibles. Aucun redimensionnement sur une position déjà détenue --
+        c'est le mécanisme sur dépôt (_rebalance_on_signals) qui s'en charge,
+        filtré par rebalance_log_gap_threshold. Voir la docstring du module.
 
-        for symbol, t in targets.items():
-            self._pending_spec[symbol] = {
-                "option_type": t["option_type"],
-                "strike_reference_price": t.get("strike_reference_price"),
-                "tenor_days": t.get("tenor_days"),
-            }
-            self.pending_orders[symbol] = _PendingOrder(t["weight"] * active_budget, "rebalance", today)
+        exit_when_signal_lost reste actif ici : une sortie sur perte de
+        signal n'est pas un redimensionnement, c'est une décision
+        d'exposition orthogonale à ce que cette refonte contraint."""
+        eligible_signals, targets, eligible_directions = self._current_targets(today)
+        if eligible_signals.empty:
+            return set()
+        self._eligible_directions = eligible_directions
+
+        closed = self._close_lost_signals(today, exclude) if self.exit_when_signal_lost else set()
+        exclude = exclude | closed
+
+        for symbol, target in targets.items():
+            if symbol in exclude or symbol in self.positions:
+                continue  # déjà détenu : le mécanisme journalier n'ouvre que du NEUF
+            self._queue_isolated_order(symbol, target, today, reason="rebalance_daily")
+
+        return closed
+
+    def _rebalance_on_signals(self, filed_symbols: set[str], today: pd.Timestamp, exclude: set[str]) -> set[str]:
+        """MÉCANISME SUR DÉPÔT SEC (10-K/10-Q/8-K) : n'agit QUE sur les
+        symboles dont known_signals vient d'être mis à jour aujourd'hui
+        (potentiellement plusieurs le même jour). eligible_signals/targets/
+        eligible_directions sont calculés UNE SEULE FOIS pour tous (même
+        photographie de marché, cf. _current_targets), _close_lost_signals de
+        même -- seule la décision d'ouverture/redimensionnement est ensuite
+        scopée symbole par symbole : le dépôt de X ne génère jamais d'ordre
+        sur A, B, C... même si la renormalisation globale les aurait
+        affectés. Voir la docstring du module.
+
+        NOUVEAU CANDIDAT (symbole pas encore détenu) : ouvert SANS test ε, il
+        n'y a pas de trade antérieur auquel comparer.
+
+        POSITION DÉJÀ DÉTENUE : redimensionnée seulement si l'écart en log a
+        bougé de plus de rebalance_log_gap_threshold DEPUIS LE DERNIER TRADE
+        RÉEL sur cette position (last_rebalance_log_gap) -- pas depuis le
+        dernier signal connu. En dessous du seuil, known_signals est déjà à
+        jour (fait par _update_known_signals, appelé avant ce mécanisme) mais
+        last_rebalance_log_gap NE BOUGE PAS : le seuil suivant continue de se
+        mesurer depuis ce dernier trade, pas depuis ce signal ignoré -- sans
+        quoi une dérive lente qui ne franchit jamais ε d'un coup mais
+        s'accumule sur plusieurs dépôts successifs ne se rattraperait
+        jamais."""
+        eligible_signals, targets, eligible_directions = self._current_targets(today)
+        if eligible_signals.empty:
+            return set()
+        self._eligible_directions = eligible_directions
+
+        closed = self._close_lost_signals(today, exclude) if self.exit_when_signal_lost else set()
+        exclude = exclude | closed
+
+        for symbol in filed_symbols:
+            if symbol in exclude:
+                continue
+            target = targets.get(symbol)
+            if target is None:
+                continue  # plus (ou toujours pas) éligible : rien à ouvrir/redimensionner
+
+            existing = self.positions.get(symbol)
+            if existing is None:
+                self._queue_isolated_order(symbol, target, today, reason="rebalance")
+                continue
+
+            new_log_gap = self._log_gap_at(symbol, self.prices.close_at(symbol, today))
+            if new_log_gap is None or existing.last_rebalance_log_gap is None:
+                delta = None  # référence indisponible : échoue ouvert, cf. _log_gap_at
+            else:
+                delta = abs(new_log_gap - existing.last_rebalance_log_gap)
+
+            if delta is not None and delta <= self.rebalance_log_gap_threshold:
+                continue  # sous le seuil : known_signals à jour, last_rebalance_log_gap intact
+
+            self._queue_isolated_order(symbol, target, today, reason="rebalance")
+
+        return closed
 
     def _close_lost_signals(self, today: pd.Timestamp, exclude: set[str]) -> set[str]:
         """Clôture les positions dont le signal ne justifie plus la présence :

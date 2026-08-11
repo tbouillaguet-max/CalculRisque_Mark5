@@ -40,6 +40,7 @@ Backtest (voir README.md pour le détail) :
     11_optimize_options_stops.py -> grid-search stop-loss/take-profit sur ce moteur
     12_analyse_put_call.py      -> décomposition CALL/PUT d'un run sauvegardé
     13_diagnostic_friction.py   -> plan 2x2 thèse / friction / churn
+    11b_optimize_rebalance_threshold.py -> grid-search sur ε (rebalancement sur dépôt SEC)
 
 Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
 schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
@@ -550,20 +551,40 @@ OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
 # quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
 OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
-# Chaque dépôt de filing (10-K/10-Q) d'UNE entreprise déclenche un rebalancement
-# qui recalcule les poids de TOUTES les positions détenues (renormalisation à
-# somme=1 après plafonnement, cf. options_engine._rebalance). Sur 503
-# entreprises et des filings trimestriels, ça met en file un micro-ajustement
-# de resize sur chaque position ouverte à chaque événement -- des centaines
-# par an -- alors que MIN_TRADE_DOLLAR (1$) ne bloque que les montants
-# absolument négligeables, pas les resizes proportionnellement mineurs sur
-# des positions de plusieurs milliers de dollars.
-# Une position déjà ouverte n'est resize QUE si le changement dépasse ce
-# pourcentage de sa valeur actuelle ; en dessous, elle reste gelée à sa taille
-# actuelle (comme si le rebalancement n'avait pas eu lieu pour elle -- une
-# NOUVELLE position n'est jamais concernée). None ou 0 désactive le filtre
-# (comportement historique : tout changement, même infime, déclenche un ordre).
+# Second filet, APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD
+# ci-dessous) : un redimensionnement qui passe ε mais reste minuscule en
+# taille de contrats (ex: NAV qui a un peu bougé, sans changement de
+# conviction) ne mérite pas non plus l'aller-retour de frais. Une position
+# déjà ouverte n'est resize QUE si le changement dépasse ce pourcentage de
+# ses contrats actuels ; en dessous, elle reste gelée à sa taille actuelle
+# (une NOUVELLE position n'est jamais concernée). None ou 0 désactive le
+# filtre (tout changement, même infime, déclenche un ordre).
 OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
+
+# Seuil ε (en points de log(V/P), cf. OPTIONS_MULTIPLES_GAP_BASIS="log") du
+# filtre de CHURN sur le mécanisme de rebalancement SUR DÉPÔT SEC
+# (options_engine.OptionsBacktestEngine._rebalance_on_signals) : un nouveau
+# dépôt (10-K/10-Q/8-K) sur une entreprise DÉJÀ EN POSITION ne redimensionne
+# cette position QUE si |log(V_nouveau/P_du_jour) - last_rebalance_log_gap|
+# dépasse ε -- où last_rebalance_log_gap est l'écart en log au moment du
+# DERNIER TRADE RÉEL sur cette position (pas du dernier signal connu).
+# En dessous, known_signals est mis à jour (les calculs futurs utilisent la
+# nouvelle valorisation théorique) mais aucun ordre n'est généré et
+# last_rebalance_log_gap ne bouge pas -- le seuil du prochain événement
+# continue de se mesurer depuis le dernier trade, pour qu'une dérive lente
+# qui ne franchit jamais ε d'un coup s'accumule correctement au fil des
+# dépôts plutôt que d'être remise à zéro à chaque publication ignorée.
+#
+# Un NOUVEAU candidat (pas encore en position) s'ouvre toujours SANS ce
+# test -- il n'y a pas de trade antérieur auquel comparer. Le mécanisme
+# JOURNALIER (daily_rebalance=True, jours sans nouveau dépôt) n'est, lui,
+# jamais concerné par ε : il n'ouvre que des positions neuves et ne
+# redimensionne jamais l'existant (voir la docstring d'options_engine.py).
+#
+# 0.15 ~= un rapport théorique/cours qui a bougé d'un facteur e^0.15 = 1.16
+# (16%) depuis le dernier trade. 0 désactive le filtre (redimensionne dès
+# que le signal a le moindre effet, comportement historique).
+OPTIONS_REBALANCE_LOG_GAP_THRESHOLD = 0.15
 
 # ----------------------------------------------------------------------------
 # Stratégie options "multiples" (backtest/strategies/valuation_gap_multiples_options.py)
