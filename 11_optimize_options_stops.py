@@ -118,6 +118,7 @@ def _run_combo(
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
     take_profit_is_convergence: bool = False,
+    train_fraction: Optional[float] = None,
 ) -> dict:
     """Une combinaison = un run complet. Isolé en fonction de module (plutôt
     que méthode/closure) pour rester picklable par ProcessPoolExecutor --
@@ -171,6 +172,16 @@ def _run_combo(
             "avg_holding_days", "alpha_pct", "avg_exposure_pct", "truncated_orders_pct",
         ):
             row[key] = run_metrics.get(key)
+        # Séparation apprentissage / test : c'est le seul chiffre qui dit si
+        # l'optimum de la grille survit à des données qui n'ont pas servi à le
+        # choisir (cf. metrics.split_period_metrics).
+        if train_fraction:
+            row.update(metrics_mod.split_period_metrics(
+                equity_curve, trades,
+                metrics_mod.resolve_split_date(equity_curve, train_fraction),
+                risk_free_rate=config.RISK_FREE_RATE,
+                benchmark_prices=_DATA["benchmark_prices"],
+            ))
         if not trades.empty and "exit_reason" in trades.columns:
             row["exits_by_reason"] = trades["exit_reason"].value_counts().to_dict()
     except Exception as exc:  # noqa: BLE001 -- une combinaison qui plante ne doit pas tuer la grille
@@ -183,7 +194,13 @@ def rank_results(results: pd.DataFrame, objective: str, min_trades: int) -> pd.D
     """Classe les combinaisons par `objective` (ordre décroissant, voir
     OBJECTIVE_CHOICES), en écartant celles trop peu tradées pour être
     significatives ET celles en erreur -- mais sans les supprimer du DataFrame
-    complet retourné par l'appelant, seulement de ce classement."""
+    complet retourné par l'appelant, seulement de ce classement.
+
+    Le classement se fait sur la PÉRIODE D'APPRENTISSAGE (`train_<objectif>`)
+    dès qu'elle existe : choisir sur l'historique complet puis lire la
+    performance sur ce même historique ne mesure rien d'autre que la capacité
+    de la grille à s'y ajuster. La colonne `test_<objectif>` reste affichée à
+    côté, et c'est elle qu'il faut regarder."""
     usable = results[results["error"].isna()].copy()
     if "num_trades" in usable.columns:
         too_few = usable[usable["num_trades"].fillna(0) < min_trades]
@@ -194,7 +211,10 @@ def rank_results(results: pd.DataFrame, objective: str, min_trades: int) -> pd.D
                 len(too_few), len(usable), min_trades,
             )
         usable = usable[usable["num_trades"].fillna(0) >= min_trades]
-    return usable.sort_values(objective, ascending=False, na_position="last")
+    ranking_key = f"train_{objective}"
+    if ranking_key not in usable.columns or usable[ranking_key].isna().all():
+        ranking_key = objective
+    return usable.sort_values(ranking_key, ascending=False, na_position="last")
 
 
 def print_heatmap(results: pd.DataFrame, objective: str) -> None:
@@ -228,6 +248,18 @@ def main() -> None:
              "stratégie de convergence, take_profit_pct est INERTE et le balayer ne mesurerait rien.",
     )
     parser.add_argument("--objective", default="sharpe_ratio", choices=OBJECTIVE_CHOICES)
+    parser.add_argument(
+        "--train-fraction", type=float, default=0.60,
+        help="Part initiale de l'historique servant à CHOISIR la combinaison ; le reste sert "
+             "à la juger (défaut: %(default)s). Le classement se fait sur train_<objectif>, et "
+             "le CSV comme le tableau affichent test_<objectif> à côté -- c'est ce second "
+             "chiffre qui dit si l'optimum survit à des données qui ne l'ont pas choisi.",
+    )
+    parser.add_argument(
+        "--no-walk-forward", dest="train_fraction", action="store_const", const=None,
+        help="Classe sur l'historique COMPLET (comportement d'avant). Le résultat est alors "
+             "un optimum in-sample, à ne pas lire comme une performance attendue.",
+    )
     parser.add_argument("--min-trades", type=int, default=15, help="Combinaisons avec moins de trades écartées du classement (pas du CSV).")
     parser.add_argument("--top-n", type=int, default=15)
     parser.add_argument("--workers", type=int, default=1, help="Process en parallèle (fork). 1 = séquentiel.")
@@ -241,6 +273,10 @@ def main() -> None:
     parser.add_argument("--fee-bump-max-extra-pct", type=float, default=config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT)
     parser.add_argument("--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT)
     parser.add_argument("--max-delta-notional-pct", type=float, default=config.OPTIONS_MAX_DELTA_NOTIONAL_PCT)
+    parser.add_argument(
+        "--max-trade-pct-of-nav", type=float, default=config.OPTIONS_MAX_TRADE_PCT_OF_NAV,
+        help="Montant maximal décaissé par ORDRE D'ACHAT, en %% du NAV (défaut: %(default)s). Remplace le plafond en dollars absolus, qui ne suivait pas la taille du portefeuille. 0 pour désactiver.",
+    )
     parser.add_argument("--max-trade-dollar", type=float, default=config.OPTIONS_MAX_TRADE_DOLLAR)
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
@@ -321,6 +357,7 @@ def main() -> None:
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
         max_trade_dollar=args.max_trade_dollar,
+        max_trade_pct_of_nav=args.max_trade_pct_of_nav,
     )
 
     global _DATA
@@ -339,7 +376,7 @@ def main() -> None:
             logger.info("[%d/%d] stop_loss=%s%% take_profit=%s%s", i, len(grid), sl, tp, unite)
             rows.append(_run_combo(
                 sl, tp, args.strategy, strategy_params, baseline_settings, engine_kwargs,
-                start_date, end_date, take_profit_is_convergence,
+                start_date, end_date, take_profit_is_convergence, args.train_fraction,
             ))
     else:
         # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
@@ -350,7 +387,7 @@ def main() -> None:
                 pool.submit(
                     _run_combo, sl, tp, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
-                    take_profit_is_convergence,
+                    take_profit_is_convergence, args.train_fraction,
                 ): (sl, tp)
                 for sl, tp in grid
             }
@@ -382,10 +419,17 @@ def main() -> None:
         "stop_loss_pct", "take_profit", "num_trades", "win_rate_pct", "profit_factor",
         "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "avg_holding_days", "alpha_pct",
+        # Apprentissage / test côte à côte : le classement se fait sur la
+        # première, la seconde est celle qui compte.
+        f"train_{args.objective}", f"test_{args.objective}",
     ]
     display_cols = [c for c in display_cols if c in ranked.columns]
-    with pd.option_context("display.width", 220, "display.max_columns", 30, "display.float_format", "{:.2f}".format):
-        print(f"\n=== Top {args.top_n} combinaisons par {args.objective} (stratégie: {args.strategy}) ===")
+    with pd.option_context("display.width", 240, "display.max_columns", 40, "display.float_format", "{:.2f}".format):
+        titre = (
+            f"classé sur train_{args.objective}" if f"train_{args.objective}" in ranked.columns
+            else f"classé sur {args.objective} — IN-SAMPLE"
+        )
+        print(f"\n=== Top {args.top_n} combinaisons ({titre}, stratégie: {args.strategy}) ===")
         print(ranked[display_cols].head(args.top_n).to_string(index=False))
 
     print_heatmap(results, args.objective)
@@ -400,6 +444,30 @@ def main() -> None:
             "pas d'un optimum tronqué par la plage testée.",
             best["stop_loss_pct"], best["take_profit"],
         )
+
+    # LE TEST QUI COMPTE : la combinaison retenue tient-elle hors échantillon ?
+    train_key, test_key = f"train_{args.objective}", f"test_{args.objective}"
+    if train_key in ranked.columns and test_key in ranked.columns:
+        train_value, test_value = best.get(train_key), best.get(test_key)
+        if pd.notna(train_value) and pd.notna(test_value):
+            logger.info(
+                "Hors échantillon (coupure au %s) : %s = %.3f en apprentissage -> %.3f en test.",
+                best.get("split_date", "?"), args.objective, train_value, test_value,
+            )
+            if test_value < 0 or test_value < train_value * 0.5:
+                logger.warning(
+                    "L'optimum ne SURVIT PAS hors échantillon (%s : %.3f -> %.3f). La "
+                    "combinaison retenue décrit surtout la période qui l'a choisie : ne "
+                    "l'utilise pas comme réglage de production sur la seule foi de ce run.",
+                    args.objective, train_value, test_value,
+                )
+    else:
+        logger.warning(
+            "Classement IN-SAMPLE (--no-walk-forward) : la combinaison retenue est celle qui "
+            "colle le mieux à l'historique qui a servi à la choisir, ce qui n'est pas une "
+            "performance attendue. Relance sans --no-walk-forward pour la juger."
+        )
+
     logger.info(
         "Meilleure combinaison (%s=%.3f) : stop_loss=%s%%, take_profit=%s%%, "
         "%d trades, sharpe=%.2f, calmar=%.2f, max_drawdown=%.1f%%.",

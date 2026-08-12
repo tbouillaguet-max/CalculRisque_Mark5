@@ -119,12 +119,13 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         gap_basis: str = config.OPTIONS_MULTIPLES_GAP_BASIS,
         multiples_only: bool = True,
         weight_cap_pct: float | None = config.OPTIONS_MULTIPLES_WEIGHT_CAP_PCT,
+        exit_threshold_ratio: float = config.OPTIONS_EXIT_THRESHOLD_RATIO,
         **kwargs,
     ):
         super().__init__(
             entry_threshold_pct=entry_threshold_pct,
             tenor_days=tenor_days, gap_basis=gap_basis, multiples_only=multiples_only,
-            weight_cap_pct=weight_cap_pct, **kwargs,
+            weight_cap_pct=weight_cap_pct, exit_threshold_ratio=exit_threshold_ratio, **kwargs,
         )
         if gap_basis not in ("log", "theoretical", "close"):
             raise ValueError(f"gap_basis attend 'log', 'theoretical' ou 'close', reçu {gap_basis!r}.")
@@ -135,12 +136,22 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         # 0 ou négatif -> pas de plafond (équivaut à None), pour pouvoir le
         # désactiver depuis la ligne de commande, qui ne transmet que des nombres.
         self.weight_cap_pct = None if not weight_cap_pct or weight_cap_pct <= 0 else float(weight_cap_pct)
+        # Hystérésis : le seuil au-dessous duquel une position DÉJÀ OUVERTE
+        # cesse d'être justifiée, plus bas que le seuil d'entrée (cf.
+        # config.OPTIONS_EXIT_THRESHOLD_RATIO). Ratio à 1 -> pas d'hystérésis.
+        self.exit_threshold_ratio = float(exit_threshold_ratio)
+        self.exit_threshold_pct = entry_threshold_pct * self.exit_threshold_ratio
 
     # ------------------------------------------------------------------ #
-    def _candidates(self, signals: pd.DataFrame) -> pd.DataFrame:
-        """Entreprises dont l'écart justifie une position. Aucun plafond sur
-        le nombre de positions simultanées : toutes les candidates retenues
-        ici sont ouvertes (voir OptionsStrategy.eligible_directions)."""
+    def _scored(self, signals: pd.DataFrame) -> pd.DataFrame:
+        """Toutes les lignes exploitables, avec leur écart (`_gap`), sa valeur
+        absolue (`_abs_gap`) et le score de conviction plafonné
+        (`_conviction`) -- SANS filtrage par seuil.
+
+        Séparé de _candidates parce que les deux seuils (entrée et sortie,
+        cf. exit_threshold_pct) s'appliquent au MÊME calcul : c'est la partie
+        coûteuse, et elle n'a aucune raison d'être refaite deux fois par jour
+        de bourse."""
         df = signals
         if self.multiples_only:
             if "source" not in df.columns:
@@ -188,8 +199,14 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         # le poids résultant à BACKTEST_MAX_WEIGHT_PER_POSITION_PCT, comme
         # pour valuation_gap_options.
         conviction = df["_abs_gap"] if self.weight_cap_pct is None else df["_abs_gap"].clip(upper=self.weight_cap_pct)
-        df = df.assign(_conviction=conviction)
-        return df[df["_abs_gap"] >= self.entry_threshold_pct]
+        return df.assign(_conviction=conviction)
+
+    def _candidates(self, signals: pd.DataFrame) -> pd.DataFrame:
+        """Entreprises dont l'écart justifie une NOUVELLE position (seuil
+        d'entrée). Aucun plafond sur le nombre de positions simultanées :
+        toutes les candidates retenues ici sont ouvertes."""
+        scored = self._scored(signals)
+        return scored[scored["_abs_gap"] >= self.entry_threshold_pct]
 
     @staticmethod
     def _direction(gap: float) -> str:
@@ -197,18 +214,25 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         en dessous = survalorisé = PUT."""
         return "CALL" if gap > 0 else "PUT"
 
-    def generate_option_targets(self, signals: pd.DataFrame, current_positions: dict[str, str]) -> dict[str, dict]:
-        candidates = self._candidates(signals)
-        if candidates.empty:
+    @staticmethod
+    def _directions_of(df: pd.DataFrame) -> dict[str, str]:
+        """{symbole: sens} construit par zip sur les colonnes numpy plutôt que
+        par iterrows : ce dernier matérialise une Series pandas par ligne, ce
+        qui représentait à lui seul ~22% du temps de run du moteur."""
+        return {
+            symbol: ("CALL" if gap > 0 else "PUT")
+            for symbol, gap in zip(df["symbol"].to_numpy(), df["_gap"].to_numpy())
+        }
+
+    def _targets_from(self, candidates: pd.DataFrame) -> dict[str, dict]:
+        if candidates.empty or candidates["_conviction"].sum() <= 0:
             return {}
 
         # Classement par l'écart BRUT (conviction), dimensionnement par
-        # l'écart PLAFONNÉ (cf. _candidates). Ordre décroissant conservé pour
-        # la lisibilité des sorties, mais aucune troncature : toutes les
+        # l'écart PLAFONNÉ (cf. _scored). Ordre décroissant conservé pour la
+        # lisibilité des sorties, mais aucune troncature : toutes les
         # candidates sont retenues.
         candidates = candidates.sort_values("_abs_gap", ascending=False)
-        if candidates["_conviction"].sum() <= 0:
-            return {}
 
         # Poids réellement plafonné à BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
         # (cf. base.capped_weights) : sans ce second plafond -- sur le poids
@@ -217,24 +241,55 @@ class ValuationGapMultiplesOptionsStrategy(OptionsStrategy):
         # portefeuille pour une théorique à 5$ contre un cours à 100$),
         # exactement le scénario de concentration à l'origine des drawdowns
         # impossibles corrigés ailleurs (cf. options_engine._affordable).
-        candidates = candidates.assign(_weight=capped_weights(candidates["_conviction"]))
+        weights = capped_weights(candidates["_conviction"])
 
+        # zip sur les colonnes numpy plutôt qu'iterrows (cf. _directions_of).
         return {
-            row["symbol"]: {
-                "option_type": self._direction(row["_gap"]),
-                "weight": row["_weight"],
+            symbol: {
+                "option_type": "CALL" if gap > 0 else "PUT",
+                "weight": weight,
                 # Strike à mi-chemin théorique/cours : c'est le moteur qui fait
                 # la moyenne, avec le spot du jour d'EXÉCUTION plutôt que le
                 # cours du signal (les deux diffèrent après un roulement, où le
                 # signal peut dater de plusieurs mois).
-                "strike_reference_price": float(row["valuation_theoretical_per_share"]),
+                "strike_reference_price": float(theoretical),
                 "tenor_days": self.tenor_days,
             }
-            for _, row in candidates.iterrows()
+            for symbol, gap, weight, theoretical in zip(
+                candidates["symbol"].to_numpy(),
+                candidates["_gap"].to_numpy(),
+                weights.to_numpy(),
+                candidates["valuation_theoretical_per_share"].to_numpy(),
+            )
         }
 
+    def generate_option_targets(self, signals: pd.DataFrame, current_positions: dict[str, str]) -> dict[str, dict]:
+        return self._targets_from(self._candidates(signals))
+
     def eligible_directions(self, signals: pd.DataFrame) -> dict[str, str]:
-        candidates = self._candidates(signals)
-        if candidates.empty:
+        """Sens encore justifiés au seuil de SORTIE, plus bas que le seuil
+        d'entrée (hystérésis, cf. config.OPTIONS_EXIT_THRESHOLD_RATIO).
+
+        C'est cette méthode que le moteur interroge pour décider s'il VEND une
+        position (exit_when_signal_lost) ou s'il la ROULE : une position déjà
+        engagée, qui a déjà payé son slippage et sa valeur temps, n'a pas à
+        être soldée au premier retour sous le seuil qui l'a fait entrer. Une
+        convergence partielle est le début de ce qu'on attendait, pas un signal
+        perdu."""
+        scored = self._scored(signals)
+        if scored.empty:
             return {}
-        return {row["symbol"]: self._direction(row["_gap"]) for _, row in candidates.iterrows()}
+        return self._directions_of(scored[scored["_abs_gap"] >= self.exit_threshold_pct])
+
+    def evaluate(
+        self, signals: pd.DataFrame, current_positions: dict[str, str],
+    ) -> tuple[dict[str, dict], dict[str, str]]:
+        """Cibles (seuil d'ENTRÉE) et sens encore justifiés (seuil de SORTIE)
+        à partir d'un SEUL calcul d'écart -- cf. OptionsStrategy.evaluate."""
+        scored = self._scored(signals)
+        if scored.empty:
+            return {}, {}
+        abs_gap = scored["_abs_gap"]
+        targets = self._targets_from(scored[abs_gap >= self.entry_threshold_pct])
+        directions = self._directions_of(scored[abs_gap >= self.exit_threshold_pct])
+        return targets, directions

@@ -52,6 +52,13 @@ def run_avec_renforcements():
         roll_when_days_left=60, stop_basis="underlying", exit_when_signal_lost=True,
         daily_rebalance=True, vol_mode="rolling", momentum_min_pct=None,
         max_trade_dollar=15_000.0, take_profit_convergence_fraction=0.80,
+        # Le plancher de primes est DÉSACTIVÉ par défaut depuis l'audit
+        # (config.OPTIONS_MIN_DEPLOYMENT_PCT = 0 : c'était une martingale sur
+        # les positions perdantes). Il est réactivé EXPLICITEMENT ici parce
+        # que ce fichier teste le JOURNAL de _deploy_idle_cash, pas la
+        # pertinence du mécanisme : sans lui, ce chemin de code ne s'exécute
+        # simplement jamais et les tests ne vérifient plus rien.
+        min_deployment_pct=25.0,
     )
     equity_curve, positions_history, trades, _ = engine.run()
     return engine, equity_curve, positions_history, trades, pd.DataFrame(engine.executions)

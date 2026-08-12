@@ -105,6 +105,7 @@ def _run_one(
     engine_kwargs: dict,
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
+    train_fraction: Optional[float] = None,
 ) -> dict:
     """Un run complet pour cette valeur de ε. Isolé en fonction de module
     (plutôt que méthode/closure) pour rester picklable par
@@ -154,6 +155,17 @@ def _run_one(
         ):
             row[key] = run_metrics.get(key)
 
+        # Séparation apprentissage / test : même raison qu'en 11 -- un ε
+        # choisi sur l'historique complet est choisi sur les données qui
+        # servent ensuite à le juger (cf. metrics.split_period_metrics).
+        if train_fraction:
+            row.update(metrics_mod.split_period_metrics(
+                equity_curve, trades,
+                metrics_mod.resolve_split_date(equity_curve, train_fraction),
+                risk_free_rate=config.RISK_FREE_RATE,
+                benchmark_prices=_DATA["benchmark_prices"],
+            ))
+
         if not trades.empty and "exit_reason" in trades.columns:
             counts = trades["exit_reason"].value_counts().to_dict()
             row["exits_by_reason"] = counts
@@ -179,6 +191,16 @@ def main() -> None:
         help="Valeurs de ε à tester, en points de log(V/P) (défaut: "
              f"{DEFAULT_EPSILON_GRID}). 0 s'approche du comportement sans filtre.",
     )
+    parser.add_argument(
+        "--train-fraction", type=float, default=0.60,
+        help="Part initiale de l'historique servant à CHOISIR ε ; le reste sert à le juger "
+             "(défaut: %(default)s). Le classement se fait sur train_sharpe_ratio et le CSV "
+             "porte test_sharpe_ratio à côté.",
+    )
+    parser.add_argument(
+        "--no-walk-forward", dest="train_fraction", action="store_const", const=None,
+        help="Classe sur l'historique COMPLET (comportement d'avant, in-sample).",
+    )
     parser.add_argument("--entry-threshold-pct", type=float, default=None)
     parser.add_argument("--benchmark-symbol", default=config.BENCHMARK_SYMBOL)
     parser.add_argument("--initial-capital", type=float, default=config.OPTIONS_INITIAL_CAPITAL)
@@ -189,6 +211,10 @@ def main() -> None:
     parser.add_argument("--fee-bump-max-extra-pct", type=float, default=config.OPTIONS_FEE_BUMP_MAX_EXTRA_PCT)
     parser.add_argument("--min-deployment-pct", type=float, default=config.OPTIONS_MIN_DEPLOYMENT_PCT)
     parser.add_argument("--max-delta-notional-pct", type=float, default=config.OPTIONS_MAX_DELTA_NOTIONAL_PCT)
+    parser.add_argument(
+        "--max-trade-pct-of-nav", type=float, default=config.OPTIONS_MAX_TRADE_PCT_OF_NAV,
+        help="Montant maximal décaissé par ORDRE D'ACHAT, en %% du NAV (défaut: %(default)s). Remplace le plafond en dollars absolus, qui ne suivait pas la taille du portefeuille. 0 pour désactiver.",
+    )
     parser.add_argument("--max-trade-dollar", type=float, default=config.OPTIONS_MAX_TRADE_DOLLAR)
     parser.add_argument(
         "--fractional-contracts", dest="whole_contracts", action="store_false",
@@ -244,6 +270,7 @@ def main() -> None:
         real_snapshot_tolerance_days=args.real_snapshot_tolerance_days,
         momentum_min_pct=args.momentum_min_pct,
         max_trade_dollar=args.max_trade_dollar,
+        max_trade_pct_of_nav=args.max_trade_pct_of_nav,
     )
 
     global _DATA
@@ -256,7 +283,8 @@ def main() -> None:
         for i, eps in enumerate(epsilon_grid, 1):
             logger.info("[%d/%d] rebalance_log_gap_threshold=%s", i, len(epsilon_grid), eps)
             rows.append(_run_one(
-                eps, args.strategy, strategy_params, baseline_settings, engine_kwargs, start_date, end_date,
+                eps, args.strategy, strategy_params, baseline_settings, engine_kwargs,
+                start_date, end_date, args.train_fraction,
             ))
     else:
         # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
@@ -267,6 +295,7 @@ def main() -> None:
                 pool.submit(
                     _run_one, eps, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
+                    args.train_fraction,
                 ): eps
                 for eps in epsilon_grid
             }
@@ -292,6 +321,7 @@ def main() -> None:
         "rebalance_log_gap_threshold", "num_trades", "num_rebalance_trades",
         "total_friction_dollar", "total_friction_pct_of_initial",
         "cagr_pct", "sharpe_ratio", "max_drawdown_pct", "calmar_ratio",
+        "train_sharpe_ratio", "test_sharpe_ratio",
     ]
     display_cols = [c for c in display_cols if c in results.columns]
     with pd.option_context("display.width", 220, "display.max_columns", 30, "display.float_format", "{:,.3f}".format):
@@ -303,7 +333,13 @@ def main() -> None:
         logger.error("Aucune valeur de ε exploitable (toutes en erreur).")
         sys.exit(1)
 
-    ranked = usable.sort_values("sharpe_ratio", ascending=False, na_position="last")
+    # Classement sur la période d'APPRENTISSAGE quand elle existe (cf. 11).
+    ranking_key = (
+        "train_sharpe_ratio"
+        if "train_sharpe_ratio" in usable.columns and not usable["train_sharpe_ratio"].isna().all()
+        else "sharpe_ratio"
+    )
+    ranked = usable.sort_values(ranking_key, ascending=False, na_position="last")
     best = ranked.iloc[0]
     with pd.option_context("display.width", 220, "display.float_format", "{:,.3f}".format):
         print(f"\n=== Top {min(args.top_n, len(ranked))} par sharpe_ratio ===")
@@ -314,6 +350,12 @@ def main() -> None:
             "L'optimum (ε=%s) est en BORD de grille -- élargis --epsilon-grid pour vérifier "
             "qu'il ne s'agit pas d'un optimum tronqué par la plage testée.",
             best["rebalance_log_gap_threshold"],
+        )
+    if "train_sharpe_ratio" in ranked.columns and pd.notna(best.get("test_sharpe_ratio")):
+        logger.info(
+            "Hors échantillon (coupure au %s) : sharpe %.3f en apprentissage -> %.3f en test.",
+            best.get("split_date", "?"), best.get("train_sharpe_ratio") or float("nan"),
+            best.get("test_sharpe_ratio") or float("nan"),
         )
     logger.info(
         "Meilleur ε par Sharpe : %.3f (sharpe=%.2f, %d trades dont %d 'rebalance', "

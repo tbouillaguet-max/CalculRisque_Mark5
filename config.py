@@ -491,10 +491,33 @@ OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
 #     structurelle des drawdowns extrêmes observés, et annulation pure et
 #     simple du dimensionnement par delta.
 #
-# La valeur était 90 ; ramenée à 25, complétée par le plafond explicite
-# d'exposition delta ci-dessous qui borne le levier quoi qu'il arrive.
-# 0 ou None désactive le redéploiement.
-OPTIONS_MIN_DEPLOYMENT_PCT = 25.0
+# DÉSACTIVÉ (0) DEPUIS L'AUDIT — le plancher était une MARTINGALE SUR LES
+# PERDANTS, et de loin la première cause de perte du moteur.
+#
+# Le raisonnement à trois termes ci-dessus reste juste, mais il manque le
+# terme décisif : le plancher s'exprime en PRIMES DÉCAISSÉES, or une prime
+# BAISSE quand la thèse échoue. Le plancher se trouve donc violé précisément
+# quand la position perd — et le moteur rachète. Pire, moins l'option vaut
+# cher, plus un dollar achète de contrats : le renforcement ACCÉLÈRE à mesure
+# que la thèse se dégrade. Une position gagnante, elle, voit sa prime monter,
+# repasse au-dessus du plancher et n'est jamais renforcée. Le mécanisme ne
+# moyenne donc QU'À LA BAISSE.
+#
+# Le plafond de delta notionnel ci-dessous ne pouvait pas l'arrêter : une
+# option très hors de la monnaie a un delta minuscule, si bien que des
+# milliers de contrats pèsent peu de notionnel delta tout en absorbant tout le
+# capital. Le plafond est structurellement incapable de mordre là où le
+# plancher est le plus agressif.
+#
+# MESURÉ (un CALL, sous-jacent -47% sur 900 jours, même signal, même chemin) :
+#     plancher à 25% -> NAV  437 074 $, jusqu'à 2 253 contrats détenus
+#     plancher à  0  -> NAV  976 766 $, jusqu'à    26 contrats détenus
+# soit une perte de 56% au lieu de 2,3%, uniquement à cause du plancher.
+#
+# Le mécanisme reste implémenté et réglable (--min-deployment-pct) pour
+# rejouer un run ancien, mais il n'agit plus par défaut : le dimensionnement
+# par delta décide seul de la taille des positions.
+OPTIONS_MIN_DEPLOYMENT_PCT = 0.0
 
 # Exposition NOTIONNELLE delta-équivalente maximale du portefeuille d'options,
 # en % du NAV : somme sur les positions de |delta| x spot x contrats x
@@ -508,13 +531,26 @@ OPTIONS_MIN_DEPLOYMENT_PCT = 25.0
 # qui prime, le plancher n'étant qu'une préférence. 0 ou None le désactive
 # (comportement d'avant : levier non borné).
 #
-# PORTÉE : ce plafond contraint l'ORDRE au moment où il est passé, pas la
-# position dans la durée. Entre deux renforcements, le delta du contrat dérive
-# avec le sous-jacent (gamma) et le moteur ne vend JAMAIS pour se désendetter
-# -- le levier réalisé peut donc dépasser le plafond de quelques dizaines de
-# points de NAV. Suivre la colonne delta_notional_pct de l'equity_curve pour
-# le constater sur un run donné.
+# PORTÉE (corrigée depuis l'audit). Le plafond n'était vérifié QUE dans
+# _deploy_idle_cash : ni le dimensionnement principal (_open_or_resize) ni la
+# dérive du delta avec le sous-jacent (gamma) ne le voyaient passer, et rien
+# ne réduisait jamais l'exposition -- 281% de delta notionnel observés sur un
+# run pour un plafond déclaré à 100%. Il est désormais appliqué :
+#   1. à l'ORDRE, dans _open_or_resize (avant même la contrainte de cash) ;
+#   2. à la POSITION, par une passe de dé-levier quotidienne qui réduit les
+#      lignes au prorata quand le portefeuille dépasse le plafond
+#      (OPTIONS_DELEVER_TOLERANCE_PCT ci-dessous évite de vendre pour trois
+#      contrats à chaque oscillation du marché).
+# 0 ou None désactive les deux.
 OPTIONS_MAX_DELTA_NOTIONAL_PCT = 100.0
+
+# Marge de tolérance avant qu'un dépassement du plafond ci-dessus déclenche
+# une vente. Sans elle, le gamma ferait osciller le portefeuille autour du
+# plafond et le moteur vendrait quelques contrats presque chaque jour, en
+# payant plein tarif de friction -- exactement le churn que la refonte du
+# rebalancement a supprimé ailleurs. À 10%, on ne dé-lève qu'au-delà de 110%
+# du NAV, et on ramène alors à 100% pile. 0 dé-lève au moindre dépassement.
+OPTIONS_DELEVER_TOLERANCE_PCT = 10.0
 
 # Optimisation de taille au regard des frais.
 #
@@ -625,6 +661,28 @@ OPTIONS_REBALANCE_LOG_GAP_THRESHOLD = 0.15
 # l'unité a changé.
 OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = math.log(1.20) * 100
 
+# HYSTÉRÉSIS : le seuil de SORTIE vaut cette fraction du seuil d'entrée.
+#
+# Sans elle, entrée et sortie partagent le même seuil, réévalué chaque jour
+# avec le cours du jour (daily_rebalance) : une position s'ouvre à
+# |écart| >= 18,23 et se ferme à |écart| < 18,23. Un titre qui oscille autour
+# du seuil déclenche donc des allers-retours complets, chacun payant deux fois
+# le slippage (OPTIONS_SLIPPAGE_PCT_OF_PREMIUM, 2,5% à l'achat ET à la vente),
+# deux commissions minimum, et surtout ABANDONNANT toute la valeur temps déjà
+# payée sur un contrat à 2 ans.
+#
+# Le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD) et
+# OPTIONS_MIN_RESIZE_RELATIVE_PCT protègent tous les deux le
+# REDIMENSIONNEMENT et lui seul -- jamais la décision d'ouvrir ou de fermer,
+# qui est pourtant la plus chère des deux.
+#
+# À 0,70, une position entrée à 18,23 points de log n'est vendue qu'une fois
+# l'écart repassé sous 12,76 (un rapport théorique/cours de 1,136 au lieu de
+# 1,20). C'est cohérent avec la thèse : une convergence de 30% n'est pas une
+# raison de solder un pari à deux ans -- c'est même le début de ce qu'on
+# attendait. 1,0 rétablit l'ancien comportement (aucune hystérésis).
+OPTIONS_EXIT_THRESHOLD_RATIO = 0.70
+
 # Base de calcul de l'écart.
 #
 # "log" (défaut) -> 100 x ln(théorique / cours). SYMÉTRIQUE par construction :
@@ -706,8 +764,31 @@ OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION = 0.80
 # ce montant en cumulant plusieurs renforcements sur des jours différents --
 # c'est BACKTEST_MAX_WEIGHT_PER_POSITION_PCT qui borne la taille d'une position.
 # Ne s'applique jamais aux VENTES : plafonner une sortie interdirait de
-# liquider une position devenue grosse. 0 ou None désactive le plafond.
-OPTIONS_MAX_TRADE_DOLLAR = 15_000.0
+# liquider une position devenue grosse.
+#
+# EXPRIMÉ EN % DU NAV, et non plus en dollars absolus. Un plafond fixe à
+# 15 000 $ était calibré sur un capital de 1 000 000 $ sans le dire, et ne
+# suivait ni la croissance ni la baisse du portefeuille. Tant que le plancher
+# de primes (OPTIONS_MIN_DEPLOYMENT_PCT) reconstruisait les positions jour
+# après jour, ce sous-dimensionnement se rattrapait tout seul et restait
+# invisible ; le plancher désactivé, il devient la contrainte qui MORD :
+# l'ouverture visée par le dimensionnement par delta était ramenée à 1/25e de
+# sa taille (mesuré : 200 contrats visés, 8 exécutés), et plus rien ne venait
+# combler l'écart avant le trimestre suivant.
+#
+# CALIBRATION. Une position légitime au poids maximal vaut
+# BACKTEST_MAX_WEIGHT_PER_POSITION_PCT (20%) du NAV en notionnel delta, soit
+# ~2 à 6% du NAV en prime selon la monnaie et l'échéance. À 10%, le plafond ne
+# bloque donc jamais un ordre légitime, mais coupe encore un ordre qui
+# engagerait la moitié du portefeuille d'un coup -- ce pour quoi il existe.
+# 0 ou None le désactive.
+OPTIONS_MAX_TRADE_PCT_OF_NAV = 10.0
+
+# Plafond ABSOLU additionnel, en dollars, appliqué en plus du précédent (le
+# plus contraignant des deux gagne). Désactivé par défaut : il n'a de sens que
+# si une contrainte de courtier ou de liquidité impose un montant fixe,
+# indépendant de la taille du portefeuille.
+OPTIONS_MAX_TRADE_DOLLAR = 0.0
 
 
 # ----------------------------------------------------------------------------
@@ -746,6 +827,69 @@ SECTOR_DCF_PARAMS: dict[str, dict] = {
     # Secteur inconnu, "indetermine" (02) ou absent de l'univers.
     "_default":                             {"wacc": 0.100, "fcf_growth": 0.05, "terminal_growth": 0.020},
 }
+
+# Taux sans risque auquel les WACC ci-dessus ont été calibrés. Les valeurs de
+# SECTOR_DCF_PARAMS décrivent un régime de taux "normal" (~4%, la valeur de
+# RISK_FREE_RATE) : c'est de ce point d'ancrage qu'on extrait la PRIME DE
+# RISQUE sectorielle, seule composante réellement propre au secteur.
+WACC_CALIBRATION_RISK_FREE_RATE = 0.04
+
+# Faut-il indexer le WACC sur la courbe de taux de l'année valorisée ?
+#
+# POURQUOI. Un WACC figé de 2010 à 2026 est un pari de taux non voulu, et
+# systématiquement à contretemps. Le dépôt connaît pourtant la courbe réelle
+# (RISK_FREE_RATE_BY_YEAR, de 0,05% à 5,3%), et s'en sert déjà pour pricer les
+# options et calculer le Sharpe -- mais pas pour actualiser les flux, alors
+# que le taux est le PREMIER déterminant d'un DCF :
+#
+#   2020-2021 (taux ~0%)  WACC 10% trop HAUT -> valeur théorique SOUS-estimée
+#                                            -> excès de PUT au pire moment
+#   2023-2024 (taux ~5%)  WACC 10% trop BAS  -> valeur théorique SUR-estimée
+#                                            -> excès de CALL
+#
+# COMMENT. wacc(secteur, année) = taux sans risque de l'année + prime de
+# risque du secteur, la prime étant celle implicite dans SECTOR_DCF_PARAMS
+# (wacc calibré - WACC_CALIBRATION_RISK_FREE_RATE). Une utility garde donc
+# ses 2,5 points de prime au-dessus du sans-risque, une techno ses 6 points,
+# quelle que soit l'année -- c'est bien la prime qui est sectorielle, pas le
+# niveau absolu.
+#
+# GARDE-FOU. calculer_terminal_value exige taux_actualisation >
+# taux_croissance_terminal (sinon la valeur terminale est infinie ou
+# négative). En 2011-2015 le sans-risque tombe à 0,05% : le WACC d'une
+# utility descendrait à 3,05% pour une croissance terminale de 1,5%, ce qui
+# passe, mais la marge devient mince et la valeur terminale explose. D'où le
+# plancher ci-dessous, appliqué APRÈS l'indexation.
+#
+# False rétablit exactement le comportement d'avant (WACC figé).
+DCF_WACC_FOLLOWS_RATE_CURVE = True
+
+# Plancher d'écart entre le WACC et la croissance terminale. En dessous, la
+# valeur terminale (FCF x (1+g) / (wacc - g)) devient si sensible au
+# dénominateur qu'elle cesse d'être une estimation -- à 0,5 point d'écart,
+# elle vaut 200 fois le FCF terminal.
+DCF_MIN_WACC_MINUS_TERMINAL_GROWTH = 0.03
+
+
+def sector_dcf_params(sector, year: Optional[int] = None) -> dict:
+    """Hypothèses DCF du secteur, WACC indexé sur la courbe de taux de
+    `year` quand DCF_WACC_FOLLOWS_RATE_CURVE est actif (voir ci-dessus).
+
+    `year=None` (appelant sans date) -> WACC calibré tel quel, comportement
+    historique. Le résultat est un dict neuf : les tables de config ne sont
+    jamais mutées."""
+    params = SECTOR_DCF_PARAMS.get(
+        sector if isinstance(sector, str) else "", SECTOR_DCF_PARAMS["_default"],
+    )
+    if not DCF_WACC_FOLLOWS_RATE_CURVE or year is None:
+        return dict(params)
+
+    risk_premium = params["wacc"] - WACC_CALIBRATION_RISK_FREE_RATE
+    wacc = risk_free_rate_for(year) + risk_premium
+    # Le plancher porte sur l'ÉCART au taux terminal, pas sur le WACC lui-même :
+    # c'est cet écart qui pilote la valeur terminale.
+    wacc = max(wacc, params["terminal_growth"] + DCF_MIN_WACC_MINUS_TERMINAL_GROWTH)
+    return {**params, "wacc": wacc}
 
 
 # Secteurs pour lesquels un DCF de type FCFF n'a PAS de sens, et que

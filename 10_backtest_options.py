@@ -147,6 +147,17 @@ def main() -> None:
              "atteint, même si --min-deployment-pct n'est pas satisfait. 0 pour désactiver.",
     )
     parser.add_argument(
+        "--delever-tolerance-pct", type=float, default=config.OPTIONS_DELEVER_TOLERANCE_PCT,
+        help="Marge au-delà du plafond de levier avant de réduire les positions au prorata "
+             "(défaut: %(default)s). Le plafond est désormais appliqué à l'ORDRE et à la "
+             "POSITION : sans cette bande, le gamma ferait vendre quelques contrats presque "
+             "chaque jour. 0 dé-lève au moindre dépassement.",
+    )
+    parser.add_argument(
+        "--max-trade-pct-of-nav", type=float, default=config.OPTIONS_MAX_TRADE_PCT_OF_NAV,
+        help="Montant maximal décaissé par ORDRE D'ACHAT, en %% du NAV (défaut: %(default)s). Remplace le plafond en dollars absolus, qui ne suivait pas la taille du portefeuille. 0 pour désactiver.",
+    )
+    parser.add_argument(
         "--max-trade-dollar", type=float, default=config.OPTIONS_MAX_TRADE_DOLLAR,
         help="Montant maximal décaissé par ORDRE D'ACHAT, frais inclus (défaut: %(default)s). "
              "Plafond par ordre et non par position : une ligne peut le dépasser en cumulant "
@@ -299,7 +310,9 @@ def main() -> None:
         max_fee_pct_of_trade=args.max_fee_pct_of_trade,
         min_deployment_pct=args.min_deployment_pct,
         max_delta_notional_pct=args.max_delta_notional_pct,
+        delever_tolerance_pct=args.delever_tolerance_pct,
         max_trade_dollar=args.max_trade_dollar,
+        max_trade_pct_of_nav=args.max_trade_pct_of_nav,
         take_profit_convergence_fraction=args.take_profit_convergence_fraction,
         fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
@@ -361,7 +374,9 @@ def main() -> None:
         "slippage_pct_of_premium": args.slippage_pct_of_premium,
         "min_deployment_pct": args.min_deployment_pct,
         "max_delta_notional_pct": args.max_delta_notional_pct,
+        "delever_tolerance_pct": args.delever_tolerance_pct,
         "max_trade_dollar": args.max_trade_dollar,
+        "max_trade_pct_of_nav": args.max_trade_pct_of_nav,
         "take_profit_convergence_fraction": args.take_profit_convergence_fraction,
         **engine_settings,
         "real_snapshot_tolerance_days": args.real_snapshot_tolerance_days,
@@ -375,10 +390,14 @@ def main() -> None:
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
         "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
-        "truncated_orders_count", "truncated_orders_pct", "capped_orders_count", "avg_cash_pct",
-        "avg_delta_notional_pct", "max_delta_notional_pct_observed",
+        "truncated_orders_count", "truncated_orders_pct", "capped_orders_count",
+        "dropped_orders_count", "dropped_orders_by_reason", "avg_cash_pct",
+        "avg_delta_notional_pct", "max_delta_notional_pct_observed", "delever_events_count",
         "total_commission_dollar", "total_slippage_dollar",
         "total_friction_dollar", "total_friction_pct_of_initial",
+        # Coût de portage (theta) et exposition vega : le seuil que la thèse
+        # doit battre, et la part du P&L que ce backtest ne simule pas.
+        "total_theta_decay_dollar", "total_theta_decay_pct_of_initial", "avg_vega_notional_pct",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])

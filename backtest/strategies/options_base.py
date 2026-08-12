@@ -74,5 +74,26 @@ class OptionsStrategy(ABC):
         backtest/options_engine.py) : une position évincée par le seul
         plafond ne doit pas être vendue comme si son signal avait disparu, ni
         empêchée de rouler. Par défaut, déduit des cibles -- à surcharger dès
-        que la stratégie tronque sa liste de candidats."""
+        que la stratégie tronque sa liste de candidats, ou qu'elle applique un
+        seuil de SORTIE distinct du seuil d'entrée (hystérésis, cf.
+        config.OPTIONS_EXIT_THRESHOLD_RATIO)."""
         return {s: t["option_type"] for s, t in self.generate_option_targets(signals, {}).items()}
+
+    def evaluate(
+        self, signals: pd.DataFrame, current_positions: dict[str, str],
+    ) -> tuple[dict[str, dict], dict[str, str]]:
+        """(cibles, sens encore justifiés) en UN SEUL passage.
+
+        Le moteur a besoin des deux le même jour et sur la même photographie
+        de marché (cf. options_engine._current_targets). Les demander par deux
+        appels séparés faisait recalculer à l'identique tout le pipeline de
+        sélection -- mesuré à 20% du temps de run total sur un backtest
+        réaliste, pour un résultat rigoureusement identique.
+
+        L'implémentation par défaut enchaîne simplement les deux méthodes
+        publiques : une stratégie tierce n'a rien à changer. Une stratégie qui
+        partage un calcul coûteux entre les deux (c'est le cas des deux
+        stratégies du dépôt) surcharge cette méthode et ne le fait qu'une
+        fois."""
+        targets = self.generate_option_targets(signals, current_positions)
+        return targets, self.eligible_directions(signals)

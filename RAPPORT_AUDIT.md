@@ -1,5 +1,13 @@
 # Rapport d'audit — code et stratégie
 
+> **CORRECTIFS APPLIQUÉS.** Les 19 constats de ce rapport ont été corrigés.
+> Le rapport est conservé en l'état — il documente le diagnostic et les
+> mesures ; l'état du code après correction est décrit dans
+> [« Ce qui a été appliqué »](#ce-qui-a-été-appliqué) en fin de document.
+> **Régénère `07` puis `06b` avant tout nouveau backtest** : le WACC dynamique
+> (S3) et les médianes point-in-time (S4) invalident
+> `dcf_historique.parquet` et `valorisation_combinee_historique.parquet`.
+
 Audit complet du dépôt à `f8c0281` : simplicité, efficacité, conformité aux
 intentions déclarées, vitesse, puis la stratégie elle-même.
 
@@ -628,3 +636,103 @@ nécessaires pour que les métriques disent la vérité.
 
 Un point de méthode pour finir : les correctifs 1 à 4 vont **dégrader** les
 performances affichées, parfois beaucoup. C'est le signe qu'ils marchent.
+
+---
+
+# Ce qui a été appliqué
+
+Périmètre complet (étapes 1 à 7). **308 tests verts**, dont 31 nouveaux dans
+`tests/test_correctifs_audit.py` — un par constat, chacun rejouant le scénario
+qui avait servi à le démontrer. C'est l'absence de tests *exécutant* les
+affirmations des docstrings qui avait laissé s'installer les cinq écarts entre
+ce que le code disait faire et ce qu'il faisait.
+
+## Avant / après, mesuré
+
+| Constat | Avant | Après |
+|---|---|---|
+| **B1** plancher de primes | NAV **437 074 $**, 2 253 contrats | NAV **976 766 $**, 26 contrats |
+| **B2** plafond de levier | **281 %** observé | **110 %** (plafond 100 % + tolérance 10 %) |
+| **B3** roulement | 2 253 → **161** contrats | exposition établie conservée |
+| **B4** look-ahead snapshots | jusqu'à **14 jours** dans le futur | strictement antérieur, entrée repricée depuis l'IV |
+| **B5** ordres abandonnés | invisibles | comptés par motif + avertissement de fin de run |
+| **B6** plafond de pondération | **100 %** sur une ligne | jamais au-dessus du plafond |
+| **B7** sortie d'indice | liquidée en `signal_lost` | position conservée |
+| **B10** Sortino | surévalué **×1,19** | déviation à la baisse standard |
+| **V1–V3** vitesse | 22,6 s | **10,6 s** (2,1×) |
+| **S1/S2** theta et vega | invisibles | dans `metrics.json` et l'`equity_curve` |
+
+## Décisions prises
+
+**B1 — plancher supprimé** (`OPTIONS_MIN_DEPLOYMENT_PCT = 0`) plutôt que
+converti en delta notionnel : supprimer la cause vaut mieux que la borner. Le
+mécanisme reste réglable pour rejouer un run ancien.
+
+**B4 — l'IV plutôt que la prime.** Du snapshot réel on retient le strike,
+l'échéance et l'IV ; la prime d'entrée en est dérivée par Black-Scholes au
+spot d'exécution. Cela supprime *aussi* le saut de P&L au premier repricing et
+l'incohérence entre une IV Alpha Vantage et une prime bid/ask IBKR.
+
+**Effet de bord traité.** Le plancher désactivé, `OPTIONS_MAX_TRADE_DOLLAR`
+(15 000 $ absolus contre 1 000 000 $ de capital) est devenu la contrainte qui
+mord : l'ouverture visée était ramenée à 1/25e de sa taille, sans plus rien
+pour combler l'écart. Le plafond par ordre est désormais **relatif au NAV**
+(`OPTIONS_MAX_TRADE_PCT_OF_NAV = 10`), et le roulement en est exempté — il
+renouvelle une position, il n'en crée pas une.
+
+## Nouveaux réglages
+
+| Réglage | Défaut | Rôle |
+|---|---|---|
+| `OPTIONS_MIN_DEPLOYMENT_PCT` | **0** | plancher de primes, désactivé |
+| `OPTIONS_DELEVER_TOLERANCE_PCT` | 10 | bande avant réduction au prorata |
+| `OPTIONS_MAX_TRADE_PCT_OF_NAV` | 10 | plafond par ordre, relatif au NAV |
+| `OPTIONS_MAX_TRADE_DOLLAR` | **0** | plafond absolu additionnel, désactivé |
+| `OPTIONS_EXIT_THRESHOLD_RATIO` | 0,70 | hystérésis entrée / sortie |
+| `DCF_WACC_FOLLOWS_RATE_CURVE` | True | WACC indexé sur la courbe de taux |
+| `DCF_MIN_WACC_MINUS_TERMINAL_GROWTH` | 0,03 | garde-fou de la valeur terminale |
+| `--train-fraction` (11, 11b) | 0,60 | séparation apprentissage / test |
+
+## Nouvelles sorties
+
+`metrics.json` : `dropped_orders_count` / `dropped_orders_by_reason`,
+`delever_events_count`, `total_theta_decay_dollar` /
+`total_theta_decay_pct_of_initial`, `avg_vega_notional_pct`, et
+`train_*` / `test_*` dans les CSV d'optimisation.
+
+`equity_curve.parquet` : `theta_per_day`, `vega_notional`.
+
+`valorisation_combinee_historique.parquet` : `n_peers`, le nombre de pairs
+réellement derrière la médiane de chaque ligne.
+
+## Ordre de régénération
+
+```bash
+python 07_calcul_dcf.py                       # S3 : WACC indexé sur les taux
+python 06b_calcul_valorisation_combinee.py    # S4 : médianes point-in-time, n_peers
+python 10_backtest_options.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
+python 11_optimize_options_stops.py --strategy valuation_gap_multiples_options
+```
+
+`03b`, `04`, `04b`, `05` ne sont pas touchés.
+
+## Ce qui reste ouvert, volontairement
+
+- **Le biais de survivance des médianes sectorielles** (S8). Il demande de
+  backfiller `03b` et `04` sur l'univers complet — plusieurs milliers de
+  requêtes SEC et IBKR. La procédure est dans le README.
+- **Le risque de volatilité** (S2). Le repricing ne peut pas suivre
+  l'implicite tant que le pipeline ne collecte aucune surface historique.
+  L'exposition vega est désormais mesurée et publiée ; le P&L correspondant
+  n'est toujours pas simulé.
+- **La découpe d'`options_engine.py`** (C1) et la factorisation des deux
+  moteurs (C3). Ce sont des refontes structurelles sans effet sur les
+  résultats, à faire à froid.
+
+## Une dernière fois
+
+Les correctifs B1 à B4 **dégradent** les performances affichées, parfois
+beaucoup — le run de vérification de bout en bout sort à −14,6 % de CAGR là où
+le moteur d'avant aurait montré mieux. Le theta désormais visible dit
+pourquoi : **−15,5 % de capital en pure valeur temps** sur la période. Ce
+chiffre était payé avant aussi ; il n'était simplement écrit nulle part.
