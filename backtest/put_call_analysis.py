@@ -261,6 +261,97 @@ def volume_breakdown(trades: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)[["ALL", *SIDES]]
 
 
+def cost_breakdown(executions: pd.DataFrame) -> pd.DataFrame:
+    """Coûts d'exécution (commission + frais tiers, slippage) par jambe.
+
+    Lit le JOURNAL DES EXÉCUTIONS et non trades.parquet : celui-ci n'a que les
+    ventes, donc il manquerait toute la friction payée à l'ACHAT -- la moitié
+    des fills, et en pratique bien plus puisque le redéploiement du cash oisif
+    ne fait qu'acheter (cf. options_engine._record_fill).
+
+    `commission_dollar` inclut les frais tiers (ORF, CAT, OCC, TAF, SEC) en
+    plus de la commission du courtier : c'est le coût total facturé sur
+    l'ordre, cf. options_engine._order_commission."""
+    if executions is None or executions.empty:
+        return pd.DataFrame()
+
+    def aggregate(sub: pd.DataFrame) -> dict:
+        traded = (sub["contracts"] * sub["multiplier"] * sub["price"]).sum()
+        friction = float(sub["commission"].sum() + sub["slippage"].sum())
+        return {
+            "num_fills": len(sub),
+            "num_buys": int((sub["side"] == "buy").sum()),
+            "num_sells": int((sub["side"] == "sell").sum()),
+            "contracts_traded": float(sub["contracts"].sum()),
+            "commission_dollar": float(sub["commission"].sum()),
+            "slippage_dollar": float(sub["slippage"].sum()),
+            "friction_dollar": friction,
+            # Rapportée au volume BRUT échangé : dit combien coûte un dollar
+            # de contrat mis en place ou dénoué, indépendamment du P&L.
+            "friction_pct_of_turnover": float(friction / traded * 100) if traded else None,
+        }
+
+    rows = {"ALL": aggregate(executions)}
+    for side in SIDES:
+        rows[side] = aggregate(_keep_side(executions, side))
+    return pd.DataFrame(rows)[["ALL", *SIDES]]
+
+
+def cost_by_reason(executions: pd.DataFrame) -> pd.DataFrame:
+    """Coûts d'exécution par MOTIF d'ordre : dit quel mécanisme du moteur
+    consomme la friction.
+
+    C'est le tableau qui rend visible un poste comme `deploy_idle_cash` (le
+    redéploiement du cash oisif, appelé chaque jour de bourse), dont la
+    friction se noyait auparavant dans un total agrégé."""
+    if executions is None or executions.empty:
+        return pd.DataFrame()
+
+    grouped = executions.groupby("reason").agg(
+        num_fills=("contracts", "size"),
+        contracts_traded=("contracts", "sum"),
+        commission_dollar=("commission", "sum"),
+        slippage_dollar=("slippage", "sum"),
+    )
+    grouped["friction_dollar"] = grouped["commission_dollar"] + grouped["slippage_dollar"]
+    total = grouped["friction_dollar"].sum()
+    grouped["pct_of_friction"] = grouped["friction_dollar"] / total * 100 if total else None
+    return grouped.sort_values("friction_dollar", ascending=False)
+
+
+def quantity_reconciliation(executions: pd.DataFrame, positions_history: pd.DataFrame) -> pd.DataFrame:
+    """Contrats ACHETÉS vs VENDUS vs ENCORE DÉTENUS, par jambe -- l'invariant
+    que trades.parquet seul ne permet pas de vérifier.
+
+    `ecart` doit valoir zéro : un contrat vendu a forcément été acheté. Un
+    écart non nul signalerait une vraie erreur de comptabilité du moteur (et
+    non l'illusion d'optique de trades.parquet, où une position construite en
+    plusieurs achats solde plus de contrats qu'il n'en a été acheté à son
+    `entry_date` -- cf. options_engine._record_fill)."""
+    if executions is None or executions.empty:
+        return pd.DataFrame()
+
+    detenus = {}
+    if positions_history is not None and not positions_history.empty:
+        df = positions_history.assign(date=_as_datetime(positions_history["date"]))
+        dernier_jour = df[df["date"] == df["date"].max()]
+        detenus = dernier_jour.groupby("option_type")["contracts"].sum().to_dict()
+
+    rows = {}
+    for side in SIDES:
+        sub = _keep_side(executions, side)
+        achetes = float(sub[sub["side"] == "buy"]["contracts"].sum())
+        vendus = float(sub[sub["side"] == "sell"]["contracts"].sum())
+        restants = float(detenus.get(side, 0.0))
+        rows[side] = {
+            "contracts_achetes": achetes,
+            "contracts_vendus": vendus,
+            "contracts_encore_detenus": restants,
+            "ecart": achetes - vendus - restants,
+        }
+    return pd.DataFrame(rows)
+
+
 def pnl_by_exit_reason(trades: pd.DataFrame) -> pd.DataFrame:
     """P&L par (jambe, motif de sortie) -- le tableau qui répond réellement à
     "où est-ce que je perds de l'argent ?".

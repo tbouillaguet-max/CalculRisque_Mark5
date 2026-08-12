@@ -515,6 +515,36 @@ Les ordres ramenés à ce plafond sont comptés séparément des ordres tronqué
 faute de cash (`capped_orders_count` vs `truncated_orders_count`) : les deux
 causes n'ont rien à voir et les confondre rendrait le diagnostic illisible.
 
+### Journal des exécutions (`executions.parquet`)
+
+`trades.parquet` n'enregistre **que les ventes**, et présente chacune comme un
+aller-retour : `entry_date` y est la date de **première** ouverture de la
+position et `entry_price` le prix de revient **moyen** de tous les achats qui
+l'ont constituée. Or une position se construit en plusieurs fois
+(renforcement au rebalancement, redéploiement du cash oisif) — un trade peut
+donc légitimement solder **285 contrats** alors que **94 seulement** ont été
+achetés à son `entry_date`. La comptabilité du moteur est juste (aucun contrat
+n'est vendu sans avoir été acheté), mais elle était **invérifiable depuis les
+sorties** : aucun achat intermédiaire n'apparaissait nulle part.
+
+`executions.parquet` corrige ça : **une ligne par fill, achat comme vente**,
+avec `contracts`, `price`, `cash_flow` (signé, frais inclus), `commission`,
+`slippage` et `reason`. Trois invariants en découlent, tous testés :
+
+| invariant | vérifie |
+|---|---|
+| Σ achats − Σ ventes = contrats encore détenus, par symbole | rien n'est vendu sans avoir été acheté |
+| capital initial + Σ `cash_flow` = cash final | le journal explique tout le mouvement de cash |
+| Σ `commission` / Σ `slippage` = totaux du moteur | aucun fill n'échappe à la friction |
+
+**Bug corrigé au passage** : `_deploy_idle_cash` (le redéploiement du cash
+oisif, appelé **chaque jour de bourse**) débitait le cash **sans jamais
+comptabiliser sa friction**. `total_friction_dollar` sous-estimait donc le
+coût réel sur le chemin de code le plus actif du moteur — mesuré à **44% de
+la friction totale** sur un run de test. Les coûts et le journal passent
+désormais par un point d'entrée unique (`_record_fill`), ce qui rend cet
+oubli structurellement impossible.
+
 ### Diagnostic de friction (13_diagnostic_friction.py)
 
 Le moteur accumule désormais la friction payée, décomposée, et la publie jour
@@ -557,18 +587,29 @@ python 12_analyse_put_call.py            # dernier run de cette stratégie
 python 12_analyse_put_call.py --run-id 20260810_143000 --export
 ```
 
-Cinq tableaux :
+Sept tableaux :
     1. **Métriques habituelles en trois colonnes** ALL / CALL / PUT (mêmes
        définitions que `metrics.py`, donc lisibles ligne à ligne).
     2. **Répartition des valorisations** : prime immobilisée par chaque jambe
        (moyenne, pic, part du portefeuille, jours d'exposition).
     3. **Répartition des volumes de trade** : nombre de trades, contrats,
        montants décaissés/encaissés, P&L réalisé, et leurs parts en %.
-    4. **P&L par (jambe, motif de sortie)** — le tableau qui localise
-       réellement la perte : un `stop_loss` négatif dit que les seuils coupent
-       au mauvais moment, une `expiry` négative que le pari ne se réalise pas
-       dans le temps imparti.
-    5. **P&L réalisé par année et par jambe**.
+    4. **Coûts d'exécution par jambe** : commission (frais tiers ORF/CAT/OCC/
+       TAF/SEC inclus), slippage, friction totale et friction rapportée au
+       volume échangé. Lus dans `executions.parquet`, donc **frais d'achat
+       inclus** — invisibles dans `trades.parquet`, qui n'a que les ventes.
+    5. **Coûts d'exécution par motif d'ordre** : dit quel mécanisme du moteur
+       consomme la friction (`deploy_idle_cash`, `rebalance`,
+       `rebalance_daily`, `roll`, `stop_loss`…).
+    6. **Réconciliation des quantités** : contrats achetés / vendus / encore
+       détenus par jambe, dont l'`ecart` doit valoir zéro.
+    7. **P&L par (jambe, motif de sortie)** puis **P&L réalisé par année et
+       par jambe** — les tableaux qui localisent réellement la perte : un
+       `stop_loss` négatif dit que les seuils coupent au mauvais moment, une
+       `expiry` négative que le pari ne se réalise pas dans le temps imparti.
+
+Les tableaux 4 à 6 sont omis (avec un avertissement) pour un run antérieur à
+`executions.parquet`.
 
 `--export` écrit en plus ces tableaux en CSV dans le répertoire du run, avec
 la contribution cumulée quotidienne de chaque jambe (pour voir *quand* une
