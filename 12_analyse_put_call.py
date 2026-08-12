@@ -11,10 +11,24 @@ script rouvre le run sauvegardé et sépare tout ce qui peut l'être :
        moyenne et au pic, et part du portefeuille.
     3. Répartition des VOLUMES DE TRADE : nombre de trades, contrats,
        montants décaissés/encaissés, P&L.
-    4. P&L par (jambe, motif de sortie) -- le tableau qui localise réellement
+    4. COÛTS D'EXÉCUTION (commission + frais tiers, slippage) par jambe et par
+       motif d'ordre -- lus dans le journal des exécutions, donc frais d'ACHAT
+       inclus (invisibles dans trades.parquet, qui n'a que les ventes).
+    5. RÉCONCILIATION DES QUANTITÉS : contrats achetés / vendus / encore
+       détenus par jambe, dont l'écart doit valoir zéro.
+    6. P&L par (jambe, motif de sortie) -- le tableau qui localise réellement
        la perte : un stop-loss négatif ne se lit pas comme une expiration
        négative.
-    5. P&L réalisé par année et par jambe.
+    7. P&L réalisé par année et par jambe.
+
+ATTENTION à la lecture de trades.parquet : il n'enregistre que les VENTES, et
+présente chacune comme un aller-retour dont `entry_date` est la PREMIÈRE
+ouverture de la position et `entry_price` le prix de revient MOYEN. Une
+position construite en plusieurs achats (renforcement au rebalancement,
+redéploiement du cash oisif) y solde donc plus de contrats qu'il n'en a été
+acheté à cette date -- ce n'est PAS une erreur de comptabilité (le tableau 5
+le vérifie), c'est que les achats intermédiaires ne sont visibles que dans
+executions.parquet.
 
 Aucun backtest n'est rejoué : le script LIT `data/backtest_options/<run_id>/`.
 Sans --run-id, il prend le run le plus récent de la stratégie demandée.
@@ -76,8 +90,13 @@ def load_run(run_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, d
     equity_curve = pd.read_parquet(run_dir / "equity_curve.parquet")
     positions_history = pd.read_parquet(run_dir / "positions_history.parquet")
     trades = pd.read_parquet(run_dir / "trades.parquet")
+    # Absent des runs produits avant l'ajout du journal des exécutions : les
+    # tableaux de coûts et la réconciliation des quantités sont alors
+    # simplement omis, plutôt que de faire échouer toute l'analyse.
+    executions_path = run_dir / "executions.parquet"
+    executions = pd.read_parquet(executions_path) if executions_path.exists() else pd.DataFrame()
     run_config = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
-    return equity_curve, positions_history, trades, run_config
+    return equity_curve, positions_history, trades, executions, run_config
 
 
 def _show(title: str, frame: pd.DataFrame, floatfmt: str = "{:,.2f}") -> None:
@@ -102,7 +121,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     run_dir = resolve_run_dir(args.strategy, args.run_id)
-    equity_curve, positions_history, trades, run_config = load_run(run_dir)
+    equity_curve, positions_history, trades, executions, run_config = load_run(run_dir)
     logger.info(
         "Run %s : stratégie '%s', du %s au %s.",
         run_dir.name, run_config.get("strategy"), run_config.get("start_date"), run_config.get("end_date"),
@@ -111,6 +130,12 @@ def main() -> None:
         raise SystemExit("equity_curve vide : rien à analyser.")
     if trades.empty:
         logger.warning("Aucun trade dans ce run : seules les métriques de courbe seront exploitables.")
+    if executions.empty:
+        logger.warning(
+            "Pas de executions.parquet dans ce run (antérieur au journal des exécutions) : les "
+            "tableaux de COÛTS et la réconciliation des quantités sont omis. Relance "
+            "10_backtest_options.py pour les obtenir."
+        )
 
     # La décomposition suppose NAV = capital initial + réalisé + latent. On le
     # VÉRIFIE plutôt que de le supposer : au-delà de 0,01% du capital, les
@@ -137,6 +162,9 @@ def main() -> None:
         "metriques_par_jambe": pca.metrics_table(per_side),
         "repartition_valorisations": pca.valuation_breakdown(positions_history),
         "repartition_volumes": pca.volume_breakdown(trades),
+        "couts_par_jambe": pca.cost_breakdown(executions),
+        "couts_par_motif_d_ordre": pca.cost_by_reason(executions),
+        "reconciliation_quantites": pca.quantity_reconciliation(executions, positions_history),
         "pnl_par_motif_de_sortie": pca.pnl_by_exit_reason(trades),
         "pnl_realise_par_annee": pca.annual_pnl_by_side(trades),
     }
@@ -149,6 +177,35 @@ def main() -> None:
     )
     _show("Répartition des valorisations (prime immobilisée)", tables["repartition_valorisations"])
     _show("Répartition des volumes de trade", tables["repartition_volumes"])
+
+    _show("COÛTS D'EXÉCUTION par jambe (commission + frais tiers, slippage)", tables["couts_par_jambe"])
+    _show("COÛTS D'EXÉCUTION par motif d'ordre", tables["couts_par_motif_d_ordre"])
+    if not tables["couts_par_jambe"].empty:
+        print(
+            "\nLecture : ces coûts viennent du JOURNAL DES EXÉCUTIONS, donc ils incluent la friction\n"
+            "payée à l'ACHAT -- invisible dans trades.parquet, qui n'enregistre que les ventes.\n"
+            "commission_dollar inclut les frais tiers (ORF, CAT, OCC, TAF, SEC) en plus de la\n"
+            "commission du courtier."
+        )
+
+    _show("Réconciliation des quantités (achetés / vendus / détenus)", tables["reconciliation_quantites"])
+    if not tables["reconciliation_quantites"].empty:
+        ecart_max = tables["reconciliation_quantites"].loc["ecart"].abs().max()
+        if ecart_max > 1e-6:
+            logger.warning(
+                "Écart de quantités non nul (%.6f contrats) : un contrat aurait été vendu sans "
+                "avoir été acheté. C'est une VRAIE erreur de comptabilité du moteur, à investiguer.",
+                ecart_max,
+            )
+        else:
+            print(
+                "\nÉcart nul : aucun contrat n'a été vendu sans avoir été acheté. Si un trade de\n"
+                "trades.parquet semble solder plus de contrats qu'il n'en a été acheté à son\n"
+                "entry_date, c'est normal -- entry_date est la PREMIÈRE ouverture de la position,\n"
+                "qui a ensuite été renforcée (rebalancement, redéploiement du cash oisif). Le\n"
+                "détail achat par achat est dans executions.parquet."
+            )
+
     _show("P&L par jambe et motif de sortie", tables["pnl_par_motif_de_sortie"], "{:,.2f}")
     _show("P&L réalisé par année de sortie", tables["pnl_realise_par_annee"])
 

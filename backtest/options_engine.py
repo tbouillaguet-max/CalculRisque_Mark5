@@ -410,6 +410,10 @@ class OptionsBacktestEngine:
         self._eligible_directions: Optional[dict[str, str]] = None
 
         self.trades: list[dict] = []
+        # Journal des exécutions (achats ET ventes) -- cf. _record_execution :
+        # trades.parquet n'enregistre que les ventes, ce qui rendait la
+        # conservation des quantités invérifiable depuis les sorties.
+        self.executions: list[dict] = []
         self.equity_curve_rows: list[dict] = []
         self.positions_history_rows: list[dict] = []
         self.signals_history_rows: list[dict] = []
@@ -836,6 +840,17 @@ class OptionsBacktestEngine:
                 self._record_contract_volume(extra, today)
                 effective_premium = cost / (extra * pos.multiplier)
                 new_contracts = pos.contracts + extra
+                # Ce renfort paie commission et slippage comme n'importe quel
+                # achat : tant que sa friction n'était pas comptabilisée, la
+                # friction du chemin de code LE PLUS ACTIF du moteur (appelé
+                # chaque jour de bourse) n'apparaissait dans aucun total, et
+                # total_friction_dollar sous-estimait lourdement le coût réel.
+                self._record_fill(
+                    pos.symbol, "buy", extra, effective_premium, -cost, today,
+                    "deploy_idle_cash", pos.option_type, pos.multiplier,
+                    mid_premium=premium,
+                    commission=cost - extra * pos.multiplier * gross_premium,
+                )
                 # Prix de revient moyenné (P&L), référence de stop INTACTE
                 # (cf. OptionPosition.stop_reference_premium).
                 pos.entry_premium = (pos.entry_premium * pos.contracts + effective_premium * extra) / new_contracts
@@ -1044,15 +1059,60 @@ class OptionsBacktestEngine:
         key = (today.year, today.month)
         self._monthly_contracts[key] = self._monthly_contracts.get(key, 0.0) + abs(contracts)
 
-    def _record_costs(self, contracts: float, mid_premium: float, multiplier: float, commission: float) -> None:
-        """Comptabilise la friction d'un ordre EXÉCUTÉ, à sa taille finale.
+    def _slippage_amount(self, contracts: float, mid_premium: float, multiplier: float) -> float:
+        """Écart payé au marché sur un fill, par rapport au mid : la prime est
+        payée majorée à l'achat et encaissée minorée à la vente (cf.
+        _open_or_resize / _reduce_position), donc le montant est le même des
+        deux côtés et toujours positif."""
+        return abs(contracts) * multiplier * max(mid_premium, 0.0) * self.slippage_rate
+
+    def _record_fill(
+        self, symbol: str, side: str, contracts: float, price: float, cash_flow: float,
+        today: pd.Timestamp, reason: str, option_type: str, multiplier: float,
+        mid_premium: float, commission: float,
+    ) -> None:
+        """Enregistre un fill RÉELLEMENT EXÉCUTÉ : sa friction (cumuls
+        total_commission / total_slippage) ET sa ligne au journal des
+        exécutions, en un seul appel.
+
+        Les deux sont volontairement indissociables : quand la friction se
+        comptabilisait à part, le renfort de _deploy_idle_cash -- le chemin de
+        code le plus actif du moteur, appelé chaque jour de bourse -- avait été
+        oublié, et total_friction_dollar sous-estimait donc lourdement le coût
+        réel sans que rien ne le signale. Un seul point d'entrée par fill rend
+        cet oubli impossible.
+
+        POURQUOI UN JOURNAL D'EXÉCUTIONS, alors que trades.parquet existe.
+        Celui-ci n'enregistre que les VENTES, et présente chacune comme un
+        aller-retour : `entry_date` y est la date de PREMIÈRE ouverture de la
+        position et `entry_price` le prix de revient MOYEN de tous les achats
+        qui l'ont constituée. Or une position se construit en plusieurs fois
+        (renforcement au rebalancement, redéploiement du cash oisif) sans
+        qu'aucun de ces achats n'apparaisse nulle part -- si bien qu'un trade
+        peut légitimement solder 285 contrats alors que 94 seulement ont été
+        achetés à son `entry_date`. La comptabilité du moteur est juste (aucun
+        contrat n'est vendu sans avoir été acheté, cf. tests), mais elle était
+        INVÉRIFIABLE depuis les sorties : ce journal la rend auditable ligne à
+        ligne.
+
+        `cash_flow` est signé : négatif pour un achat (décaissement), positif
+        pour une vente (encaissement), frais et slippage déjà inclus des deux
+        côtés -- sa somme sur tout le run vaut donc exactement la variation de
+        cash due aux options.
 
         Appelé après _affordable et _cap_order_size (donc après toute
         réduction) et seulement là où le cash bouge réellement : un ordre
         abandonné ne coûte rien, et l'inclure gonflerait la friction d'ordres
         qui n'ont jamais eu lieu."""
+        slippage = self._slippage_amount(contracts, mid_premium, multiplier)
         self.total_commission += commission
-        self.total_slippage += abs(contracts) * multiplier * max(mid_premium, 0.0) * self.slippage_rate
+        self.total_slippage += slippage
+        self.executions.append({
+            "date": today, "symbol": symbol, "side": side, "option_type": option_type,
+            "contracts": contracts, "price": price, "cash_flow": cash_flow,
+            "multiplier": multiplier, "reason": reason,
+            "commission": commission, "slippage": slippage,
+        })
 
     def _cap_order_size(self, contracts: float, cost_of) -> float:
         """Ramène un ACHAT au plafond par ordre (config.OPTIONS_MAX_TRADE_DOLLAR).
@@ -1183,16 +1243,18 @@ class OptionsBacktestEngine:
             if target_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                 return
             self.cash -= cost
-            self._record_costs(
-                target_contracts, contract["premium"], multiplier,
-                cost - target_contracts * multiplier * gross_premium,
-            )
             self._record_contract_volume(target_contracts, today)
             # Prix de revient TOUT COMPRIS par action (commission d'ordre
             # répartie sur les contrats effectivement achetés) : conserve la
             # sémantique de OptionPosition.entry_premium et donc le return_pct
             # des trades.
             effective_premium = cost / (target_contracts * multiplier)
+            self._record_fill(
+                symbol, "buy", target_contracts, effective_premium, -cost, today,
+                reason, option_type, multiplier,
+                mid_premium=contract["premium"],
+                commission=cost - target_contracts * multiplier * gross_premium,
+            )
             self.positions[symbol] = OptionPosition(
                 symbol=symbol, option_type=option_type, strike=contract["strike"], expiry=contract["expiry"],
                 contracts=target_contracts, entry_premium=effective_premium, entry_date=today,
@@ -1260,13 +1322,15 @@ class OptionsBacktestEngine:
                 if delta_contracts <= 0 or cost < MIN_TRADE_DOLLAR:
                     return
                 self.cash -= cost
-                self._record_costs(
-                    delta_contracts, current_premium, multiplier,
-                    cost - delta_contracts * multiplier * gross_premium,
-                )
                 self._record_contract_volume(delta_contracts, today)
                 effective_premium = cost / (delta_contracts * multiplier)
                 new_contracts = existing.contracts + delta_contracts
+                self._record_fill(
+                    symbol, "buy", delta_contracts, effective_premium, -cost, today,
+                    reason, option_type, multiplier,
+                    mid_premium=current_premium,
+                    commission=cost - delta_contracts * multiplier * gross_premium,
+                )
                 # Idem : le prix de revient suit le renfort, le seuil de stop
                 # non (cf. OptionPosition.stop_reference_premium).
                 existing.entry_premium = (existing.entry_premium * existing.contracts + effective_premium * delta_contracts) / new_contracts
@@ -1314,8 +1378,12 @@ class OptionsBacktestEngine:
         proceeds = max(gross_value - commission, 0.0)
         effective_premium = proceeds / (contracts_to_sell * pos.multiplier)
         self.cash += proceeds
-        self._record_costs(contracts_to_sell, current_premium, pos.multiplier, commission)
         self._record_contract_volume(contracts_to_sell, today)
+        self._record_fill(
+            pos.symbol, "sell", contracts_to_sell, effective_premium, proceeds, today,
+            reason, pos.option_type, pos.multiplier,
+            mid_premium=current_premium, commission=commission,
+        )
         pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
         self.trades.append({
             "symbol": pos.symbol, "entry_date": pos.entry_date, "exit_date": today,

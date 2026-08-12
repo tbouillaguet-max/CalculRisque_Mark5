@@ -344,6 +344,16 @@ def main() -> None:
     positions_history.to_parquet(out_dir / "positions_history.parquet", index=False, engine="pyarrow")
     trades.to_parquet(out_dir / "trades.parquet", index=False, engine="pyarrow")
     signals_history.to_parquet(out_dir / "signals_history.parquet", index=False, engine="pyarrow")
+    # Journal des exécutions : une ligne par fill, ACHAT COMME VENTE (cf.
+    # options_engine._record_fill). trades.parquet, lui, n'enregistre que les
+    # ventes et les présente comme des allers-retours dont l'entry_date est la
+    # PREMIÈRE ouverture de la position -- une position construite en
+    # plusieurs achats y solde donc plus de contrats qu'il n'en a été acheté à
+    # cette date. Ce journal est ce qui rend la conservation des quantités et
+    # la friction auditables ligne à ligne.
+    pd.DataFrame(engine.executions).to_parquet(
+        out_dir / "executions.parquet", index=False, engine="pyarrow",
+    )
     (out_dir / "metrics.json").write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     (out_dir / "run_config.json").write_text(json.dumps({
         "strategy": args.strategy, "strategy_params": strategy_params,
