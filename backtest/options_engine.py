@@ -752,7 +752,17 @@ class OptionsBacktestEngine:
 
         Renforcer une position se fait sur SON contrat (strike et échéance
         inchangés), au prix d'ouverture du jour, comme n'importe quel
-        renforcement."""
+        renforcement.
+
+        Un renfort dont la taille reste sous min_resize_relative_pct des
+        contrats déjà détenus est IGNORÉ (même garde-fou que le
+        redimensionnement sur dépôt SEC, cf. _open_or_resize) : cette méthode
+        est appelée CHAQUE jour de bourse, sans mémoire d'un renfort récent,
+        donc une position à peine sous le plancher de déploiement se
+        ferait sinon renforcer d'un ou deux contrats indéfiniment, jour après
+        jour, en payant plein tarif de frais et de slippage à chaque fois --
+        de quoi consommer tout le capital en friction pure sur un backtest
+        de plusieurs années, sans rapport avec la performance de la thèse."""
         if not self.min_deployment_pct or not self.positions:
             return
 
@@ -800,6 +810,21 @@ class OptionsBacktestEngine:
                     extra = min(extra, self._contracts_under_delta_cap(pos, spot, today, remaining))
                 if extra <= 0:
                     continue
+                # Même filtre que le redimensionnement sur dépôt SEC
+                # (min_resize_relative_pct, cf. _open_or_resize) : sans lui,
+                # CE renfort tourne CHAQUE jour de bourse tant que le plancher
+                # n'est pas atteint (la boucle qui l'appelle, cf. run(), n'a
+                # pas de notion de "déjà renforcé récemment") -- une position
+                # à peine sous le plancher se voit ainsi renforcée d'un ou
+                # deux contrats par jour, indéfiniment, en payant plein tarif
+                # de slippage aller-retour (config.OPTIONS_SLIPPAGE_PCT_OF_
+                # PREMIUM) et la commission minimum par ordre à chaque fois.
+                # Cumulée sur des années de rebalancement quotidien, cette
+                # friction à elle seule peut consommer tout le capital
+                # initial, sans qu'aucune thèse n'ait perdu quoi que ce soit.
+                if self.min_resize_relative_pct and pos.contracts > 0:
+                    if extra / pos.contracts < self.min_resize_relative_pct / 100:
+                        continue
 
                 def cost_of(n: float, _p=gross_premium, _m=pos.multiplier) -> float:
                     return n * _m * _p + self._order_commission(n, _p, _m, today, "buy")

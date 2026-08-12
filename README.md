@@ -418,6 +418,19 @@ que ces deux mécanismes contraignent. `min_resize_relative_pct` reste un
 **second filet** après ε : un changement de conviction qui passe ε peut
 encore ne se traduire que par un micro-ajustement en nombre de contrats.
 
+**Ce même filtre borne aussi `_deploy_idle_cash`** (le redéploiement du cash
+oisif, config.OPTIONS_MIN_DEPLOYMENT_PCT). Cette méthode est appelée CHAQUE
+jour de bourse, sans mémoire d'un renfort récent : sans le filtre, une
+position à peine sous le plancher de déploiement se fait renforcer d'un ou
+deux contrats CHAQUE JOUR, indéfiniment, en payant plein tarif de slippage
+et de commission minimum à chaque fois — sur un backtest de plusieurs années,
+cette friction pure peut consommer la quasi-totalité du capital initial,
+sans qu'aucune thèse n'ait perdu quoi que ce soit. Sur un scénario de test à
+2 positions / 120 jours, ce filtre à 15% fait passer les renforcements de
+AAA de 18 micro-ajustements distincts à... 1 (l'ouverture initiale). `--min-
+resize-relative-pct 0` rétablit l'ancien comportement (tout changement,
+même infime, déclenche un ordre) pour les deux mécanismes à la fois.
+
 **Provenance des positions** (`trades.parquet`, colonne `open_reason`) :
 `"rebalance"` (dépôt SEC), `"rebalance_daily"` (mécanisme journalier) ou
 `"roll"` (réouverture après roulement) — distinct d'`exit_reason`, qui décrit

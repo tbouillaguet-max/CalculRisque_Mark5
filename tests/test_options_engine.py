@@ -108,6 +108,53 @@ def test_le_redeploiement_a_lieu_meme_sans_ordre_en_file(panel, evenements, monk
     )
 
 
+def test_min_resize_relative_pct_bloque_les_micro_renforts_quotidiens(panel, evenements):
+    """Sans filtre, _deploy_idle_cash (appelé CHAQUE jour de bourse, sans
+    mémoire d'un renfort récent) rouvre un micro-ajustement dès que le NAV a
+    un peu bougé -- 18 renforcements distincts sur ce scénario, chacun payant
+    plein tarif de frais et de slippage. Avec le filtre, une position reste
+    gelée tant que le manque à combler ne représente pas au moins
+    min_resize_relative_pct de ses contrats détenus."""
+    sans_filtre = moteur(panel, evenements, {"AAA": "CALL"}, min_deployment_pct=30.0, min_resize_relative_pct=None)
+    _, ph_sans, _, _ = sans_filtre.run()
+
+    avec_filtre = moteur(panel, evenements, {"AAA": "CALL"}, min_deployment_pct=30.0, min_resize_relative_pct=15.0)
+    _, ph_avec, _, _ = avec_filtre.run()
+
+    def changements_de_taille(positions_history):
+        aaa = positions_history[positions_history["symbol"] == "AAA"].sort_values("date")
+        return int((aaa["contracts"].diff().fillna(0) != 0).sum())
+
+    n_sans, n_avec = changements_de_taille(ph_sans), changements_de_taille(ph_avec)
+    assert n_avec < n_sans, f"{n_avec} changements avec filtre, {n_sans} sans -- le filtre ne réduit rien"
+    # Le premier changement (l'ouverture initiale) reste inévitable dans les
+    # deux cas : c'est bien le RENFORT quotidien répété que le filtre coupe,
+    # pas l'entrée elle-même.
+    assert n_avec >= 1
+
+
+def test_min_resize_relative_pct_ne_bloque_pas_un_gros_manque_a_combler(panel, evenements):
+    """Le filtre ne doit pas empêcher un redéploiement massif et légitime --
+    seuls les micro-ajustements sont concernés. max_delta_notional_pct=0 pour
+    isoler l'effet du seul plancher de primes (90%), sans que le plafond de
+    levier ne tronque le renfort et ne brouille la comparaison."""
+    sans_filtre = moteur(
+        panel, evenements, {"AAA": "CALL"},
+        min_deployment_pct=90.0, max_delta_notional_pct=0, min_resize_relative_pct=None,
+    )
+    _, ph_sans, _, _ = sans_filtre.run()
+
+    avec_filtre = moteur(
+        panel, evenements, {"AAA": "CALL"},
+        min_deployment_pct=90.0, max_delta_notional_pct=0, min_resize_relative_pct=15.0,
+    )
+    _, ph_avec, _, _ = avec_filtre.run()
+
+    contrats_sans = ph_sans[ph_sans["symbol"] == "AAA"].sort_values("date")["contracts"].iloc[0]
+    contrats_avec = ph_avec[ph_avec["symbol"] == "AAA"].sort_values("date")["contracts"].iloc[0]
+    assert contrats_avec == pytest.approx(contrats_sans)
+
+
 # --------------------------------------------------------------------------- #
 # E4 : commission de sortie
 # --------------------------------------------------------------------------- #

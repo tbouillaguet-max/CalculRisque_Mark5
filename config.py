@@ -432,9 +432,13 @@ OPTIONS_INITIAL_CAPITAL = 1_000_000.0
 # Coûts par contrat (pas en bps du notionnel comme les actions : une option a
 # un notionnel qui ne reflète pas son coût de transaction réel). ~0.65$/contrat
 # est l'ordre de grandeur usuel des courtiers US ; le slippage est exprimé en %
-# de la prime (les spreads bid/ask sur options sont larges, surtout hors ATM).
+# de la prime (les spreads bid/ask sur options sont larges, surtout hors ATM),
+# payé aux DEUX bouts (prime majorée à l'achat, minorée à la vente, cf.
+# options_engine._record_costs) -- 5% aller-retour était trop pénalisant pour
+# des options suffisamment liquides pour être tradées en pratique ; 2,5%
+# reste conservateur sans écraser la thèse sous la seule friction.
 OPTIONS_COMMISSION_PER_CONTRACT = 0.65
-OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 5.0
+OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 2.5
 
 # Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique un taux par
 # contrat mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat
@@ -551,14 +555,25 @@ OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
 # quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
 OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
-# Second filet, APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD
-# ci-dessous) : un redimensionnement qui passe ε mais reste minuscule en
-# taille de contrats (ex: NAV qui a un peu bougé, sans changement de
-# conviction) ne mérite pas non plus l'aller-retour de frais. Une position
-# déjà ouverte n'est resize QUE si le changement dépasse ce pourcentage de
-# ses contrats actuels ; en dessous, elle reste gelée à sa taille actuelle
-# (une NOUVELLE position n'est jamais concernée). None ou 0 désactive le
-# filtre (tout changement, même infime, déclenche un ordre).
+# Filtre de micro-trades, à DEUX points d'application :
+#   1. Redimensionnement sur dépôt SEC (_open_or_resize) : second filet,
+#      APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD ci-dessous) --
+#      un redimensionnement qui passe ε mais reste minuscule en taille de
+#      contrats (ex: NAV qui a un peu bougé, sans changement de conviction)
+#      ne mérite pas non plus l'aller-retour de frais.
+#   2. Redéploiement du cash oisif (_deploy_idle_cash) : appelé CHAQUE jour
+#      de bourse, sans mémoire d'un renfort récent -- sans ce filtre, une
+#      position à peine sous le plancher de déploiement se fait renforcer
+#      d'un ou deux contrats CHAQUE JOUR, indéfiniment, payant plein tarif de
+#      slippage (OPTIONS_SLIPPAGE_PCT_OF_PREMIUM, aux DEUX bouts) et de
+#      commission minimum à chaque fois -- assez, cumulé sur des années de
+#      backtest, pour consommer tout le capital initial en pure friction,
+#      sans rapport avec la performance de la thèse.
+# Dans les deux cas : une position déjà ouverte n'est resize QUE si le
+# changement dépasse ce pourcentage de ses contrats actuels ; en dessous,
+# elle reste gelée à sa taille actuelle (une NOUVELLE position n'est jamais
+# concernée). None ou 0 désactive le filtre (tout changement, même infime,
+# déclenche un ordre).
 OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
 
 # Seuil ε (en points de log(V/P), cf. OPTIONS_MULTIPLES_GAP_BASIS="log") du

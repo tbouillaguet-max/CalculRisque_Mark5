@@ -201,10 +201,13 @@ def main() -> None:
     parser.add_argument("--real-snapshot-tolerance-days", type=int, default=config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS)
     parser.add_argument(
         "--min-resize-relative-pct", type=float, default=None,
-        help="Une position déjà ouverte n'est resize que si le changement dépasse ce %% de sa "
-             "valeur actuelle (défaut de la stratégie, sinon config.OPTIONS_MIN_RESIZE_RELATIVE_PCT "
-             "= 15). Ex: --min-resize-relative-pct 5 (plus réactif) ou 25 (moins de friction). "
-             "0 désactive le filtre (comportement historique : tout changement déclenche un ordre).",
+        help="Une position déjà ouverte n'est resize/renforcée que si le changement dépasse ce %% "
+             "de ses contrats actuels (défaut de la stratégie, sinon config.OPTIONS_MIN_RESIZE_"
+             "RELATIVE_PCT = 15). S'applique aussi bien au redimensionnement sur dépôt SEC qu'au "
+             "redéploiement quotidien du cash oisif (_deploy_idle_cash) -- ce dernier tourne CHAQUE "
+             "jour de bourse sans lui, ce qui peut consommer tout le capital en friction pure sur "
+             "un backtest de plusieurs années. Ex: --min-resize-relative-pct 5 (plus réactif) ou "
+             "25 (moins de friction). 0 désactive le filtre (tout changement déclenche un ordre).",
     )
     parser.add_argument(
         "--rebalance-log-gap-threshold", type=float, default=None,
