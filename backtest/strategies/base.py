@@ -126,7 +126,18 @@ def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter
 
     L'excédent des lignes plafonnées est redistribué aux autres au prorata,
     en répétant l'opération : une simple renormalisation après écrêtage
-    remonterait mécaniquement certaines lignes au-dessus du plafond."""
+    remonterait mécaniquement certaines lignes au-dessus du plafond.
+
+    LA SOMME DES POIDS PEUT ÊTRE INFÉRIEURE À 1, et c'est voulu. Quand il y a
+    trop peu de candidats pour que le plafond soit atteignable (moins de
+    1/cap lignes), la version précédente renvoyait l'ÉQUIPONDÉRATION -- donc
+    100% du portefeuille sur une seule ligne quand une seule candidate passait
+    le seuil, 50% sur chacune quand il y en avait deux, pour un plafond
+    pourtant demandé à 20%. Un plafond n'est pas une cible d'allocation, c'est
+    une LIMITE DE RISQUE : avec une seule candidate, la bonne réponse est 20%
+    investi et 80% en cash, pas tout le capital sur un titre. L'engine sait
+    déjà gérer un budget partiellement alloué (il ne force jamais la somme des
+    poids à 1, cf. options_engine._queue_isolated_order)."""
     cap = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT if cap_pct is None else cap_pct
     total = conviction.sum()
     if total <= 0:
@@ -136,9 +147,10 @@ def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter
         return weights
 
     cap = cap / 100
-    # Plafond inatteignable (trop peu de candidats) : équipondération.
+    # Plafond inatteignable (trop peu de candidats) : chaque ligne prend le
+    # plafond, et le reste du capital n'est simplement pas alloué.
     if cap * len(weights) <= 1:
-        return pd.Series(1 / len(weights), index=weights.index)
+        return pd.Series(cap, index=weights.index)
 
     for _ in range(max_iter):
         over = weights > cap

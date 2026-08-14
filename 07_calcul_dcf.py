@@ -182,17 +182,22 @@ def build_input_table(latest_only: bool = True) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def hypotheses_pour_secteur(sector, hypotheses: Dict = HYPOTHESES_DEFAUT) -> Dict:
+def hypotheses_pour_secteur(sector, hypotheses: Dict = HYPOTHESES_DEFAUT, year=None) -> Dict:
     """Hypothèses DCF de `hypotheses`, dont le WACC et les deux taux de
-    croissance sont remplacés par ceux du secteur (config.SECTOR_DCF_PARAMS).
+    croissance sont remplacés par ceux du secteur (config.sector_dcf_params).
 
     Un taux d'actualisation unique pour tout l'univers est un biais
     systématique : à 10%, une utility régulée (WACC réel ~6,5%) ressort
     mécaniquement sous-évaluée et une techno surévaluée, quelle que soit sa
-    situation réelle."""
-    params = config.SECTOR_DCF_PARAMS.get(
-        sector if isinstance(sector, str) else "", config.SECTOR_DCF_PARAMS["_default"],
-    )
+    situation réelle.
+
+    `year` : exercice valorisé. Le WACC y est indexé sur la courbe de taux de
+    l'année (config.DCF_WACC_FOLLOWS_RATE_CURVE) -- un WACC figé de 2010 à
+    2026 est un pari de taux non voulu, et systématiquement à contretemps :
+    trop haut quand les taux étaient à zéro (valeur sous-estimée, excès de
+    PUT), trop bas quand ils étaient à 5% (excès de CALL). year=None
+    reproduit exactement le comportement d'avant."""
+    params = config.sector_dcf_params(sector, year)
     return {
         **hypotheses,
         "taux_actualisation": params["wacc"],
@@ -289,7 +294,17 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
             secteur = row.get("sector")
             if isinstance(secteur, str) and secteur not in config.SECTOR_DCF_PARAMS:
                 secteurs_inconnus.add(secteur)
-            hyp = hypotheses_pour_secteur(secteur, hypotheses)
+            # WACC indexé sur la courbe de taux de l'exercice valorisé.
+            # L'année de DÉPÔT (filed_date) plutôt que l'exercice comptable :
+            # c'est au moment où l'information devient publique que le marché
+            # actualise, et c'est cette date qui pilote tout le reste du
+            # pipeline. Repli sur l'exercice si filed_date manque.
+            filed = pd.to_datetime(row.get("filed_date"), errors="coerce")
+            annee_actualisation = filed.year if pd.notna(filed) else row.get("year")
+            hyp = hypotheses_pour_secteur(
+                secteur, hypotheses,
+                year=int(annee_actualisation) if pd.notna(annee_actualisation) else None,
+            )
 
             equity_value, details = calculer_dcf(
                 fcf_actuel=fcf_actuel,

@@ -52,6 +52,13 @@ def run_avec_renforcements():
         roll_when_days_left=60, stop_basis="underlying", exit_when_signal_lost=True,
         daily_rebalance=True, vol_mode="rolling", momentum_min_pct=None,
         max_trade_dollar=15_000.0, take_profit_convergence_fraction=0.80,
+        # Le plancher de primes est DÉSACTIVÉ par défaut depuis l'audit
+        # (config.OPTIONS_MIN_DEPLOYMENT_PCT = 0 : c'était une martingale sur
+        # les positions perdantes). Il est réactivé EXPLICITEMENT ici parce
+        # que ce fichier teste le JOURNAL de _deploy_idle_cash, pas la
+        # pertinence du mécanisme : sans lui, ce chemin de code ne s'exécute
+        # simplement jamais et les tests ne vérifient plus rien.
+        min_deployment_pct=25.0,
     )
     equity_curve, positions_history, trades, _ = engine.run()
     return engine, equity_curve, positions_history, trades, pd.DataFrame(engine.executions)
@@ -129,10 +136,18 @@ def test_la_reconciliation_du_rapport_donne_un_ecart_nul(run_avec_renforcements)
 # --------------------------------------------------------------------------- #
 
 def test_les_cash_flow_du_journal_reconstituent_le_cash_final(run_avec_renforcements):
-    """cash_flow est signé et frais compris : sa somme doit expliquer à elle
-    seule tout l'écart entre capital initial et cash final."""
+    """cash_flow est signé et frais compris : sa somme doit expliquer tout
+    l'écart entre capital initial et cash final, aux INTÉRÊTS près.
+
+    Les intérêts du cash oisif (cf. options_engine._accrue_cash_interest) sont
+    le seul mouvement de trésorerie qui ne passe pas par un fill : le journal
+    des exécutions décrit ce qui a été NÉGOCIÉ, pas tout ce qui a bougé sur le
+    compte. Les compter à part est volontaire -- une performance portée par
+    les taux ne doit pas se confondre avec une performance portée par la
+    thèse."""
     engine, _, _, _, executions = run_avec_renforcements
-    assert CAPITAL + executions["cash_flow"].sum() == pytest.approx(engine.cash, abs=1e-6)
+    attendu = CAPITAL + executions["cash_flow"].sum() + engine.total_cash_interest
+    assert attendu == pytest.approx(engine.cash, abs=1e-6)
 
 
 def test_les_achats_sortent_du_cash_et_les_ventes_y_rentrent(run_avec_renforcements):

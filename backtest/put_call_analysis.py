@@ -56,6 +56,24 @@ def _as_datetime(series: pd.Series) -> pd.Series:
     return pd.to_datetime(series, errors="coerce")
 
 
+def options_nav(equity_curve: pd.DataFrame) -> np.ndarray:
+    """NAV du moteur PRIVÉ des intérêts du cash oisif.
+
+    Les intérêts (cf. options_engine._accrue_cash_interest) sont un produit de
+    TRÉSORERIE, pas un P&L d'option : ils ne sont attribuables ni à la jambe
+    call ni à la jambe put, et les laisser dans le NAV ferait diverger la
+    réconciliation `capital initial + réalisé + latent` d'exactement leur
+    montant -- un résidu qui grandit tout au long du run et qu'on prendrait
+    pour une erreur de comptabilité.
+
+    La colonne est absente des runs antérieurs à son introduction : on retombe
+    alors sur le NAV brut, ce qui reproduit le comportement d'avant."""
+    nav = equity_curve["nav"].to_numpy(dtype=float)
+    if "total_cash_interest" not in equity_curve.columns:
+        return nav
+    return nav - equity_curve["total_cash_interest"].to_numpy(dtype=float)
+
+
 def side_equity_curve(
     dates: pd.DatetimeIndex,
     trades_side: pd.DataFrame,
@@ -110,7 +128,10 @@ def reconciliation_residual(
     dates = pd.DatetimeIndex(_as_datetime(equity_curve["date"]))
     initial_capital = float(equity_curve["nav"].iloc[0])
     reconstructed = side_equity_curve(dates, trades, positions_history, initial_capital)
-    residual = equity_curve["nav"].to_numpy() - reconstructed["nav"].to_numpy()
+    # Intérêts du cash retirés des DEUX côtés de la comparaison (cf.
+    # options_nav) : ce n'est pas un P&L d'option, et le laisser ferait
+    # apparaître un résidu croissant qui n'est pas une erreur.
+    residual = options_nav(equity_curve) - reconstructed["nav"].to_numpy()
     max_abs = float(np.nanmax(np.abs(residual))) if len(residual) else 0.0
     return {
         "max_abs_residual_dollar": max_abs,
@@ -155,7 +176,9 @@ def side_metrics(
         # Le P&L de la jambe en dollars : c'est la seule grandeur qui s'ADDITIONNE
         # entre jambes (les %, eux, sont rapportés au capital initial complet).
         out[side]["leg_pnl_dollar"] = float(curve["nav"].iloc[-1] - initial_capital)
-    out["ALL"]["leg_pnl_dollar"] = float(equity_curve["nav"].iloc[-1] - initial_capital)
+    # Le total qui doit s'additionner aux jambes est celui des OPTIONS seules :
+    # les intérêts du cash n'appartiennent à aucune jambe (cf. options_nav).
+    out["ALL"]["leg_pnl_dollar"] = float(options_nav(equity_curve)[-1] - initial_capital)
     return out
 
 
@@ -391,7 +414,7 @@ def pnl_contribution_over_time(
         )
         out[f"{side}_pnl_cumul"] = curve["nav"].to_numpy() - initial_capital
         out[f"{side}_market_value"] = curve["invested_value"].to_numpy()
-    out["total_pnl_cumul"] = equity_curve["nav"].to_numpy() - initial_capital
+    out["total_pnl_cumul"] = options_nav(equity_curve) - initial_capital
     return out
 
 

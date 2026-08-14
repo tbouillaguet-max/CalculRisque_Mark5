@@ -292,6 +292,15 @@ def test_open_reason_distingue_depot_et_journalier():
         daily_rebalance=True, stop_loss_pct=-95.0, take_profit_pct=1000.0,
         take_profit_convergence_fraction=0, target_tenor_days=60, roll_when_days_left=None,
         min_deployment_pct=None, min_resize_relative_pct=None,
+        # Le contrat de ce scénario est TRÈS hors de la monnaie (strike à
+        # mi-chemin, 125 pour un spot de 100, à 60 jours) : son delta tourne
+        # autour de 0,04, sous le plancher de dimensionnement
+        # (config.OPTIONS_MIN_DELTA_FOR_SIZING). Le plancher est justifié --
+        # dimensionner par division sur un delta pareil attribue des milliers
+        # de contrats -- mais ce test-ci porte sur `open_reason`, pas sur le
+        # dimensionnement : on le désactive pour que les deux positions
+        # existent et que l'origine de leur ouverture puisse être comparée.
+        min_delta_for_sizing=0,
     )
     _, _, trades, _ = engine.run()
 

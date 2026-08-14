@@ -168,8 +168,23 @@ def compute_metrics(
     excess_std = excess.std()
     sharpe = (excess.mean() / excess_std) * np.sqrt(TRADING_DAYS_PER_YEAR) if excess_std > 0 else np.nan
 
-    downside = daily_returns[daily_returns < 0]
-    sortino = (excess.mean() / downside.std()) * np.sqrt(TRADING_DAYS_PER_YEAR) if len(downside) > 1 and downside.std() > 0 else np.nan
+    # DÉVIATION À LA BAISSE au sens standard : racine de la moyenne des carrés
+    # des excès NÉGATIFS, mesurés par rapport à la cible (0 sur des excès), et
+    # moyennés sur TOUTES les observations.
+    #
+    # L'ancienne version prenait `daily_returns[daily_returns < 0].std()`, qui
+    # se trompe deux fois : elle mélange un numérateur en excès et un
+    # dénominateur en rendements bruts, et surtout `.std()` mesure la
+    # dispersion autour de la MOYENNE DES NÉGATIFS, pas autour de zéro. Cette
+    # moyenne étant négative, les écarts sont systématiquement rétrécis et le
+    # Sortino systématiquement flatté -- d'un facteur 1,19 sur une
+    # distribution normale, davantage sur une distribution asymétrique, ce qui
+    # est précisément le cas d'un portefeuille d'options longues.
+    downside_deviation = float(np.sqrt(np.square(np.minimum(excess, 0.0)).mean()))
+    sortino = (
+        (excess.mean() / downside_deviation) * np.sqrt(TRADING_DAYS_PER_YEAR)
+        if len(excess) > 1 and downside_deviation > 0 else np.nan
+    )
 
     running_max = equity_curve["nav"].cummax()
     drawdown = equity_curve["nav"] / running_max - 1
@@ -242,6 +257,71 @@ def compute_metrics(
         metrics.update(extra)
 
     return metrics
+
+
+def resolve_split_date(equity_curve: pd.DataFrame, train_fraction: float) -> Optional[pd.Timestamp]:
+    """Date qui coupe la courbe de NAV en `train_fraction` d'apprentissage et
+    le reste en test. None si la courbe est trop courte pour que les deux
+    fenêtres aient un sens."""
+    if equity_curve.empty or not 0 < train_fraction < 1:
+        return None
+    dates = pd.DatetimeIndex(equity_curve["date"]).sort_values()
+    if len(dates) < 20:
+        return None
+    return dates[int(len(dates) * train_fraction)]
+
+
+def split_period_metrics(
+    equity_curve: pd.DataFrame,
+    trades: pd.DataFrame,
+    split_date: pd.Timestamp,
+    risk_free_rate: float = 0.0,
+    benchmark_prices: Optional[pd.Series] = None,
+    keys: tuple = ("cagr_pct", "sharpe_ratio", "sortino_ratio", "calmar_ratio",
+                   "max_drawdown_pct", "total_return_pct", "num_trades", "profit_factor"),
+) -> dict:
+    """Mêmes métriques, calculées SÉPARÉMENT avant et après `split_date`, et
+    préfixées `train_` / `test_`.
+
+    À QUOI ÇA SERT. Un grid-search classé sur l'historique complet retient,
+    par construction, la combinaison qui colle le mieux à cet historique-là.
+    Avec plusieurs dizaines de combinaisons sur une seule période, le meilleur
+    Sharpe est en grande partie du bruit sélectionné : les garde-fous déjà en
+    place (nombre minimal de trades, avertissement en bord de grille) écartent
+    les artefacts d'échantillon trop petit, mais pas le sur-ajustement. Le
+    seul test qui le détecte est de regarder ce que la combinaison retenue
+    fait sur des données qui n'ont pas servi à la choisir.
+
+    LE PORTEFEUILLE N'EST PAS REMIS À ZÉRO au changement de période : le run
+    est unique et on découpe sa courbe de NAV. C'est volontaire et plus
+    réaliste qu'un second run indépendant -- les positions ouvertes à la fin
+    de la période d'apprentissage sont bien celles qu'on porterait en entrant
+    dans la période de test."""
+    out: dict = {}
+    if equity_curve.empty or split_date is None:
+        return out
+
+    dates = pd.DatetimeIndex(equity_curve["date"])
+    windows = {
+        "train": equity_curve[dates <= split_date],
+        "test": equity_curve[dates > split_date],
+    }
+    for label, window in windows.items():
+        if len(window) < 2:
+            continue
+        if trades is not None and not trades.empty and "exit_date" in trades.columns:
+            exits = pd.DatetimeIndex(trades["exit_date"])
+            window_trades = trades[exits <= split_date] if label == "train" else trades[exits > split_date]
+        else:
+            window_trades = trades
+        window_metrics = compute_metrics(
+            window, window_trades,
+            risk_free_rate=risk_free_rate, benchmark_prices=benchmark_prices,
+        )
+        for key in keys:
+            out[f"{label}_{key}"] = window_metrics.get(key)
+    out["split_date"] = str(pd.Timestamp(split_date).date())
+    return out
 
 
 def format_benchmark_summary(metrics: dict, benchmark_label: str) -> str:

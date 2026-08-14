@@ -162,9 +162,10 @@ python 10_backtest_options.py --strategy valuation_gap_options --start-date 2015
 ```
 
 Hypothèses du moteur (`backtest/options_engine.py`) :
-    - Entrée : cherche un snapshot RÉEL archivé par `08_recuperation_options.py`
-      à proximité de la date (fenêtre `OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS`,
-      14 jours par défaut) ; sinon simule par Black-Scholes (strike ATM,
+    - Entrée : cherche le DERNIER snapshot RÉEL archivé par
+      `08_recuperation_options.py` **au plus tard à la date d'exécution**
+      (fenêtre `OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS`, 14 jours par défaut) ;
+      sinon simule par Black-Scholes (strike ATM,
       échéance 2 ans, volatilité réalisée glissante en repli). **Lance
       régulièrement `08_recuperation_options.py` sur un compte paper trading
       pour accumuler des snapshots réels au fil du temps** : plus il y en a,
@@ -178,6 +179,12 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       reconstitue directement un VRAI historique d'options déjà expirées
       (impossible via IBKR seul, qui ne résout plus les contrats expirés),
       sans attendre l'accumulation de runs futurs.
+      Du snapshot, le moteur retient le strike, l'échéance et **l'IV** — pas
+      la prime : celle-ci a été cotée à un autre spot que celui d'exécution,
+      et la reprendre telle quelle faisait apparaître un saut de P&L au
+      premier repricing. L'IV est la grandeur transportable d'une date à
+      l'autre, le prix ne l'est pas ; la prime d'entrée en est dérivée par
+      Black-Scholes au spot du jour.
     - Repricing quotidien TOUJOURS par Black-Scholes (aucune source ne fournit
       un flux d'options continu), à strike et échéance fixés à l'entrée. La
       volatilité, elle, dépend de `--vol-mode` : `frozen` (défaut, comportement
@@ -347,6 +354,25 @@ bord de grille, un avertissement invite à élargir `--stop-loss-grid`/
 `--take-profit-grid` -- un optimum au bord de la plage testée n'est pas prouvé
 être un optimum réel.
 
+**Séparation apprentissage / test** (`--train-fraction`, 0,60 par défaut). Le
+classement se fait sur `train_<objectif>`, calculé sur les 60 % initiaux de
+l'historique ; `test_<objectif>`, calculé sur le reste, est affiché à côté et
+écrit au CSV — et c'est lui qui compte. Un grid-search classé sur l'historique
+complet retient, par construction, la combinaison qui colle le mieux à cet
+historique-là : avec 64 combinaisons sur une seule période, le meilleur Sharpe
+est en grande partie du bruit sélectionné. `--min-trades` et l'avertissement de
+bord de grille écartent les artefacts d'échantillon trop petit, pas le
+sur-ajustement ; le seul test qui le détecte est de regarder ce que la
+combinaison retenue fait sur des données qui n'ont pas servi à la choisir.
+
+Le portefeuille n'est **pas** remis à zéro au changement de période : le run
+est unique et on découpe sa courbe de NAV — les positions ouvertes à la fin de
+l'apprentissage sont bien celles qu'on porterait en entrant dans le test. Un
+avertissement explicite est émis si l'objectif s'effondre hors échantillon.
+`--no-walk-forward` rétablit le classement in-sample.
+
+`11b_optimize_rebalance_threshold.py` applique exactement la même séparation.
+
 ### Score d'écart symétrique (base `log`)
 
 L'écart de `valuation_gap_multiples_options` se mesure en **points de log** :
@@ -419,7 +445,8 @@ que ces deux mécanismes contraignent. `min_resize_relative_pct` reste un
 encore ne se traduire que par un micro-ajustement en nombre de contrats.
 
 **Ce même filtre borne aussi `_deploy_idle_cash`** (le redéploiement du cash
-oisif, config.OPTIONS_MIN_DEPLOYMENT_PCT). Cette méthode est appelée CHAQUE
+oisif, config.OPTIONS_MIN_DEPLOYMENT_PCT — **désactivé par défaut depuis
+l'audit**, voir plus bas). Cette méthode est appelée CHAQUE
 jour de bourse, sans mémoire d'un renfort récent : sans le filtre, une
 position à peine sous le plancher de déploiement se fait renforcer d'un ou
 deux contrats CHAQUE JOUR, indéfiniment, en payant plein tarif de slippage
@@ -502,18 +529,166 @@ rendrait un run non reproductible d'une exécution à l'autre, ce qui
 interdirait toute comparaison de paramètres. Une direction vide ne réserve
 rien — l'autre prend tout le budget.
 
-### Plafond par ordre (`OPTIONS_MAX_TRADE_DOLLAR`)
+### Plafond par ordre (`OPTIONS_MAX_TRADE_PCT_OF_NAV`)
 
-Aucun **ordre d'achat** ne décaisse plus de 15 000 $ (frais inclus).
+Aucun **ordre d'achat** ne décaisse plus de 10 % du NAV (frais inclus).
 C'est un plafond **par ordre, pas par position** : une ligne peut le dépasser
 en cumulant plusieurs renforcements sur des jours différents — c'est
 `BACKTEST_MAX_WEIGHT_PER_POSITION_PCT` qui borne la taille d'une position.
 Jamais appliqué aux **ventes** : plafonner une sortie interdirait de liquider
-une position devenue grosse, exactement quand il faut pouvoir sortir.
+une position devenue grosse, exactement quand il faut pouvoir sortir. Jamais
+appliqué non plus au **roulement** : celui-ci ne crée pas une position, il en
+renouvelle une, et le plafonner revenait à plafonner une continuation.
+
+Le plafond était auparavant un montant ABSOLU (15 000 $), calibré sur un
+capital de 1 000 000 $ sans le dire et ne suivant ni la croissance ni la
+baisse du portefeuille. Tant que le plancher de primes reconstruisait les
+positions jour après jour, ce sous-dimensionnement se rattrapait tout seul ;
+le plancher désactivé, il devenait la contrainte qui mord — l'ouverture visée
+par le dimensionnement par delta était ramenée à 1/25e de sa taille.
+`OPTIONS_MAX_TRADE_DOLLAR` existe toujours comme plafond absolu additionnel,
+désactivé par défaut.
 
 Les ordres ramenés à ce plafond sont comptés séparément des ordres tronqués
 faute de cash (`capped_orders_count` vs `truncated_orders_count`) : les deux
 causes n'ont rien à voir et les confondre rendrait le diagnostic illisible.
+Les ordres **purement abandonnés** (frais excessifs, cash nul, plafond de
+levier…) sont eux aussi comptés à part, par motif, dans
+`dropped_orders_by_reason` — un ordre abandonné ne laisse aucune trace dans
+`trades.parquet` ni dans l'equity_curve, et un run pouvait rester
+intégralement en cash sans que rien ne le signale.
+
+### Dimensionnement : une seule base, deux plafonds qui mordent vraiment
+
+Voir `RAPPORT_AUDIT.md` pour les mesures. Trois réglages ont changé de valeur
+par défaut, et il faut les connaître pour lire un run.
+
+**Le plancher de primes est désactivé** (`OPTIONS_MIN_DEPLOYMENT_PCT = 0`).
+Il exigeait que 25 % du NAV soit investi *en primes* — or une prime baisse
+quand la thèse échoue, donc le plancher se trouvait violé précisément quand la
+position perdait, et le moteur rachetait. Moins l'option valait cher, plus un
+dollar achetait de contrats : le renforcement accélérait à mesure que la thèse
+se dégradait, et une position gagnante n'était au contraire jamais renforcée.
+Sur un CALL dont le sous-jacent perd 47 %, à signal et chemin de cours
+identiques : **NAV finale 976 766 $ sans le plancher, 437 074 $ avec**. Le
+mécanisme reste disponible (`--min-deployment-pct 25`) pour rejouer un run
+ancien.
+
+**Le plafond de levier borne désormais le portefeuille**, et plus seulement
+le redéploiement du cash oisif. Il est vérifié à l'ouverture de chaque ordre
+(`_open_or_resize`) *et* réévalué chaque jour : au-delà de
+`OPTIONS_MAX_DELTA_NOTIONAL_PCT` majoré de `OPTIONS_DELEVER_TOLERANCE_PCT`,
+toutes les positions sont réduites au même prorata. La bande de tolérance
+évite de vendre trois contrats à chaque oscillation du marché ; la réduction
+au prorata préserve la hiérarchie décidée par la stratégie, le plafond
+n'exprimant aucune opinion sur la thèse à abandonner.
+
+**Le roulement conserve l'exposition établie.** `target_dollar` enregistre
+désormais l'exposition *réellement prise* — pas celle qui avait été demandée
+avant que le cash, le plafond par ordre ou le plafond de levier ne rognent
+l'ordre — et suit les renforcements. Sans quoi le roulement rejouait une cible
+sans rapport avec la position détenue, dans un sens comme dans l'autre.
+
+### Plancher de delta (`OPTIONS_MIN_DELTA_FOR_SIZING`)
+
+Le moteur convertit une exposition $ visée en contrats par
+`nb = target_dollar / (|delta| x spot x multiplicateur)`. Cette expression
+**diverge** quand le delta tend vers zéro : à delta 0,01 elle attribue cent
+fois plus de contrats qu'à delta 1,0, pour la même exposition notionnelle
+affichée. Le seul garde-fou était `abs(delta) < 1e-6`, qui protège d'un
+`OverflowError` mais pas de l'absurdité économique.
+
+Sans stop-loss, les positions perdantes survivent et dérivent loin hors de la
+monnaie ; leur delta et leur prime tendent vers 0, et chaque renforcement leur
+attribue un nombre de contrats colossal. Mesuré sur deux runs identiques à un
+paramètre près (`--stop-loss-pct -1000`) : **commissions ×26** (17 910 $ →
+470 888 $) pendant que le **slippage baissait**. La commission suit le NOMBRE
+de contrats, le slippage leur VALEUR — le volume avait explosé sans que la
+valeur engagée bouge.
+
+Ni le plafond par ordre ni le plafond de levier n'y suffisaient : le premier
+est en dollars (sur une option à 0,02 $, 10 % d'un NAV de 1 M$ autorise
+50 000 contrats), et le second a exactement la même forme que le
+dimensionnement, donc il diverge avec lui.
+
+**Le plancher ne s'applique qu'aux ACHATS.** Une position sous le plancher
+doit rester vendable — par stop-loss, perte de signal, roulement, expiration
+ou réduction. Le test le vérifie explicitement : le plancher est évalué
+*après* le calcul du delta de contrats, uniquement dans la branche « achat ».
+
+### Intérêts sur le cash oisif (`OPTIONS_CREDIT_IDLE_CASH`)
+
+Le cash est capitalisé au taux sans risque de l'année, sur les jours
+calendaires écoulés (base 365 : un week-end rapporte). Cette stratégie porte
+en moyenne **74 % de cash** — le dimensionnement par delta n'engage qu'une
+prime, soit une fraction de l'exposition — et le laisser stérile la pénalisait
+pour une raison étrangère à la thèse.
+
+C'est aussi ce biais qui rendait `OPTIONS_MIN_DEPLOYMENT_PCT` tentant : le
+plancher de primes ne faisait que compenser un manque à gagner artificiel, en
+payant frais et slippage pour le faire.
+
+Les intérêts sont publiés à part (`total_cash_interest_dollar`, colonne
+`total_cash_interest` de l'`equity_curve`) pour qu'une performance portée par
+les taux ne se confonde pas avec une performance portée par la thèse — et
+`put_call_analysis` les retire du NAV avant d'attribuer quoi que ce soit à une
+jambe, sinon sa réconciliation ne boucle plus.
+
+### Durée de détention minimale (`OPTIONS_MIN_HOLDING_DAYS`)
+
+Les contrats sont achetés à 730 jours d'échéance, mais la durée de détention
+médiane d'une sortie `signal_lost` était de **79 jours**, avec un minimum
+mesuré à **un jour**. Tous motifs confondus, la moyenne est de 193 jours : la
+stratégie consommait 26 % de l'optionalité qu'elle achète et jetait le reste.
+
+Ne s'applique **jamais** aux motifs `stop_loss`, `take_profit`, `roll`,
+`expiry` ni `data_gap` : un garde-fou de risque ou une échéance ne se négocie
+pas contre un calendrier. À périmètre égal (`--exit-when-signal-lost` des deux
+côtés), `--min-holding-days 180` fait passer la médiane `signal_lost` de 87 à
+202 jours, et retire 24 % des trades comme de la friction.
+
+### Diagnostics du dimensionnement
+
+`metrics.json` porte désormais `total_contracts_traded`,
+`max_contracts_single_order` (+ symbole et date), `min_delta_at_sizing`,
+`days_above_delta_cap` / `pct_days_above_delta_cap` /
+`median_excess_above_delta_cap_pct`.
+
+Ce sont les chiffres qui auraient rendu les deux défauts ci-dessus visibles
+immédiatement : le **volume de contrats** est la seule grandeur qui distingue
+« j'engage plus de capital » de « j'achète des milliers d'options mortes »
+— la friction totale, elle, ne le dit pas, puisque ses deux composantes
+bougent alors en sens inverse.
+
+### Hystérésis entre l'entrée et la sortie (`OPTIONS_EXIT_THRESHOLD_RATIO`)
+
+Entrée et sortie ne partagent plus le même seuil. Une position s'ouvre à
+`|écart| >= 18,23` points de log et n'est vendue qu'une fois l'écart repassé
+sous `0,70 x 18,23 = 12,76` — un rapport théorique/cours de 1,136 au lieu de
+1,20.
+
+Avec la réévaluation quotidienne, un seuil unique faisait qu'un titre
+oscillant autour de la barre déclenchait des allers-retours complets, chacun
+payant deux fois le slippage, deux commissions minimum, et **abandonnant toute
+la valeur temps déjà achetée** sur un contrat à deux ans. Le filtre ε et
+`min_resize_relative_pct` protègent tous les deux le *redimensionnement* et lui
+seul, jamais la décision d'ouvrir ou de fermer — qui est pourtant la plus
+chère. Une convergence de 30 % n'est pas une raison de solder un pari à deux
+ans : c'est le début de ce qu'on attendait. `--strategy-param
+exit_threshold_ratio=1` rétablit l'ancien comportement.
+
+### Coût de portage et exposition vega dans les métriques
+
+`metrics.json` porte maintenant `total_theta_decay_dollar` /
+`total_theta_decay_pct_of_initial` et `avg_vega_notional_pct`, et
+l'`equity_curve` les colonnes `theta_per_day` / `vega_notional`.
+
+Le theta est le **seuil que la thèse doit battre avant de gagner quoi que ce
+soit** : mesuré sur un sous-jacent quasi plat, acheter des options à deux ans
+coûte ~18 % de NAV par deux ans en pure valeur temps, et aucune métrique ne
+l'exprimait. Le vega, lui, mesure la part du P&L que ce backtest **ne simule
+pas du tout** : la stratégie achetant CALL *et* PUT, elle est longue de vega
+des deux côtés, et le repricing ne suit jamais l'implicite.
 
 ### Journal des exécutions (`executions.parquet`)
 
@@ -649,10 +824,22 @@ conclure quoi que ce soit d'un run.
 
 ### Médianes sectorielles calculées sur les survivants (06b)
 
-`compute_sector_year_multiples` recalcule bien les multiples par millésime de
-publication, ce qui supprime le look-ahead temporel. Mais il les calcule à
-partir de `multiples.parquet`, qui ne contient que l'univers **actuel** : les
-médianes sectorielles de 2012 sont établies sur les seules entreprises encore
+Les multiples sont calculés par millésime de publication, et — depuis l'audit —
+`compute_pit_sector_multiples` restreint en plus la médiane de chaque ligne aux
+pairs **déjà déposés à sa propre `filed_date`**. Le regroupement par millésime
+supprimait le mélange *entre* millésimes ; il laissait intact le décalage *à
+l'intérieur* d'un millésime, où les 10-K s'étalent sur près de trois mois et où
+le multiple d'un pair porte son cours à *sa* date de dépôt. La médiane servant
+à valoriser un déposant de février intégrait donc les cours de ses pairs
+jusqu'en avril. Conséquence assumée du correctif : les premiers déposants d'un
+millésime voient moins de pairs, parfois moins que le minimum requis, et
+retombent alors sur le repli DCF — c'est la réalité de l'information
+disponible à cette date. Le nombre de pairs réellement utilisés est reporté
+**par ligne** (`n_peers`, propagé jusqu'au signal).
+
+Reste le biais de composition, lui **non corrigé** : les multiples viennent de
+`multiples.parquet`, qui ne contient que l'univers **actuel** : les médianes
+sectorielles de 2012 sont établies sur les seules entreprises encore
 présentes dans l'indice aujourd'hui.
 
 Les entreprises disparues (faillite, rachat, sortie d'indice) étaient en
@@ -672,6 +859,38 @@ python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv -
 python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv --force-refresh
 python 05_calcul_multiples.py && python 07_calcul_dcf.py && python 06b_calcul_valorisation_combinee.py
 ```
+
+### WACC indexé sur la courbe de taux (07)
+
+*(Corrigé — le WACC était auparavant figé de 2010 à 2026.)*
+
+`config.sector_dcf_params(secteur, année)` calcule désormais
+`wacc = taux sans risque de l'année + prime de risque du secteur`, la prime
+étant celle implicite dans `SECTOR_DCF_PARAMS` (WACC calibré moins
+`WACC_CALIBRATION_RISK_FREE_RATE`, 4 %). L'année retenue est celle du **dépôt
+SEC** — c'est au moment où l'information devient publique que le marché
+actualise.
+
+Un WACC figé était un pari de taux non voulu, et systématiquement à
+contretemps : le dépôt connaît pourtant la courbe réelle
+(`RISK_FREE_RATE_BY_YEAR`, de 0,05 % à 5,3 %) et s'en sert déjà pour pricer les
+options et calculer le Sharpe, mais pas pour actualiser les flux — alors que
+le taux est le premier déterminant d'un DCF.
+
+| | WACC figé à 10 % | Effet sur la valeur théorique | Conséquence |
+|---|---|---|---|
+| 2020-2021 (taux ~0 %) | trop **haut** | sous-estimée | excès de **PUT** |
+| 2023-2024 (taux ~5 %) | trop **bas** | surestimée | excès de **CALL** |
+
+Un plancher (`DCF_MIN_WACC_MINUS_TERMINAL_GROWTH`, 3 points) garde le WACC
+suffisamment au-dessus de la croissance terminale : en 2011-2015 le
+sans-risque tombe à 0,05 %, et la valeur terminale
+`FCF x (1+g) / (wacc - g)` cesse d'être une estimation dès que le dénominateur
+s'approche de zéro. `DCF_WACC_FOLLOWS_RATE_CURVE = False` rétablit le WACC
+figé.
+
+**Régénération nécessaire** : `python 07_calcul_dcf.py` puis
+`python 06b_calcul_valorisation_combinee.py`.
 
 ### Secteur GICS rétroactif (05, 07, 06b)
 
@@ -732,15 +951,27 @@ Même avec `01b`, la table des changements de Wikipédia ne remonte qu'à
 ~1996-2000 : une entreprise sortie de l'indice avant le début de ce suivi
 n'apparaît pas.
 
-### Exposition delta plafonnée à l'ordre, pas en continu (10)
+### Exposition delta : plafonnée en continu, avec un jour de retard (10)
 
-`config.OPTIONS_MAX_DELTA_NOTIONAL_PCT` borne le levier **au moment où un
-ordre est passé**. Entre deux renforcements, le delta des contrats détenus
-dérive avec le sous-jacent (gamma) et le moteur ne vend jamais pour se
-désendetter : le levier réalisé peut dépasser le plafond de quelques dizaines
-de points de NAV. La colonne `delta_notional_pct` de l'`equity_curve` et les
-champs `avg_delta_notional_pct` / `max_delta_notional_pct_observed` de
-`metrics.json` permettent de le constater run par run.
+*(Corrigé — cette section décrivait auparavant une limite bien plus large :
+le plafond n'était vérifié que dans `_deploy_idle_cash`, et 281 % de delta
+notionnel ont été mesurés pour un plafond déclaré à 100 %.)*
+
+`config.OPTIONS_MAX_DELTA_NOTIONAL_PCT` borne désormais le levier **à l'ordre
+et à la position** : vérifié dans `_open_or_resize`, puis réévalué chaque jour
+de bourse, avec réduction au prorata au-delà de la bande de tolérance
+(`OPTIONS_DELEVER_TOLERANCE_PCT`).
+
+Il reste un dépassement résiduel, et il est structurel : comme tout le reste
+du moteur, le dé-levier est **décidé à la clôture de J et exécuté à
+l'ouverture de J+1**. Entre les deux, le sous-jacent bouge et le NAV avec lui —
+or le ratio a le NAV au dénominateur, si bien qu'un portefeuille qui perd voit
+son levier monter sans avoir rien acheté. Sur un scénario adverse (sous-jacent
+en baisse de 47 %), le maximum observé passe de 281 % à ~112 % pour un plafond
+à 100 % et une tolérance de 10 %. La colonne `delta_notional_pct` de
+l'`equity_curve` et les champs `avg_delta_notional_pct` /
+`max_delta_notional_pct_observed` / `delever_events_count` de `metrics.json`
+permettent de le constater run par run.
 
 ## Installation
 

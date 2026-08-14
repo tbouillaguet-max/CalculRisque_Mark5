@@ -665,9 +665,19 @@ class OptionSnapshotIndex:
         target_strike: Optional[float] = None,
         target_tenor_days: Optional[float] = None,
     ) -> Optional[dict]:
-        """Contrat réel le plus représentatif autour de as_of, ou None si
-        aucun snapshot n'existe dans la fenêtre de tolérance (l'appelant doit
-        alors simuler par Black-Scholes).
+        """Dernier contrat réel connu AU PLUS TARD à as_of, ou None si aucun
+        snapshot n'existe dans la fenêtre de tolérance (l'appelant doit alors
+        simuler par Black-Scholes).
+
+        STRICTEMENT POINT-IN-TIME. La version précédente retenait le snapshot
+        le plus PROCHE, en regardant des deux côtés : `insert_at` désigne une
+        date POSTÉRIEURE à as_of, si bien qu'une entrée pouvait être valorisée
+        avec la prime, l'IV, le delta et le spot d'un jour que le moteur
+        n'avait pas encore atteint -- jusqu'à tolerance_days (14) dans le
+        futur. C'était la seule rupture de la discipline point-in-time du
+        dépôt, et le biais n'était même pas centré : en entrée de krach l'IV
+        future est plus haute (le backtest sous-estime), en sortie de krach
+        l'inverse. Le signe dépendait donc du régime de marché.
 
         target_strike / target_tenor_days : contrat visé quand la stratégie
         impose autre chose que l'ATM à ~9 mois (voir docstring de la classe).
@@ -680,15 +690,14 @@ class OptionSnapshotIndex:
         dates = entry["dates"]
 
         moment = np.datetime64(as_of.to_datetime64())
-        insert_at = int(np.searchsorted(dates, moment))
-        # La date la plus proche est forcément l'une des deux qui encadrent
-        # as_of dans la liste triée.
-        candidates = [i for i in (insert_at - 1, insert_at) if 0 <= i < len(dates)]
-        if not candidates:
-            return None
-        best_date = min(candidates, key=lambda i: abs(dates[i] - moment))
+        # side="right" : dates[insert_at - 1] <= moment < dates[insert_at].
+        # On ne retient donc jamais que le DERNIER snapshot déjà publié.
+        insert_at = int(np.searchsorted(dates, moment, side="right"))
+        if insert_at == 0:
+            return None  # aucun snapshot antérieur à cette date
+        best_date = insert_at - 1
 
-        if abs(dates[best_date] - moment) > np.timedelta64(tolerance_days, "D"):
+        if moment - dates[best_date] > np.timedelta64(tolerance_days, "D"):
             return None
 
         if target_strike is None and target_tenor_days is None:
