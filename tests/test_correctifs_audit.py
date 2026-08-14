@@ -56,7 +56,15 @@ def test_B1_sans_plancher_la_position_ne_grossit_pas_quand_la_these_echoue():
 
     # Le plancher accumule des contrats d'autant plus vite que l'option perd
     # de la valeur : c'est le symptôme direct.
-    assert contrats(avec) > 10 * contrats(sans)
+    #
+    # L'écart mesuré ici (facteur ~6) est plus faible qu'à la découverte du
+    # bug (2 253 contre 26, soit un facteur 87) parce que le plancher de DELTA
+    # (config.OPTIONS_MIN_DELTA_FOR_SIZING) coupe désormais l'emballement en
+    # amont : une fois l'option assez loin de la monnaie, plus aucun
+    # renforcement n'est dimensionné. Les deux correctifs se recouvrent
+    # partiellement, et c'est voulu -- ils attaquent la même divergence à deux
+    # endroits différents.
+    assert contrats(avec) > 3 * contrats(sans)
     # Et il transforme une perte modérée en perte majeure, à signal identique.
     assert nav(sans) > 1.5 * nav(avec)
 
@@ -288,7 +296,10 @@ def test_B9_le_cash_boucle_toujours():
     )
     engine.run()
     flux = pd.DataFrame(engine.executions)["cash_flow"].sum()
-    assert engine.cash == pytest.approx(1_000_000.0 + flux, rel=1e-9)
+    # + les intérêts du cash oisif, seul mouvement de trésorerie qui ne passe
+    # pas par un fill (cf. _accrue_cash_interest).
+    attendu = 1_000_000.0 + flux + engine.total_cash_interest
+    assert engine.cash == pytest.approx(attendu, rel=1e-9)
 
 
 # --------------------------------------------------------------------------- #
@@ -473,3 +484,342 @@ def test_S4_le_nombre_de_pairs_est_propage_jusqu_au_signal():
     import inspect
     source = inspect.getsource(module.build_combined_valuation)
     assert '"n_peers"' in source
+
+
+# =========================================================================== #
+# Seconde campagne : défauts remontés par les backtests comparatifs
+# (2015-2026, capital 1 M$). Un test par constat, même convention de nommage.
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# C1 -- le dimensionnement divergeait quand le delta tendait vers zéro
+# --------------------------------------------------------------------------- #
+
+def test_C1_le_plancher_de_delta_est_actif_par_defaut():
+    """`nb = target_dollar / (|delta| x spot x mult)` diverge quand le delta
+    s'effondre : à 0,01 elle attribue cent fois plus de contrats qu'à 1,0."""
+    assert config.OPTIONS_MIN_DELTA_FOR_SIZING > 0
+
+
+def _position_a_delta_faible(min_delta_for_sizing: float):
+    """Une position dont le delta s'est effondré : CALL entré à 100, le titre
+    s'effondre à 30, strike inchangé. Le contrat finit très hors de la monnaie."""
+    n = 260
+    px = [100.0] * 20 + list(np.linspace(100.0, 30.0, n - 20))
+    panel = cours({"AAA": px})
+    engine = moteur(
+        panel, signaux(["AAA"], "2020-01-02"), {"AAA": "CALL"},
+        target_tenor_days=730, roll_when_days_left=None, stop_loss_pct=-99.0,
+        take_profit_pct=1e9, signal_max_age_days=100_000,
+        min_delta_for_sizing=min_delta_for_sizing,
+        min_resize_relative_pct=None, max_fee_pct_of_trade=None,
+        # Le plancher borde les RENFORCEMENTS : sans mécanisme qui en génère,
+        # le run n'achète qu'une fois et les deux variantes sont identiques.
+        # Le plancher de primes rejoue ici exactement le scénario du bug --
+        # une position perdante que le moteur recharge pendant qu'elle meurt.
+        min_deployment_pct=25.0, max_trade_pct_of_nav=0,
+    )
+    engine.run()
+    return engine
+
+
+def test_C1_le_plancher_bride_le_volume_de_contrats():
+    avec = _position_a_delta_faible(config.OPTIONS_MIN_DELTA_FOR_SIZING)
+    sans = _position_a_delta_faible(0.0)
+
+    volume = lambda e: sum(abs(r["contracts"]) for r in e.executions if r["side"] == "buy")  # noqa: E731
+    assert volume(avec) < volume(sans), (
+        f"plancher inopérant : {volume(avec):.0f} contrats achetés contre "
+        f"{volume(sans):.0f} sans plancher"
+    )
+
+
+def test_C1_le_plancher_ne_bloque_JAMAIS_une_vente():
+    """LE point critique. Un plancher qui ferait un `return` avant le calcul de
+    `delta_contracts` rendrait invendable une position devenue très hors de la
+    monnaie : ni rebalancement, ni perte de signal, ni stop ne pourraient plus
+    la réduire, et elle resterait gelée jusqu'à l'expiration."""
+    n = 120
+    px = [100.0] * 10 + list(np.linspace(100.0, 35.0, n - 10))
+    panel = cours({"AAA": px})
+    engine = moteur(
+        panel, signaux(["AAA"], "2020-01-02"), {"AAA": "CALL"},
+        target_tenor_days=730, roll_when_days_left=None,
+        # Stop volontairement atteignable : c'est la SORTIE qu'on teste.
+        stop_loss_pct=-40.0, take_profit_pct=1e9, signal_max_age_days=100_000,
+        min_delta_for_sizing=0.15, min_resize_relative_pct=None,
+        max_fee_pct_of_trade=None,
+    )
+    engine.run()
+
+    trades = pd.DataFrame(engine.trades)
+    assert not trades.empty, "la position n'a jamais été vendue malgré le stop-loss"
+    assert "stop_loss" in set(trades["exit_reason"])
+    assert "AAA" not in engine.positions, "position restée gelée : le plancher l'a rendue invendable"
+
+
+def test_C1_une_reduction_passe_meme_sous_le_plancher():
+    """Vérification directe sur _open_or_resize : delta sous le plancher,
+    cible RÉDUITE -> la réduction doit s'exécuter, pas être abandonnée."""
+    n = 140
+    px = [100.0] * 10 + list(np.linspace(100.0, 40.0, n - 10))
+    panel = cours({"AAA": px})
+    engine = moteur(
+        panel, signaux(["AAA"], "2020-01-02"), {"AAA": "CALL"},
+        target_tenor_days=730, roll_when_days_left=None, stop_loss_pct=-99.0,
+        take_profit_pct=1e9, signal_max_age_days=100_000,
+        min_delta_for_sizing=0.15, min_resize_relative_pct=None,
+        max_fee_pct_of_trade=None,
+    )
+    engine.run()
+    pos = engine.positions.get("AAA")
+    if pos is None:
+        pytest.skip("scénario sans position ouverte à la fin : rien à réduire")
+
+    jour = engine.calendar[-1]
+    spot = panel.close_at("AAA", jour)
+    delta = abs(engine._position_delta(pos, jour, spot))
+    assert delta < 0.15, f"delta {delta:.3f} : le scénario ne teste pas le plancher"
+
+    avant = pos.contracts
+    # Cible volontairement minuscule -> forcément une réduction.
+    engine._open_or_resize("AAA", "CALL", 1.0, spot, jour, "rebalance")
+    apres = engine.positions.get("AAA")
+    assert apres is None or apres.contracts < avant, (
+        "la position n'a pas pu être réduite alors que son delta est sous le plancher"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# C2 -- le plafond de levier à l'ouverture (déjà corrigé, non-régression)
+# --------------------------------------------------------------------------- #
+
+def test_C2_le_plafond_de_levier_est_consulte_a_l_ouverture():
+    """Il ne l'était que dans _deploy_idle_cash : le chemin principal
+    d'ouverture dimensionnait à ~100% du NAV quel que soit le plafond."""
+    serre = moteur(
+        cours({"AAA": serie_bruitee(100.0, 300, graine=12)}), signaux(["AAA"], "2020-01-02"),
+        {"AAA": "CALL"}, max_delta_notional_pct=30.0, roll_when_days_left=None,
+        signal_max_age_days=100_000,
+        # Plafond PAR ORDRE désactivé : il borne l'ouverture bien avant le
+        # plafond de LEVIER et masquerait l'effet qu'on veut mesurer.
+        max_trade_pct_of_nav=0,
+    )
+    serre.run()
+    large = moteur(
+        cours({"AAA": serie_bruitee(100.0, 300, graine=12)}), signaux(["AAA"], "2020-01-02"),
+        {"AAA": "CALL"}, max_delta_notional_pct=100.0, roll_when_days_left=None,
+        signal_max_age_days=100_000, max_trade_pct_of_nav=0,
+    )
+    large.run()
+
+    moyen = lambda e: pd.DataFrame(e.equity_curve_rows)["delta_notional_pct"].mean()  # noqa: E731
+    # Baisser le plafond doit RÉELLEMENT baisser l'exposition -- avant, les
+    # deux runs étaient quasi identiques (76,7% contre 75,7%).
+    assert moyen(serre) < moyen(large) * 0.6
+
+
+# --------------------------------------------------------------------------- #
+# C3 -- commissions facturées à l'expiration
+# --------------------------------------------------------------------------- #
+
+def test_C3_une_expiration_ne_facture_ni_commission_ni_slippage():
+    """Une expiration n'est pas un ordre : hors de la monnaie le contrat est
+    abandonné, dans la monnaie il est exercé automatiquement. Ni fourchette à
+    traverser, ni ordre à router. Le cas ITM payait encore 85 $ par expiration."""
+    engine = moteur(
+        cours({"AAA": serie_bruitee(100.0, 200, sigma=0.02, graine=21)}),
+        signaux(["AAA"], "2020-01-02"), {"AAA": "CALL"}, target_tenor_days=90,
+        roll_when_days_left=None, slippage_pct_of_premium=2.5,
+        signal_max_age_days=100_000,
+    )
+    engine.run()
+    executions = pd.DataFrame(engine.executions)
+    expirations = executions[executions["reason"] == "expiry"]
+    assert not expirations.empty, "scénario sans expiration : le test ne prouverait rien"
+    # Y compris DANS la monnaie (produit strictement positif) : c'est le cas
+    # que l'ancien `min(commission, gross_value)` laissait passer.
+    assert (expirations["commission"] == 0).all()
+    assert (expirations["slippage"] == 0).all()
+
+
+def test_C3_une_expiration_dans_la_monnaie_encaisse_l_intrinseque_entier():
+    engine = moteur(
+        cours({"AAA": [100.0] * 40 + [200.0] * 40}), signaux(["AAA"], "2020-01-02"),
+        {"AAA": "CALL"}, target_tenor_days=60, roll_when_days_left=None,
+        slippage_pct_of_premium=2.5, stop_loss_pct=-99.0, take_profit_pct=1e9,
+        signal_max_age_days=100_000,
+    )
+    engine.run()
+    executions = pd.DataFrame(engine.executions)
+    expiry = executions[executions["reason"] == "expiry"]
+    assert not expiry.empty
+    row = expiry.iloc[0]
+    # Produit encaissé = intrinsèque plein, aucun frais retranché.
+    attendu = row["contracts"] * row["multiplier"] * row["price"]
+    assert row["cash_flow"] == pytest.approx(attendu, rel=1e-9)
+
+
+# --------------------------------------------------------------------------- #
+# C4 -- intérêts sur le cash oisif
+# --------------------------------------------------------------------------- #
+
+def test_C4_un_portefeuille_sans_position_croit_au_taux_sans_risque():
+    """Sans ce crédit, un portefeuille peu investi est pénalisé par
+    construction : cette stratégie porte en moyenne 74% de cash."""
+    n = 400
+    panel = cours({"AAA": serie_bruitee(100.0, n, graine=31)})
+    # Signal présent mais AUCUNE direction demandée (StrategieFixe({})) :
+    # le moteur tourne normalement sans jamais ouvrir de position.
+    engine = moteur(panel, signaux(["AAA"], "2020-01-02"), {}, roll_when_days_left=None)
+    equity, _, trades, _ = engine.run()
+
+    assert trades.empty and not engine.positions, "le scénario doit rester 100% cash"
+
+    dates = pd.DatetimeIndex(equity["date"])
+    attendu = 1_000_000.0
+    for precedent, jour in zip(dates[:-1], dates[1:]):
+        attendu *= 1 + config.risk_free_rate_for(jour.year) * (jour - precedent).days / 365.0
+    assert equity["nav"].iloc[-1] == pytest.approx(attendu, rel=1e-9)
+
+
+def test_C4_le_credit_est_desactivable():
+    n = 300
+    panel = cours({"AAA": serie_bruitee(100.0, n, graine=32)})
+    engine = moteur(
+        panel, signaux(["AAA"], "2020-01-02"), {}, roll_when_days_left=None,
+        credit_idle_cash=False,
+    )
+    equity, _, _, _ = engine.run()
+    assert equity["nav"].iloc[-1] == pytest.approx(1_000_000.0, rel=1e-12)
+    assert engine.total_cash_interest == 0.0
+
+
+def test_C4_les_interets_sont_isoles_du_pnl_d_options():
+    """Ils ne sont attribuables ni à la jambe call ni à la jambe put : la
+    réconciliation de put_call_analysis doit les retirer du NAV."""
+    from backtest import put_call_analysis as pca
+
+    engine = moteur(
+        cours({"AAA": serie_bruitee(100.0, 300, graine=33)}), signaux(["AAA"], "2020-01-02"),
+        {"AAA": "CALL"}, roll_when_days_left=None, signal_max_age_days=100_000,
+    )
+    equity, positions, trades, _ = engine.run()
+    assert engine.total_cash_interest > 0, "le scénario doit générer des intérêts"
+
+    residual = pca.reconciliation_residual(equity, positions, trades)
+    assert residual["max_abs_residual_dollar"] < 1.0
+
+
+# --------------------------------------------------------------------------- #
+# C5 -- hystérésis et durée de détention minimale
+# --------------------------------------------------------------------------- #
+
+def test_C5_min_holding_days_retient_une_sortie_sur_perte_de_signal():
+    n = 260
+    # Éligible au départ, puis le cours rejoint la théorique -> signal perdu.
+    px = [60.0] * 15 + [150.0] * (n - 15)
+    panel = cours({"AAA": px})
+    common = dict(
+        target_tenor_days=730, roll_when_days_left=None, exit_when_signal_lost=True,
+        daily_rebalance=True, stop_loss_pct=-99.0, take_profit_pct=1e9,
+        take_profit_convergence_fraction=0, signal_max_age_days=100_000,
+        strategy=ValuationGapMultiplesOptionsStrategy(),
+    )
+    sans = moteur(panel, signaux(["AAA"], "2020-01-02", theoretical=150.0), {}, **common)
+    sans.run()
+    avec = moteur(
+        panel, signaux(["AAA"], "2020-01-02", theoretical=150.0), {},
+        min_holding_days=180, **common,
+    )
+    avec.run()
+
+    def duree(engine):
+        trades = pd.DataFrame(engine.trades)
+        perdus = trades[trades["exit_reason"] == "signal_lost"]
+        return None if perdus.empty else perdus["holding_days"].min()
+
+    assert duree(sans) is not None, "le scénario doit produire une sortie signal_lost"
+    assert duree(sans) < 180
+    if duree(avec) is not None:
+        assert duree(avec) >= 180
+
+
+@pytest.mark.parametrize("motif", ["stop_loss", "expiry"])
+def test_C5_min_holding_days_ne_bloque_jamais_un_garde_fou(motif):
+    """Un stop-loss ou une échéance ne se négocient pas contre un calendrier."""
+    n = 120
+    px = [100.0] * 5 + list(np.linspace(100.0, 45.0, n - 5))
+    panel = cours({"AAA": px})
+    engine = moteur(
+        panel, signaux(["AAA"], "2020-01-02"), {"AAA": "CALL"},
+        target_tenor_days=(730 if motif == "stop_loss" else 45),
+        roll_when_days_left=None,
+        stop_loss_pct=(-30.0 if motif == "stop_loss" else -99.0),
+        take_profit_pct=1e9, signal_max_age_days=100_000,
+        min_holding_days=10_000,  # absurde : ne doit rien empêcher ici
+        min_delta_for_sizing=0,
+    )
+    engine.run()
+    trades = pd.DataFrame(engine.trades)
+    assert not trades.empty, f"aucune sortie {motif} malgré min_holding_days"
+    assert motif in set(trades["exit_reason"])
+
+
+def test_C5_exit_threshold_identique_a_l_entree_ne_change_rien():
+    """GARANTIT qu'aucune SECONDE définition de l'écart n'a été introduite :
+    avec un seuil de sortie égal au seuil d'entrée, le run doit être
+    strictement identique à celui sans hystérésis."""
+    panel = cours({"AAA": serie_bruitee(100.0, 300, graine=41),
+                   "BBB": serie_bruitee(100.0, 300, graine=42)})
+    evenements = signaux(["AAA", "BBB"], "2020-01-02", theoretical=150.0)
+    common = dict(
+        target_tenor_days=730, roll_when_days_left=None, exit_when_signal_lost=True,
+        daily_rebalance=True, take_profit_convergence_fraction=0,
+        stop_loss_pct=-99.0, take_profit_pct=1e9, signal_max_age_days=100_000,
+    )
+
+    def run(ratio):
+        engine = moteur(
+            panel, evenements, {},
+            strategy=ValuationGapMultiplesOptionsStrategy(exit_threshold_ratio=ratio),
+            **common,
+        )
+        equity, _, trades, _ = engine.run()
+        return equity["nav"].iloc[-1], len(trades)
+
+    assert run(1.0) == run(1.0)  # déterminisme
+    # Le ratio 1,0 est le comportement "sans hystérésis" : sortie au seuil
+    # d'entrée, exactement comme avant l'introduction du paramètre.
+    nav_neutre, n_neutre = run(1.0)
+    nav_bande, n_bande = run(0.5)
+    # Une bande morte ne peut que RETENIR des positions, jamais en créer.
+    assert n_bande <= n_neutre
+
+
+# --------------------------------------------------------------------------- #
+# C6 -- diagnostics
+# --------------------------------------------------------------------------- #
+
+def test_C6_les_diagnostics_du_dimensionnement_sont_publies():
+    engine = moteur(
+        cours({"AAA": serie_bruitee(100.0, 300, graine=51)}), signaux(["AAA"], "2020-01-02"),
+        {"AAA": "CALL"}, roll_when_days_left=None, signal_max_age_days=100_000,
+    )
+    engine.run()
+    d = engine.execution_diagnostics()
+
+    for cle in (
+        "total_contracts_traded", "max_contracts_single_order", "max_contracts_order_symbol",
+        "max_contracts_order_date", "min_delta_at_sizing", "pct_days_above_delta_cap",
+        "median_excess_above_delta_cap_pct", "total_cash_interest_dollar",
+    ):
+        assert cle in d, f"diagnostic manquant : {cle}"
+
+    executions = pd.DataFrame(engine.executions)
+    assert d["total_contracts_traded"] == pytest.approx(executions["contracts"].abs().sum())
+    achats = executions[executions["side"] == "buy"]
+    assert d["max_contracts_single_order"] == pytest.approx(achats["contracts"].abs().max())
+    # Le delta de dimensionnement est celui d'une entrée ATM à 2 ans : bien
+    # au-dessus du plancher, sinon le run n'aurait rien acheté.
+    assert d["min_delta_at_sizing"] >= config.OPTIONS_MIN_DELTA_FOR_SIZING

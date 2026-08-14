@@ -589,6 +589,77 @@ avant que le cash, le plafond par ordre ou le plafond de levier ne rognent
 l'ordre — et suit les renforcements. Sans quoi le roulement rejouait une cible
 sans rapport avec la position détenue, dans un sens comme dans l'autre.
 
+### Plancher de delta (`OPTIONS_MIN_DELTA_FOR_SIZING`)
+
+Le moteur convertit une exposition $ visée en contrats par
+`nb = target_dollar / (|delta| x spot x multiplicateur)`. Cette expression
+**diverge** quand le delta tend vers zéro : à delta 0,01 elle attribue cent
+fois plus de contrats qu'à delta 1,0, pour la même exposition notionnelle
+affichée. Le seul garde-fou était `abs(delta) < 1e-6`, qui protège d'un
+`OverflowError` mais pas de l'absurdité économique.
+
+Sans stop-loss, les positions perdantes survivent et dérivent loin hors de la
+monnaie ; leur delta et leur prime tendent vers 0, et chaque renforcement leur
+attribue un nombre de contrats colossal. Mesuré sur deux runs identiques à un
+paramètre près (`--stop-loss-pct -1000`) : **commissions ×26** (17 910 $ →
+470 888 $) pendant que le **slippage baissait**. La commission suit le NOMBRE
+de contrats, le slippage leur VALEUR — le volume avait explosé sans que la
+valeur engagée bouge.
+
+Ni le plafond par ordre ni le plafond de levier n'y suffisaient : le premier
+est en dollars (sur une option à 0,02 $, 10 % d'un NAV de 1 M$ autorise
+50 000 contrats), et le second a exactement la même forme que le
+dimensionnement, donc il diverge avec lui.
+
+**Le plancher ne s'applique qu'aux ACHATS.** Une position sous le plancher
+doit rester vendable — par stop-loss, perte de signal, roulement, expiration
+ou réduction. Le test le vérifie explicitement : le plancher est évalué
+*après* le calcul du delta de contrats, uniquement dans la branche « achat ».
+
+### Intérêts sur le cash oisif (`OPTIONS_CREDIT_IDLE_CASH`)
+
+Le cash est capitalisé au taux sans risque de l'année, sur les jours
+calendaires écoulés (base 365 : un week-end rapporte). Cette stratégie porte
+en moyenne **74 % de cash** — le dimensionnement par delta n'engage qu'une
+prime, soit une fraction de l'exposition — et le laisser stérile la pénalisait
+pour une raison étrangère à la thèse.
+
+C'est aussi ce biais qui rendait `OPTIONS_MIN_DEPLOYMENT_PCT` tentant : le
+plancher de primes ne faisait que compenser un manque à gagner artificiel, en
+payant frais et slippage pour le faire.
+
+Les intérêts sont publiés à part (`total_cash_interest_dollar`, colonne
+`total_cash_interest` de l'`equity_curve`) pour qu'une performance portée par
+les taux ne se confonde pas avec une performance portée par la thèse — et
+`put_call_analysis` les retire du NAV avant d'attribuer quoi que ce soit à une
+jambe, sinon sa réconciliation ne boucle plus.
+
+### Durée de détention minimale (`OPTIONS_MIN_HOLDING_DAYS`)
+
+Les contrats sont achetés à 730 jours d'échéance, mais la durée de détention
+médiane d'une sortie `signal_lost` était de **79 jours**, avec un minimum
+mesuré à **un jour**. Tous motifs confondus, la moyenne est de 193 jours : la
+stratégie consommait 26 % de l'optionalité qu'elle achète et jetait le reste.
+
+Ne s'applique **jamais** aux motifs `stop_loss`, `take_profit`, `roll`,
+`expiry` ni `data_gap` : un garde-fou de risque ou une échéance ne se négocie
+pas contre un calendrier. À périmètre égal (`--exit-when-signal-lost` des deux
+côtés), `--min-holding-days 180` fait passer la médiane `signal_lost` de 87 à
+202 jours, et retire 24 % des trades comme de la friction.
+
+### Diagnostics du dimensionnement
+
+`metrics.json` porte désormais `total_contracts_traded`,
+`max_contracts_single_order` (+ symbole et date), `min_delta_at_sizing`,
+`days_above_delta_cap` / `pct_days_above_delta_cap` /
+`median_excess_above_delta_cap_pct`.
+
+Ce sont les chiffres qui auraient rendu les deux défauts ci-dessus visibles
+immédiatement : le **volume de contrats** est la seule grandeur qui distingue
+« j'engage plus de capital » de « j'achète des milliers d'options mortes »
+— la friction totale, elle, ne le dit pas, puisque ses deux composantes
+bougent alors en sens inverse.
+
 ### Hystérésis entre l'entrée et la sortie (`OPTIONS_EXIT_THRESHOLD_RATIO`)
 
 Entrée et sortie ne partagent plus le même seuil. Une position s'ouvre à

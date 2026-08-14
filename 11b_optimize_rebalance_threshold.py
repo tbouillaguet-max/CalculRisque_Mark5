@@ -135,6 +135,7 @@ def _run_one(
             daily_rebalance=baseline_settings["daily_rebalance"],
             vol_mode=baseline_settings["vol_mode"],
             min_resize_relative_pct=baseline_settings["min_resize_relative_pct"],
+            min_holding_days=baseline_settings["min_holding_days"],
             start_date=start_date,
             end_date=end_date,
             **engine_kwargs,

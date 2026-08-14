@@ -74,6 +74,11 @@ ENGINE_SETTING_FALLBACKS = {
     "vol_mode": "frozen",
     "min_resize_relative_pct": config.OPTIONS_MIN_RESIZE_RELATIVE_PCT,
     "rebalance_log_gap_threshold": config.OPTIONS_REBALANCE_LOG_GAP_THRESHOLD,
+    # Combien de temps on tient une position avant d'accepter d'en sortir sur
+    # perte de signal fait partie de la THÈSE, pas du réglage d'exécution :
+    # une stratégie à deux ans d'échéance n'a pas les mêmes exigences qu'une
+    # stratégie ATM à neuf mois. Une stratégie peut donc l'imposer.
+    "min_holding_days": config.OPTIONS_MIN_HOLDING_DAYS,
 }
 
 
@@ -145,6 +150,36 @@ def main() -> None:
         help="Exposition notionnelle delta-équivalente maximale, en %% du NAV (défaut: "
              "%(default)s). Borne le levier : le redéploiement du cash s'arrête dès ce plafond "
              "atteint, même si --min-deployment-pct n'est pas satisfait. 0 pour désactiver.",
+    )
+    parser.add_argument(
+        "--min-delta-for-sizing", type=float, default=config.OPTIONS_MIN_DELTA_FOR_SIZING,
+        help="Delta minimal pour dimensionner un ACHAT (défaut: %(default)s). Le "
+             "dimensionnement divise par le delta : à 0,01 il attribue cent fois plus de "
+             "contrats qu'à 1,0 pour la même exposition affichée. Ne bloque JAMAIS une "
+             "vente. 0 pour désactiver (ne laisse que le garde-fou numérique à 1e-6).",
+    )
+    parser.add_argument(
+        "--no-cash-interest", dest="credit_idle_cash", action="store_false",
+        default=config.OPTIONS_CREDIT_IDLE_CASH,
+        help="N'accorde AUCUN intérêt au cash oisif (comportement d'avant). Par défaut le "
+             "cash est capitalisé au taux sans risque de l'année : cette stratégie porte "
+             "~74%% de cash, et le laisser stérile la pénalise pour une raison étrangère "
+             "à la thèse.",
+    )
+    parser.add_argument(
+        "--min-holding-days", type=int, default=None,
+        help="Durée minimale de détention avant une sortie sur perte de signal ou "
+             "retournement (défaut: %(default)s). Ne s'applique jamais aux stops, au "
+             "roulement, à l'expiration ni à un gap de données. Défaut : celui imposé par "
+             f"la stratégie, sinon {config.OPTIONS_MIN_HOLDING_DAYS}.",
+    )
+    parser.add_argument(
+        "--exit-threshold-pct", type=float, default=None,
+        help="Seuil de SORTIE, dans l'unité du seuil d'entrée de la stratégie. En dessous "
+             "de ce niveau seulement, une position est vendue pour perte de signal ; "
+             "entre les deux seuils on n'entre plus mais on ne sort pas encore. Traduit "
+             "en ratio et appliqué par la stratégie, qui seule connaît la définition "
+             "d'écart utilisée à l'entrée.",
     )
     parser.add_argument(
         "--delever-tolerance-pct", type=float, default=config.OPTIONS_DELEVER_TOLERANCE_PCT,
@@ -290,6 +325,39 @@ def main() -> None:
     strategy_params = {}
     if args.entry_threshold_pct is not None:
         strategy_params["entry_threshold_pct"] = args.entry_threshold_pct
+
+    # --exit-threshold-pct est traduit en RATIO du seuil d'entrée, parce que
+    # c'est sous cette forme que les stratégies portent l'hystérésis
+    # (config.OPTIONS_EXIT_THRESHOLD_RATIO).
+    #
+    # POURQUOI CÔTÉ STRATÉGIE ET NON CÔTÉ MOTEUR. La sortie doit se mesurer
+    # avec EXACTEMENT la définition d'écart qui a servi à entrer, sans quoi on
+    # compare deux grandeurs différentes. Or cette définition varie d'une
+    # stratégie à l'autre : valuation_gap_options travaille en pourcentage
+    # `(V-P)/P` corrigé de l'inflation, valuation_gap_multiples_options en
+    # points de log `100 x ln(V/P)` avec une correction additive. Le moteur
+    # n'a aucun moyen de reconstituer l'une ou l'autre sans les dupliquer --
+    # et une définition dupliquée est une définition qui divergera. C'est donc
+    # la stratégie qui applique le seuil de sortie, sur son propre écart, et
+    # la CLI se contente de le convertir en ratio.
+    if args.exit_threshold_pct is not None:
+        entry = strategy_params.get(
+            "entry_threshold_pct",
+            getattr(strategy_cls(), "entry_threshold_pct", None),
+        )
+        if not entry or entry <= 0:
+            logger.error(
+                "--exit-threshold-pct exige que la stratégie expose un seuil d'entrée "
+                "positif ; '%s' n'en a pas. Utilise --strategy-param exit_threshold_ratio=...",
+                args.strategy,
+            )
+            sys.exit(1)
+        strategy_params["exit_threshold_ratio"] = args.exit_threshold_pct / entry
+        logger.info(
+            "Hystérésis : sortie à %.2f pour une entrée à %.2f (ratio %.3f).",
+            args.exit_threshold_pct, entry, strategy_params["exit_threshold_ratio"],
+        )
+
     strategy_params.update(parse_strategy_params(args.strategy_param))
     strategy = strategy_cls(**strategy_params)
 
@@ -313,6 +381,9 @@ def main() -> None:
         delever_tolerance_pct=args.delever_tolerance_pct,
         max_trade_dollar=args.max_trade_dollar,
         max_trade_pct_of_nav=args.max_trade_pct_of_nav,
+        min_delta_for_sizing=args.min_delta_for_sizing,
+        credit_idle_cash=args.credit_idle_cash,
+        min_holding_days=engine_settings["min_holding_days"],
         take_profit_convergence_fraction=args.take_profit_convergence_fraction,
         fee_bump_max_extra_pct=args.fee_bump_max_extra_pct,
         whole_contracts=args.whole_contracts,
@@ -377,6 +448,9 @@ def main() -> None:
         "delever_tolerance_pct": args.delever_tolerance_pct,
         "max_trade_dollar": args.max_trade_dollar,
         "max_trade_pct_of_nav": args.max_trade_pct_of_nav,
+        "min_delta_for_sizing": args.min_delta_for_sizing,
+        "credit_idle_cash": args.credit_idle_cash,
+        "exit_threshold_pct": args.exit_threshold_pct,
         "take_profit_convergence_fraction": args.take_profit_convergence_fraction,
         **engine_settings,
         "real_snapshot_tolerance_days": args.real_snapshot_tolerance_days,
@@ -398,6 +472,16 @@ def main() -> None:
         # Coût de portage (theta) et exposition vega : le seuil que la thèse
         # doit battre, et la part du P&L que ce backtest ne simule pas.
         "total_theta_decay_dollar", "total_theta_decay_pct_of_initial", "avg_vega_notional_pct",
+        # Intérêts du cash : isolés pour qu'une performance portée par les
+        # taux ne passe pas pour une performance de la thèse.
+        "total_cash_interest_dollar", "total_cash_interest_pct_of_initial",
+        # Diagnostics du DIMENSIONNEMENT (cf. options_engine) : le volume de
+        # contrats est la seule grandeur qui distingue "j'engage plus de
+        # capital" de "j'achète des milliers d'options mortes".
+        "total_contracts_traded", "max_contracts_single_order",
+        "max_contracts_order_symbol", "max_contracts_order_date", "min_delta_at_sizing",
+        "days_above_delta_cap", "pct_days_above_delta_cap",
+        "median_excess_above_delta_cap_pct",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])

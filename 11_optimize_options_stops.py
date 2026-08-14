@@ -154,6 +154,7 @@ def _run_combo(
             daily_rebalance=settings["daily_rebalance"],
             vol_mode=settings["vol_mode"],
             min_resize_relative_pct=settings["min_resize_relative_pct"],
+            min_holding_days=settings["min_holding_days"],
             start_date=start_date,
             end_date=end_date,
             **engine_kwargs,

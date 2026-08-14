@@ -184,6 +184,17 @@ MIN_TRADE_DOLLAR = 1.0
 # monnaie.
 MIN_PREMIUM_FOR_SIZING = 1e-6
 
+# Plancher de DELTA pour un dimensionnement par division (exposition $ visée /
+# delta), en repli quand l'appelant n'en fournit pas -- voir
+# config.OPTIONS_MIN_DELTA_FOR_SIZING pour le raisonnement complet et les
+# chiffres mesurés.
+#
+# Distinct de MIN_PREMIUM_FOR_SIZING, qui est un garde-fou NUMÉRIQUE (éviter
+# un débordement vers l'infini). Celui-ci est un garde-fou ÉCONOMIQUE : la
+# division reste parfaitement calculable à delta 0,01, elle donne simplement
+# cent fois trop de contrats pour la même exposition affichée.
+MIN_DELTA_FOR_SIZING = 0.15
+
 # Sorties qui ont lieu QUOI QU'IL ARRIVE, même quand les frais dépassent la
 # valeur résiduelle du contrat : à l'échéance il n'y a plus rien à détenir (le
 # contrat est abandonné sans frais), et sur une disparition des cours du
@@ -338,6 +349,9 @@ class OptionsBacktestEngine:
         delever_tolerance_pct: Optional[float] = config.OPTIONS_DELEVER_TOLERANCE_PCT,
         max_trade_dollar: Optional[float] = config.OPTIONS_MAX_TRADE_DOLLAR,
         max_trade_pct_of_nav: Optional[float] = config.OPTIONS_MAX_TRADE_PCT_OF_NAV,
+        min_delta_for_sizing: Optional[float] = config.OPTIONS_MIN_DELTA_FOR_SIZING,
+        credit_idle_cash: bool = config.OPTIONS_CREDIT_IDLE_CASH,
+        min_holding_days: int = config.OPTIONS_MIN_HOLDING_DAYS,
         take_profit_convergence_fraction: Optional[float] = config.OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION,
         whole_contracts: bool = config.OPTIONS_WHOLE_CONTRACTS,
         target_tenor_days: int = config.OPTIONS_TARGET_TENOR_DAYS,
@@ -391,6 +405,14 @@ class OptionsBacktestEngine:
         self.max_trade_pct_of_nav = (
             max_trade_pct_of_nav if max_trade_pct_of_nav and max_trade_pct_of_nav > 0 else None
         )
+        # Plancher ÉCONOMIQUE du dimensionnement (cf. MIN_DELTA_FOR_SIZING).
+        # 0 / None le désactive -- il ne reste alors que le garde-fou numérique
+        # à 1e-6, c'est-à-dire le comportement d'avant.
+        self.min_delta_for_sizing = (
+            min_delta_for_sizing if min_delta_for_sizing and min_delta_for_sizing > 0 else 0.0
+        )
+        self.credit_idle_cash = bool(credit_idle_cash)
+        self.min_holding_days = int(min_holding_days or 0)
         self.take_profit_convergence_fraction = (
             take_profit_convergence_fraction
             if take_profit_convergence_fraction and take_profit_convergence_fraction > 0 else None
@@ -491,6 +513,18 @@ class OptionsBacktestEngine:
         # sous-estimerait la friction de moitié.
         self.total_commission = 0.0
         self.total_slippage = 0.0
+        # Intérêts crédités sur le cash oisif (cf. _accrue_cash_interest) :
+        # publié à part pour qu'une performance portée par les taux ne soit pas
+        # confondue avec une performance portée par la thèse.
+        self.total_cash_interest = 0.0
+
+        # DIAGNOSTICS DU DIMENSIONNEMENT. Les défauts corrigés dans ce moteur
+        # ont tous survécu longtemps pour la même raison : aucune sortie ne les
+        # rendait visibles. Le volume de contrats, en particulier, est la seule
+        # grandeur qui distingue "j'engage plus de capital" de "j'achète des
+        # milliers d'options mortes" -- la friction seule ne le dit pas, puisque
+        # la commission suit le NOMBRE de contrats et le slippage leur VALEUR.
+        self.min_delta_at_sizing: Optional[float] = None
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -527,7 +561,13 @@ class OptionsBacktestEngine:
         n_days = len(self.calendar)
         log_every = max(n_days // 20, 1)
         started_at = time.monotonic()
+        previous_day: Optional[pd.Timestamp] = None
         for i, today in enumerate(self.calendar):
+            # Le cash a dormi depuis la veille : il a rapporté. Crédité AVANT
+            # toute décision du jour, comme un compte réel dont les intérêts
+            # de la nuit sont acquis à l'ouverture.
+            self._accrue_cash_interest(today, previous_day)
+            previous_day = today
             self._execute_pending_orders(today)
             # Le cash resté oisif est remis au travail sur les positions
             # ouvertes, TOUS LES JOURS. Cet appel vivait dans
@@ -619,6 +659,46 @@ class OptionsBacktestEngine:
             )
             self._pricing_context_cache[key] = cached
         return cached
+
+    def _accrue_cash_interest(self, today: pd.Timestamp, previous_day: Optional[pd.Timestamp]) -> None:
+        """Capitalise le cash oisif au taux sans risque de l'année, sur les
+        jours CALENDAIRES écoulés depuis la journée simulée précédente
+        (base 365 : un week-end rapporte, comme sur un compte réel).
+
+        POURQUOI CE N'EST PAS UN DÉTAIL. Cette stratégie porte en moyenne 74%
+        de cash -- le dimensionnement par delta n'engage qu'une prime, soit une
+        fraction de l'exposition qu'elle achète. Laisser ce cash stérile
+        pénalise le portefeuille par construction, pour une raison qui n'a
+        rien à voir avec la qualité de la thèse : sur 2015-2026, à des taux
+        montés jusqu'à 5,3%, le manque à gagner cumulé se compte en dizaines
+        de points de NAV.
+
+        C'est aussi ce biais qui rendait OPTIONS_MIN_DEPLOYMENT_PCT tentant :
+        le plancher de primes ne faisait que compenser un manque à gagner
+        artificiel, en payant frais et slippage pour le faire.
+
+        Le cash NÉGATIF n'est pas débité : le moteur est non margé (cf.
+        _affordable) et un solde négatif y est un état impossible, pas un
+        découvert à facturer. Le tester coûte moins cher que de fabriquer une
+        charge d'intérêts sur un état qui ne devrait pas exister."""
+        if not self.credit_idle_cash or previous_day is None or self.cash <= 0:
+            return
+        elapsed_days = (today - previous_day).days
+        if elapsed_days <= 0:
+            return
+        interest = self.cash * config.risk_free_rate_for(today.year) * elapsed_days / 365.0
+        self.cash += interest
+        self.total_cash_interest += interest
+
+    def _note_sizing_delta(self, delta_abs: float) -> None:
+        """Mémorise le plus petit |delta| ayant servi à dimensionner un ACHAT.
+
+        C'est la métrique qui aurait rendu visible la divergence du
+        dimensionnement (cf. MIN_DELTA_FOR_SIZING) : un run sain reste au-dessus
+        de ~0,3, un run qui empile des contrats sur des options mortes descend
+        vers zéro. Aucune sortie du moteur ne la portait."""
+        if self.min_delta_at_sizing is None or delta_abs < self.min_delta_at_sizing:
+            self.min_delta_at_sizing = delta_abs
 
     def _repricing_vol(self, pos: OptionPosition, today: pd.Timestamp) -> float:
         """Volatilité utilisée pour repricer une position ouverte.
@@ -859,6 +939,11 @@ class OptionsBacktestEngine:
         delta = self._position_delta(pos, today, spot)
         if delta is None or abs(delta) < 1e-6 or spot <= 0:
             return 0.0
+        # Ce chemin ne sert QU'À ACHETER (renforcement par le cash oisif) : le
+        # plancher économique s'y applique donc sans risque de rendre une
+        # position invendable (cf. MIN_DELTA_FOR_SIZING).
+        if self.min_delta_for_sizing and abs(delta) < self.min_delta_for_sizing:
+            return 0.0
         allowed = remaining_delta_notional / (abs(delta) * spot * pos.multiplier)
         if allowed <= 0:
             return 0.0
@@ -934,6 +1019,18 @@ class OptionsBacktestEngine:
                 # _round_contracts (cf. MIN_PREMIUM_FOR_SIZING).
                 if premium is None or premium < MIN_PREMIUM_FOR_SIZING:
                     continue
+                # Plancher de dimensionnement, appliqué ici et pas seulement
+                # dans _contracts_under_delta_cap : ce dernier n'est consulté
+                # que lorsque le plafond de levier est actif, alors que le
+                # renforcement, lui, a toujours lieu. Renforcer une ligne dont
+                # le delta s'est effondré revient à acheter des milliers de
+                # contrats quasi sans exposition, en payant la commission de
+                # chacun (cf. MIN_DELTA_FOR_SIZING).
+                if self.min_delta_for_sizing:
+                    pos_delta = self._position_delta(pos, today, spot)
+                    if pos_delta is None or abs(pos_delta) < self.min_delta_for_sizing:
+                        continue
+                    self._note_sizing_delta(abs(pos_delta))
 
                 gross_premium = premium * (1 + self.slippage_rate)
                 share = missing * (value / total_value)
@@ -1427,6 +1524,15 @@ class OptionsBacktestEngine:
         if abs(delta) < 1e-6:
             self._drop_order("delta_negligeable")
             return
+        # PLANCHER DE DIMENSIONNEMENT, sur une OUVERTURE : rien à vendre ici,
+        # donc le refus est sans effet de bord (cf. la branche "position
+        # existante" plus bas, où il faut au contraire laisser passer les
+        # réductions). Un contrat dont le delta est déjà sous le plancher au
+        # moment de l'entrée est trop loin de la monnaie pour que l'exposition
+        # notionnelle visée veuille encore dire quelque chose.
+        if existing is None and self.min_delta_for_sizing and abs(delta) < self.min_delta_for_sizing:
+            self._drop_order("delta_sous_le_plancher")
+            return
 
         multiplier = contract["multiplier"]
         # Budget de levier ENCORE DISPONIBLE, appliqué ici et pas seulement
@@ -1439,6 +1545,7 @@ class OptionsBacktestEngine:
         )
 
         if existing is None:
+            self._note_sizing_delta(abs(delta))
             # Prime brute (slippage inclus) : la commission est ajoutée à part,
             # au niveau de l'ORDRE, puisqu'elle a un minimum forfaitaire.
             gross_premium = contract["premium"] * (1 + self.slippage_rate)
@@ -1569,6 +1676,21 @@ class OptionsBacktestEngine:
                 self._drop_order("montant_negligeable")
                 return
             if delta_contracts > 0:
+                # PLANCHER DE DIMENSIONNEMENT, testé ICI et pas plus haut.
+                #
+                # Le tester avant le calcul de `delta_contracts` rendrait
+                # INVENDABLE une position devenue très hors de la monnaie :
+                # elle ne pourrait plus être réduite, ni par un rebalancement,
+                # ni par une perte de signal, et resterait gelée jusqu'à
+                # l'expiration -- exactement la position dont il faut pouvoir
+                # se débarrasser. La branche `else` ci-dessous (réduction, puis
+                # _reduce_position) ne voit donc aucun plancher, pas plus que
+                # les autres chemins de sortie (stop-loss, roulement,
+                # expiration, data_gap, _close_lost_signals).
+                if self.min_delta_for_sizing and abs(existing_delta) < self.min_delta_for_sizing:
+                    self._drop_order("delta_sous_le_plancher")
+                    return
+                self._note_sizing_delta(abs(existing_delta))
                 current_premium = self._current_premium(existing, today, spot=spot) or contract["premium"]
                 gross_premium = current_premium * (1 + self.slippage_rate)
 
@@ -1630,10 +1752,31 @@ class OptionsBacktestEngine:
         # donc pas de slippage. L'appliquer quand même faisait payer 2,5% de
         # l'intrinsèque sur chaque expiration dans la monnaie, une friction qui
         # n'existe pas.
-        slippage_rate = 0.0 if reason == "expiry" else self.slippage_rate
+        # UNE EXPIRATION N'EST PAS UN ORDRE. Le contrat est réglé à sa valeur
+        # intrinsèque, par abandon (hors de la monnaie : rien à payer, rien à
+        # recevoir) ou par exercice automatique (dans la monnaie : IBKR ne
+        # facture pas de commission d'ordre là-dessus). Dans les deux cas il
+        # n'y a ni fourchette bid/ask à traverser, ni ordre à router.
+        #
+        # Le moteur facturait pourtant les deux. Le slippage avait déjà été
+        # neutralisé ; la COMMISSION restait, et elle n'était annulée que
+        # lorsque la valeur résiduelle était nulle (`min(commission,
+        # gross_value)` plus bas) -- c'est-à-dire dans le seul cas où l'option
+        # ne valait rien. Une expiration DANS LA MONNAIE payait donc une
+        # commission d'ordre complète : mesuré à 6 376 $ sur 75 expirations,
+        # soit 85 $ chacune, pour des ordres qui n'existent pas.
+        #
+        # `data_gap` reste une vente forcée légitime : le sous-jacent ne cote
+        # plus, on solde au dernier prix connu, et cette sortie-là passe bien
+        # par le marché.
+        settles_at_expiry = reason == "expiry"
+        slippage_rate = 0.0 if settles_at_expiry else self.slippage_rate
         gross_premium = current_premium * (1 - slippage_rate)
         gross_value = contracts_to_sell * pos.multiplier * gross_premium
-        commission = self._order_commission(contracts_to_sell, gross_premium, pos.multiplier, today, "sell")
+        commission = (
+            0.0 if settles_at_expiry
+            else self._order_commission(contracts_to_sell, gross_premium, pos.multiplier, today, "sell")
+        )
 
         # Quand la commission dépasse ce que vaut encore l'option (prime quasi
         # nulle), on ne PAIE pas pour vendre : on laisse expirer. Le
@@ -2224,6 +2367,18 @@ class OptionsBacktestEngine:
             wanted_direction = (self._eligible_directions or {}).get(symbol)
             if wanted_direction == pos.option_type:
                 continue
+            # DURÉE DE DÉTENTION MINIMALE (config.OPTIONS_MIN_HOLDING_DAYS).
+            #
+            # Volontairement limitée à CE point de sortie. Les motifs traités
+            # ailleurs -- stop_loss, take_profit, roll, expiry, data_gap -- ne
+            # sont pas des changements d'avis mais des garde-fous de risque ou
+            # des échéances : ils ne se négocient pas contre un calendrier.
+            # Ici au contraire, on constate qu'un écart est repassé sous un
+            # seuil, contre un prix qui bouge chaque jour ; sur un contrat
+            # acheté à 730 jours, la médiane mesurée d'une sortie
+            # `signal_lost` était de 79 jours, avec un minimum à UN jour.
+            if self.min_holding_days and (today - pos.entry_date).days < self.min_holding_days:
+                continue
             reason = "signal_lost" if wanted_direction is None else "direction_flip"
             self.pending_orders[symbol] = _PendingOrder(0.0, reason, today)
             closed.add(symbol)
@@ -2273,9 +2428,51 @@ class OptionsBacktestEngine:
             for row in rows if row.get("vega_notional") is not None
         ]
 
+        # VOLUME DE CONTRATS. La grandeur qui aurait rendu le dimensionnement
+        # divergent visible immédiatement : la commission suit le NOMBRE de
+        # contrats, le slippage leur VALEUR. Quand les deux divergent (l'un
+        # x26, l'autre en baisse), c'est que le moteur achète des milliers
+        # d'options quasi sans valeur -- mais tant que seule la friction totale
+        # était publiée, les deux mouvements se compensaient et rien ne
+        # ressortait.
+        total_contracts = sum(abs(row["contracts"]) for row in self.executions)
+        buys = [row for row in self.executions if row["side"] == "buy"]
+        biggest = max(buys, key=lambda row: abs(row["contracts"]), default=None)
+
+        # DÉPASSEMENT DU PLAFOND DE LEVIER, en fréquence et en ampleur. Un
+        # maximum isolé peut être un artefact d'un jour ; une part de jours
+        # au-dessus du plafond dit si le plafond contraint réellement quelque
+        # chose. Le dépassement MÉDIAN sur ces jours-là évite qu'un pic unique
+        # ne masque une dérive chronique -- ou l'inverse.
+        days_above = pct_days_above = median_excess = None
+        if self.max_delta_notional_pct and delta_pct:
+            above = sorted(p for p in delta_pct if p > self.max_delta_notional_pct)
+            days_above = len(above)
+            pct_days_above = len(above) / len(delta_pct) * 100
+            if above:
+                median_excess = above[len(above) // 2] - self.max_delta_notional_pct
+
         total_friction = self.total_commission + self.total_slippage
         initial_nav = self.equity_curve_rows[0]["nav"] if self.equity_curve_rows else None
         return {
+            "total_contracts_traded": float(total_contracts),
+            "max_contracts_single_order": float(abs(biggest["contracts"])) if biggest else None,
+            "max_contracts_order_symbol": biggest["symbol"] if biggest else None,
+            "max_contracts_order_date": str(biggest["date"].date()) if biggest else None,
+            "min_delta_at_sizing": (
+                float(self.min_delta_at_sizing) if self.min_delta_at_sizing is not None else None
+            ),
+            "days_above_delta_cap": days_above,
+            "pct_days_above_delta_cap": float(pct_days_above) if pct_days_above is not None else None,
+            "median_excess_above_delta_cap_pct": (
+                float(median_excess) if median_excess is not None else None
+            ),
+            # Intérêts du cash oisif : isolés pour qu'une performance portée
+            # par les taux ne passe pas pour une performance de la thèse.
+            "total_cash_interest_dollar": float(self.total_cash_interest),
+            "total_cash_interest_pct_of_initial": (
+                float(self.total_cash_interest / initial_nav * 100) if initial_nav else None
+            ),
             "buy_orders_count": self.buy_orders_count,
             "truncated_orders_count": self.truncated_orders_count,
             "truncated_orders_pct": float(truncated_pct),
@@ -2360,6 +2557,12 @@ class OptionsBacktestEngine:
             # friction d'un jour donné s'obtient par simple différence).
             "total_commission": self.total_commission,
             "total_slippage": self.total_slippage,
+            # Intérêts crédités sur le cash oisif depuis le début du run.
+            # Publié ici parce que ce poste N'EST PAS un P&L d'option : la
+            # décomposition CALL/PUT (backtest/put_call_analysis.py) doit
+            # pouvoir le retirer du NAV avant d'attribuer quoi que ce soit à
+            # une jambe, sinon sa réconciliation ne boucle plus.
+            "total_cash_interest": self.total_cash_interest,
         })
 
     def _record_positions(self, today: pd.Timestamp) -> None:

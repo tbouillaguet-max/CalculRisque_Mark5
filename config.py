@@ -790,6 +790,75 @@ OPTIONS_MAX_TRADE_PCT_OF_NAV = 10.0
 # indépendant de la taille du portefeuille.
 OPTIONS_MAX_TRADE_DOLLAR = 0.0
 
+# DELTA MINIMAL POUR DIMENSIONNER UN ACHAT.
+#
+# Le moteur convertit une exposition $ visée en contrats par
+# `nb = target_dollar / (|delta| x spot x multiplicateur)`. Cette expression
+# DIVERGE quand le delta tend vers zéro : à delta 0,01 elle attribue cent fois
+# plus de contrats qu'à delta 1,0, pour la même exposition notionnelle
+# affichée. Le seul garde-fou était `abs(delta) < 1e-6`, qui protège d'un
+# OverflowError mais pas de l'absurdité économique.
+#
+# CE QUE ÇA COÛTE. Sans stop-loss, les positions perdantes survivent et
+# dérivent loin hors de la monnaie ; leur delta et leur prime tendent vers 0,
+# et chaque renforcement leur attribue un nombre de contrats colossal. Mesuré
+# sur deux runs identiques à un paramètre près (--stop-loss-pct -1000) :
+# commissions x26 (17 910 $ -> 470 888 $) pendant que le slippage BAISSE. La
+# commission est proportionnelle au NOMBRE DE CONTRATS, le slippage à la
+# VALEUR des primes : le volume de contrats avait explosé sans que la valeur
+# engagée bouge.
+#
+# POURQUOI LES PLAFONDS EXISTANTS N'Y SUFFISENT PAS. Le plafond par ordre est
+# en DOLLARS : sur une option à 0,02 $ de prime, 10% d'un NAV de 1 M$ autorise
+# 50 000 contrats. Et le plafond de LEVIER a exactement la même forme que le
+# dimensionnement (`remaining / (|delta| x spot x mult)`) : il diverge donc
+# lui aussi quand le delta s'effondre, et n'oppose aucune résistance.
+#
+# CALIBRATION. Une entrée ATM à 2 ans a un delta de ~0,55. Une position doit
+# avoir beaucoup dérivé pour tomber sous 0,15 : le plancher ne mord que sur
+# les cas pathologiques, jamais sur une thèse encore vivante.
+#
+# NE S'APPLIQUE QU'AUX ACHATS. Une position sous le plancher doit rester
+# VENDABLE -- par stop-loss, perte de signal, roulement, expiration ou
+# réduction. Un plancher qui bloquerait aussi les sorties rendrait
+# invendable exactement la position qu'il faut pouvoir solder.
+OPTIONS_MIN_DELTA_FOR_SIZING = 0.15
+
+# INTÉRÊTS SUR LE CASH OISIF.
+#
+# Cette stratégie porte en moyenne 74% de cash (le dimensionnement par delta
+# n'engage qu'une prime, soit une fraction de l'exposition). Ne pas rémunérer
+# ce cash pénalise le portefeuille par construction, et pour une raison qui
+# n'a rien à voir avec la thèse : sur 2015-2026, à des taux allés jusqu'à
+# 5,3%, l'écart cumulé se compte en dizaines de points de NAV.
+#
+# C'est aussi ce biais qui rendait OPTIONS_MIN_DEPLOYMENT_PCT tentant : le
+# plancher de primes ne faisait que compenser un manque à gagner artificiel,
+# en payant frais et slippage pour le faire.
+#
+# Capitalisation sur les jours CALENDAIRES écoulés (base 365) au taux
+# config.risk_free_rate_for(année) : un week-end rapporte, comme sur un compte
+# réel. False rétablit le comportement d'avant (cash stérile) pour rejouer un
+# run ancien.
+OPTIONS_CREDIT_IDLE_CASH = True
+
+# DURÉE DE DÉTENTION MINIMALE avant une sortie sur perte de signal.
+#
+# Les contrats sont achetés à 730 jours d'échéance, mais la durée de détention
+# médiane d'une sortie `signal_lost` est de 79 jours -- avec un minimum
+# mesuré à UN jour. Tous motifs confondus, la moyenne est de 193 jours : la
+# stratégie consomme 26% de l'optionalité qu'elle achète, et jette le reste.
+#
+# La cause est structurelle : une position est fermée dès que son écart
+# repasse sous le seuil qui a servi à ENTRER, et ce test tourne chaque jour de
+# bourse contre un prix qui bouge chaque jour. Un titre qui oscille autour du
+# seuil est acheté et revendu en boucle -- un contrôleur bang-bang.
+#
+# Ne s'applique JAMAIS aux motifs stop_loss, take_profit, roll, expiry ni
+# data_gap : un garde-fou de risque ou une échéance ne se négocie pas.
+# 0 désactive la contrainte (comportement historique).
+OPTIONS_MIN_HOLDING_DAYS = 0
+
 
 # ----------------------------------------------------------------------------
 # Hypothèses DCF par SECTEUR (07_calcul_dcf.py)
