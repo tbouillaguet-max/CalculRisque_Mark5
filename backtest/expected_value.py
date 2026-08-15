@@ -105,6 +105,43 @@ def _degenerate_spot(spot: float, mu: float, t_years: float) -> float:
     return spot * math.exp(mu * max(t_years, 0.0))
 
 
+def truncated_moments_below(
+    spot: float, level: float, mu: float, sigma: float, t_years: float,
+) -> tuple:
+    """Trois moments de S_T TRONQUÉS sous un niveau, sous la mesure physique :
+
+        ( P(S_T <= L) , E[S_T·1{S_T<=L}] , E[S_T²·1{S_T<=L}] )
+        = ( N(-d2) , S0·e^(mu·T)·N(-d1) , S0²·e^((2mu+sigma²)T)·N(-(d1+sigma√T)) )
+
+    Ce sont les seules briques dont tout le module a besoin : espérances,
+    seconds moments et mesures de risque asymétriques s'écrivent toutes comme
+    des combinaisons de ces trois intégrales évaluées à un ou deux niveaux. Les
+    exposer une fois évite de redériver (et de faire diverger) le même calcul
+    dans cinq fonctions.
+
+    (0, 0, 0) pour un niveau nul ou négatif : S_T est strictement positif, donc
+    l'événement est vide. Cette convention est ce qui permet aux formules de
+    risque ci-dessous de traiter sans cas particulier un seuil de rentabilité
+    situé sous zéro."""
+    if spot <= 0 or level <= 0:
+        return 0.0, 0.0, 0.0
+
+    if t_years <= 0 or sigma <= 0:
+        # Sans aléa, S_T vaut son forward : la troncature est un simple test.
+        forward = _degenerate_spot(spot, mu, t_years)
+        if forward <= level:
+            return 1.0, forward, forward * forward
+        return 0.0, 0.0, 0.0
+
+    sigma_sqrt_t = sigma * math.sqrt(t_years)
+    d1, d2 = _d1_d2(spot, level, mu, sigma, t_years)
+    return (
+        _norm_cdf(-d2),
+        spot * math.exp(mu * t_years) * _norm_cdf(-d1),
+        spot * spot * math.exp((2 * mu + sigma * sigma) * t_years) * _norm_cdf(-(d1 + sigma_sqrt_t)),
+    )
+
+
 # ----------------------------------------------------------------------------
 # Espérance du payoff (mesure physique)
 # ----------------------------------------------------------------------------
@@ -242,6 +279,130 @@ def variance_payoff(
         return variance_payoff_call(spot, strike, mu, sigma, t_years)
     if option_type == PUT:
         return variance_payoff_put(spot, strike, mu, sigma, t_years)
+    raise ValueError(f"option_type attend 'CALL' ou 'PUT', reçu {option_type!r}.")
+
+
+# ----------------------------------------------------------------------------
+# Risque BAISSIER (semi-écart-type sous le seuil de rentabilité)
+# ----------------------------------------------------------------------------
+#
+# POURQUOI PAS L'ÉCART-TYPE. Mesurer le risque d'un contrat par l'écart-type de
+# son payoff conduit à un optimum DÉGÉNÉRÉ : le Sharpe ainsi défini est
+# monotone en K et choisit toujours le strike le plus profondément dans la
+# monnaie de la grille, quelle que soit la dérive. La raison est structurelle --
+# très dans la monnaie, le payoff vaut S_T - K, donc son écart-type est celui du
+# sous-jacent, CONSTANT en K, pendant que l'espérance nette, elle, croît quand K
+# baisse. Mesuré sur S0=100, sigma=30%, T=2 ans, mu=20% : l'optimum reste collé
+# à la borne basse pour toute grille de +/-2 à +/-8 sigma, et le Sharpe du
+# contrat converge par en dessous vers celui de l'action seule (0,7366 contre
+# 0,7424 pour un achat comptant). Autrement dit, le critère dit « n'achète pas
+# d'option, achète l'action » -- réponse cohérente, mais qui ne sélectionne rien.
+#
+# La cause est que l'écart-type est SYMÉTRIQUE : il compte la dispersion à la
+# hausse comme un risque, et surtout il ignore ce qui fait l'intérêt d'une
+# option longue, à savoir que la perte est PLAFONNÉE à la prime. Le semi-écart-
+# type sous le seuil de rentabilité ne compte que les scénarios où le contrat
+# perd de l'argent, et voit donc ce plafond.
+#
+#     risque = racine( E[ max(prime - payoff, 0)² ] )
+#
+# soit le dénominateur d'un ratio de Sortino dont la cible est le seuil de
+# rentabilité (et non zéro : le point mort d'une option longue est la prime
+# payée, pas le payoff nul).
+
+def downside_semivariance_call(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, premium: float,
+) -> float:
+    """E[max(prime - payoff, 0)²] pour un CALL, en forme fermée.
+
+    Le seuil de rentabilité est B = K + prime : au-dessus, le contrat gagne.
+    Sous ce seuil, le manque à gagner prend deux formes, d'où deux morceaux :
+
+        S_T <= K      : le contrat expire sans valeur, perte = prime (constante)
+        K < S_T <= B  : perte = prime - (S_T - K) = B - S_T (linéaire)
+
+    Le second morceau se développe en (B - S_T)² et s'exprime dans les moments
+    tronqués évalués en B et en K -- même intégrale, deux bornes."""
+    if premium <= 0:
+        return 0.0
+    if strike <= 0:
+        strike = 0.0
+    breakeven = strike + premium
+
+    m0_k, m1_k, m2_k = truncated_moments_below(spot, strike, mu, sigma, t_years)
+    m0_b, m1_b, m2_b = truncated_moments_below(spot, breakeven, mu, sigma, t_years)
+
+    perte_totale = premium * premium * m0_k
+    perte_partielle = (
+        (m2_b - m2_k)
+        - 2 * breakeven * (m1_b - m1_k)
+        + breakeven * breakeven * (m0_b - m0_k)
+    )
+    return max(perte_totale + perte_partielle, 0.0)
+
+
+def downside_semivariance_put(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, premium: float,
+) -> float:
+    """E[max(prime - payoff, 0)²] pour un PUT -- symétrique du call.
+
+    Seuil de rentabilité B = K - prime, atteint par le BAS :
+
+        S_T >= K      : perte = prime (le contrat expire sans valeur)
+        B <= S_T < K  : perte = prime - (K - S_T) = S_T - B
+
+    Quand la prime dépasse le strike, B est négatif : le contrat ne peut
+    structurellement jamais être rentable (le payoff maximal, K, est déjà
+    inférieur à la mise). La convention (0,0,0) de `truncated_moments_below`
+    sous un niveau négatif fait alors porter la formule sur tout le support,
+    sans cas particulier."""
+    if premium <= 0 or strike <= 0:
+        return 0.0
+    breakeven = strike - premium
+
+    m0_k, m1_k, m2_k = truncated_moments_below(spot, strike, mu, sigma, t_years)
+    m0_b, m1_b, m2_b = truncated_moments_below(spot, breakeven, mu, sigma, t_years)
+
+    perte_totale = premium * premium * (1.0 - m0_k)
+    perte_partielle = (
+        (m2_k - m2_b)
+        - 2 * breakeven * (m1_k - m1_b)
+        + breakeven * breakeven * (m0_k - m0_b)
+    )
+    return max(perte_totale + perte_partielle, 0.0)
+
+
+def downside_semivariance(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
+    premium: float,
+) -> float:
+    if option_type == CALL:
+        return downside_semivariance_call(spot, strike, mu, sigma, t_years, premium)
+    if option_type == PUT:
+        return downside_semivariance_put(spot, strike, mu, sigma, t_years, premium)
+    raise ValueError(f"option_type attend 'CALL' ou 'PUT', reçu {option_type!r}.")
+
+
+def probability_of_profit(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
+    premium: float,
+) -> float:
+    """P(payoff > prime) : probabilité que le contrat soit rentable à
+    l'échéance, sous la mesure physique.
+
+    Sert de GARDE-FOU au critère de Sortino, pas de critère de sélection. Un
+    ratio de Sortino peut être flatté par une queue de distribution : très hors
+    de la monnaie, l'espérance nette et le risque baissier tendent tous deux
+    vers zéro, et leur RAPPORT peut rester élevé alors que le contrat ne paie
+    presque jamais. Or c'est précisément dans cette queue que l'hypothèse
+    lognormale et l'estimation de `mu` sont les moins fiables. Exiger un
+    minimum de probabilité de gain interdit d'acheter un ratio qui n'existe que
+    dans la queue du modèle."""
+    breakeven = strike + premium if option_type == CALL else strike - premium
+    if option_type == CALL:
+        return 1.0 - truncated_moments_below(spot, breakeven, mu, sigma, t_years)[0]
+    if option_type == PUT:
+        return truncated_moments_below(spot, breakeven, mu, sigma, t_years)[0]
     raise ValueError(f"option_type attend 'CALL' ou 'PUT', reçu {option_type!r}.")
 
 

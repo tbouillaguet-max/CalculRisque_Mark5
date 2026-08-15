@@ -181,6 +181,86 @@ def test_l_esperance_croit_avec_la_volatilite():
 
 
 # --------------------------------------------------------------------------- #
+# Moments tronqués et risque baissier
+# --------------------------------------------------------------------------- #
+
+def test_les_moments_tronques_convergent_vers_les_moments_complets():
+    """À la limite d'un seuil infini, la troncature ne coupe plus rien :
+    on doit retrouver 1, E[S_T] et E[S_T²]."""
+    mu = 0.08
+    m0, m1, m2 = ev.truncated_moments_below(SPOT, 1e12, mu, SIGMA, T)
+    assert m0 == pytest.approx(1.0)
+    assert m1 == pytest.approx(SPOT * math.exp(mu * T))
+    assert m2 == pytest.approx(SPOT ** 2 * math.exp((2 * mu + SIGMA ** 2) * T))
+
+
+def test_les_moments_tronques_sont_vides_sous_un_seuil_negatif():
+    """S_T est strictement positif : l'événement est vide. C'est cette
+    convention qui permet aux formules de risque de traiter sans cas
+    particulier un seuil de rentabilité situé sous zéro."""
+    assert ev.truncated_moments_below(SPOT, -5.0, 0.05, SIGMA, T) == (0.0, 0.0, 0.0)
+    assert ev.truncated_moments_below(SPOT, 0.0, 0.05, SIGMA, T) == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize("strike", [70.0, 100.0, 130.0])
+@pytest.mark.parametrize("option_type", ["CALL", "PUT"])
+def test_le_risque_baissier_est_coherent_avec_une_simulation(strike, option_type):
+    """Contrôle indépendant de la forme fermée du semi-écart-type et de la
+    probabilité de gain."""
+    import numpy as np
+
+    mu, n = 0.20, 500_000
+    rng = np.random.default_rng(7)
+    s_t = SPOT * np.exp((mu - 0.5 * SIGMA ** 2) * T + SIGMA * math.sqrt(T) * rng.standard_normal(n))
+    payoff = np.maximum(s_t - strike, 0.0) if option_type == "CALL" else np.maximum(strike - s_t, 0.0)
+    premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, option_type, r=R, q=0.0)
+
+    assert ev.downside_semivariance(SPOT, strike, mu, SIGMA, T, option_type, premium) == pytest.approx(
+        np.mean(np.maximum(premium - payoff, 0.0) ** 2), rel=0.02)
+    assert ev.probability_of_profit(SPOT, strike, mu, SIGMA, T, option_type, premium) == pytest.approx(
+        np.mean(payoff > premium), abs=0.005)
+
+
+def test_le_risque_baissier_est_plafonne_par_la_prime():
+    """La perte d'une option longue est bornée par la mise : le semi-écart-type
+    sous le seuil de rentabilité ne peut donc pas dépasser la prime. C'est
+    exactement l'asymétrie que l'écart-type ne voit pas."""
+    for strike in (50.0, 100.0, 200.0):
+        premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
+        semi_ecart = math.sqrt(ev.downside_semivariance_call(SPOT, strike, 0.15, SIGMA, T, premium))
+        assert 0.0 <= semi_ecart <= premium + 1e-9
+
+
+def test_un_put_dont_la_prime_depasse_le_strike_ne_peut_jamais_gagner():
+    """Payoff maximal K, mise > K : la probabilité de gain est nulle et tout le
+    support contribue au risque baissier."""
+    strike, premium = 20.0, 25.0
+    assert ev.probability_of_profit(SPOT, strike, -0.20, SIGMA, T, "PUT", premium) == 0.0
+    assert ev.downside_semivariance_put(SPOT, strike, -0.20, SIGMA, T, premium) > 0.0
+
+
+def test_sans_prime_il_n_y_a_pas_de_risque_baissier():
+    """Un contrat gratuit ne peut pas perdre d'argent."""
+    assert ev.downside_semivariance_call(SPOT, 100.0, 0.05, SIGMA, T, premium=0.0) == 0.0
+    assert ev.downside_semivariance_put(SPOT, 100.0, 0.05, SIGMA, T, premium=0.0) == 0.0
+
+
+def test_la_probabilite_de_gain_decroit_avec_le_strike_pour_un_call():
+    valeurs = []
+    for strike in (80.0, 100.0, 120.0, 160.0, 200.0):
+        premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
+        valeurs.append(ev.probability_of_profit(SPOT, strike, 0.10, SIGMA, T, "CALL", premium))
+    assert all(a > b for a, b in zip(valeurs, valeurs[1:]))
+
+
+def test_le_risque_baissier_refuse_un_type_inconnu():
+    with pytest.raises(ValueError):
+        ev.downside_semivariance(SPOT, 100.0, 0.05, SIGMA, T, "STRANGLE", 5.0)
+    with pytest.raises(ValueError):
+        ev.probability_of_profit(SPOT, 100.0, 0.05, SIGMA, T, "STRANGLE", 5.0)
+
+
+# --------------------------------------------------------------------------- #
 # Sharpe du contrat et choix du strike
 # --------------------------------------------------------------------------- #
 
