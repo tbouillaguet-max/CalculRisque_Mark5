@@ -226,6 +226,67 @@ def calculate_multiples() -> pd.DataFrame:
     return df
 
 
+def _sectors_from(path) -> pd.DataFrame:
+    """{symbol -> sector} lu depuis un fichier d'univers (sortie de 02). Vide
+    si le fichier n'existe pas ou n'a jamais été catégorisé. Le RIC est
+    converti au format de symbole du reste du pipeline (config.to_ib_symbol) :
+    sinon les tickers à classes d'actions (BRK.B, BF.B) se retrouvent sans
+    secteur."""
+    vide = pd.DataFrame(columns=["symbol", "sector"])
+    if path is None or not path.exists():
+        return vide
+    try:
+        universe = pd.read_csv(path, encoding="utf-8-sig")
+    except (OSError, pd.errors.ParserError) as exc:
+        logger.warning("%s illisible (%s) : secteurs non repris de ce fichier.", path, exc)
+        return vide
+    if "sector" not in universe.columns or "RIC" not in universe.columns:
+        return vide
+    universe = universe.copy()
+    universe["symbol"] = universe["RIC"].apply(config.to_ib_symbol)
+    return universe[["symbol", "sector"]].dropna(subset=["symbol"]).drop_duplicates(subset=["symbol"])
+
+
+def merge_sectors(df: pd.DataFrame) -> pd.DataFrame:
+    """Rattache le secteur : univers COURANT d'abord (01+02), univers COMPLET
+    (01b+02) en complément pour les entreprises RADIÉES.
+
+    Sans ce second niveau, une entreprise radiée backfillée dans financials.
+    parquet arrive ici sans secteur, et 06b l'écarte de ses médianes
+    (dropna(subset=["sector"])). Le backfill aurait alors coûté des milliers
+    de requêtes SEC pour rien : le biais de survivance serait resté entier,
+    et silencieusement."""
+    sectors = _sectors_from(config.UNIVERSE_FILE)
+    if sectors.empty:
+        return df
+
+    df = df.merge(sectors, on="symbol", how="left")
+
+    complet = _sectors_from(getattr(config, "UNIVERSE_FULL_FILE", None))
+    if not complet.empty:
+        manquants = df["sector"].isna()
+        if manquants.any():
+            repli = df.loc[manquants, "symbol"].map(complet.set_index("symbol")["sector"])
+            df.loc[manquants, "sector"] = repli
+            logger.info(
+                "%d lignes sans secteur dans l'univers courant : %d complétées depuis %s "
+                "(entreprises radiées).",
+                int(manquants.sum()), int(repli.notna().sum()), config.UNIVERSE_FULL_FILE,
+            )
+
+    orphelines = df["sector"].isna()
+    if orphelines.any():
+        symboles = sorted(df.loc[orphelines, "symbol"].dropna().unique())
+        logger.warning(
+            "%d lignes (%d entreprises) restent SANS SECTEUR : elles seront exclues des "
+            "médianes sectorielles de 06b, ce qui rouvre le biais de survivance pour ces "
+            "titres. Lance 02_categoriser_secteurs.py --universe %s. Concernées (extrait) : %s%s",
+            int(orphelines.sum()), len(symboles), getattr(config, "UNIVERSE_FULL_FILE", "?"),
+            ", ".join(symboles[:15]), "..." if len(symboles) > 15 else "",
+        )
+    return df
+
+
 def main() -> None:
     if not (config.FINANCIALS_FILE.exists() and config.PRICES_FILE.exists()):
         logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
@@ -240,20 +301,13 @@ def main() -> None:
     # de symbole que le reste du pipeline (config.to_ib_symbol) : sinon les
     # tickers à classes d'actions (BRK.B, BF.B) se retrouvent sans secteur.
     #
-    # BIAIS CONNU (non corrigé, cf. README) : ce secteur est la classification
-    # d'AUJOURD'HUI, appliquée rétroactivement à tous les exercices, y compris
-    # 2012. Une entreprise reclassée depuis (les GICS ont notamment déplacé
-    # les télécoms et une partie de la tech vers "Services de communication"
-    # en 2018) est donc comparée aux mauvais pairs sur toute sa partie
-    # ancienne, et se voit appliquer les mauvaises hypothèses de DCF
-    # (config.SECTOR_DCF_PARAMS) et les mauvais multiples pertinents
-    # (config.SECTOR_MULTIPLES). L'historique GICS point-in-time n'est pas
-    # disponible gratuitement -- c'est un biais assumé, pas un oubli.
-    universe = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
-    if "sector" in universe.columns:
-        universe = universe.copy()
-        universe["symbol"] = universe["RIC"].apply(config.to_ib_symbol)
-        df = df.merge(universe[["symbol", "sector"]], on="symbol", how="left")
+    # Ce secteur est la classification d'AUJOURD'HUI. Elle n'est plus
+    # appliquée rétroactivement en aval : 06b la ramène au secteur d'époque
+    # avant de composer les groupes de pairs (sector_history.sector_asof,
+    # qui rejoue à l'envers les remaniements GICS -- notamment la création de
+    # "Communication Services" en 2018, qui a sorti l'internet grand public de
+    # la technologie). C'est donc bien le secteur COURANT qu'on veut ici.
+    df = merge_sectors(df)
 
     config.MULTIPLES_FILE.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(config.MULTIPLES_FILE, index=False)

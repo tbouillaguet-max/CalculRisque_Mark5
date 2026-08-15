@@ -10,10 +10,47 @@ take-profit, roulement, positions gelées, coûts).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 import pandas as pd
 
 OPTIONS_STRATEGY_REGISTRY: dict[str, type["OptionsStrategy"]] = {}
+
+
+@dataclass(frozen=True)
+class MarketContext:
+    """Vue en LECTURE SEULE de l'état de marché du jour, fournie par le moteur
+    aux stratégies qui en ont besoin.
+
+    POURQUOI CE DÉTOUR. La trame `signals` ne porte que le signal fondamental
+    (valeur théorique, cours, secteur). Une stratégie qui pose son strike ad
+    hoc (ATM, ou mi-chemin cours/valeur) n'a besoin de rien d'autre. Une
+    stratégie qui OPTIMISE son strike a besoin, elle, de la volatilité et des
+    strikes réellement cotés -- deux grandeurs que seul le moteur détient.
+
+    Les recalculer dans la stratégie serait pire que ce détour : la volatilité
+    servant à choisir le contrat doit être EXACTEMENT celle qui servira ensuite
+    à le repricer (cf. options_engine._repricing_vol), sans quoi la position
+    afficherait un saut de P&L dès le lendemain de son ouverture, sans qu'aucun
+    prix n'ait bougé.
+
+    Frozen, et exposé en callables plutôt qu'en données : la stratégie
+    interroge le moteur pour les seuls symboles qu'elle retient (quelques
+    dizaines), pas pour tout l'univers suivi (plusieurs centaines)."""
+
+    today: pd.Timestamp
+    # (symbole) -> volatilité réalisée annualisée, ou None si l'historique
+    # disponible à cette date est trop court.
+    realized_vol: Callable[[str], Optional[float]]
+    # (symbole) -> (taux sans risque, rendement du dividende sectoriel).
+    pricing_context: Callable[[str], tuple]
+    # (symbole, type d'option, échéance visée en jours) -> volatilité IMPLICITE
+    # réellement cotée, ou None si aucun snapshot exploitable.
+    implied_vol: Callable[[str, str, float], Optional[float]]
+    # (symbole, type d'option, échéance visée en jours) -> strikes cotés,
+    # triés. Liste vide si aucun snapshot exploitable.
+    quoted_strikes: Callable[[str, str, float], list]
 
 
 def register_options_strategy(name: str):
@@ -35,8 +72,24 @@ class OptionsStrategy(ABC):
     # paramètre a réellement un effet, au lieu de balayer le mauvais.
     targets_convergence = False
 
+    # True quand la stratégie a besoin de l'état de marché du jour (volatilité,
+    # strikes cotés) pour construire ses cibles. Le moteur ne construit et ne
+    # transmet le MarketContext que dans ce cas : les stratégies qui posent
+    # leur strike ad hoc n'en ont aucun usage, et le leur fournir coûterait
+    # une construction de contexte par jour de bourse pour rien.
+    needs_market_context = False
+
     def __init__(self, **params):
         self.params = params
+        self.market_context: Optional[MarketContext] = None
+
+    def bind_market_context(self, context: MarketContext) -> None:
+        """Appelé par le moteur avant chaque évaluation, si
+        `needs_market_context`. Point d'ancrage volontairement passif : la
+        stratégie stocke le contexte et le lit dans son propre calcul, plutôt
+        que le moteur ne lui pousse des paramètres qu'il faudrait ajouter à la
+        signature de generate_option_targets à chaque nouveau besoin."""
+        self.market_context = context
 
     @abstractmethod
     def generate_option_targets(self, signals: pd.DataFrame, current_positions: dict[str, str]) -> dict[str, dict]:

@@ -153,6 +153,9 @@ le delta pour une exposition $ cible ("hedge par les greeks").
     12_analyse_put_call.py            -> décomposition CALL/PUT d'un run sauvegardé
     13_diagnostic_friction.py         -> plan 2x2 thèse / friction / churn
     11b_optimize_rebalance_threshold.py -> grid-search sur ε (rebalancement sur dépôt SEC)
+    11c_optimize_convergence_fraction.py -> grid-search sur la fraction de convergence
+                                          (stratégie « espérance de gain »)
+    compare_options_strategies.py     -> comparaison côte à côte des trois stratégies
 
 ```bash
 python 05_calcul_multiples.py
@@ -247,16 +250,17 @@ sépare tient au signal, au strike et au traitement d'un écart refermé :
 python 10_backtest_options.py --strategy valuation_gap_multiples_options --start-date 2015-01-01
 ```
 
-| | `valuation_gap_options` | `valuation_gap_multiples_options` |
-|---|---|---|
-| Signal | multiples, **DCF en repli** | **multiples seuls** (repli DCF écarté) |
-| Mesure de l'écart | ±20% rapporté au cours | **100 × ln(théorique/cours)**, symétrique |
-| Strike | ATM | **à mi-chemin théorique/cours** |
-| Échéance | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois |
-| Stop-loss | −20% du cours du sous-jacent | **−25%** du cours du sous-jacent |
-| Take-profit | +80% du cours du sous-jacent | **80% du chemin vers la théorique** |
-| Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | **vendue au trimestre suivant** |
-| Volatilité de repricing | figée à l'entrée | **suivie au jour le jour** |
+| | `valuation_gap_options` | `valuation_gap_multiples_options` | `valuation_gap_expected_value_options` |
+|---|---|---|---|
+| Signal | multiples, **DCF en repli** | **multiples seuls** (repli DCF écarté) | identique à multiples |
+| Mesure de l'écart | ±20% rapporté au cours | **100 × ln(théorique/cours)**, symétrique | identique à multiples |
+| Strike | ATM | à mi-chemin théorique/cours | **maximise la croissance log-optimale (Kelly)** |
+| Échéance | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois | 2 ans, roulée à 9 mois |
+| Stop-loss | −20% du cours du sous-jacent | −25% du cours du sous-jacent | −25% (hérité de multiples) |
+| Take-profit | +80% du cours du sous-jacent | 80% du chemin vers la théorique | 80% du chemin vers la théorique |
+| Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | vendue au trimestre suivant | vendue au trimestre suivant |
+| Volatilité de repricing | figée à l'entrée | suivie au jour le jour | suivie au jour le jour |
+| Ligne écartée si… | jamais (le seuil décide seul) | jamais | **espérance de gain nette ≤ 0** |
 
 Comme la valorisation boursière (nb d'actions × cours) et la valorisation
 théorique (nb d'actions × valeur théorique par action) portent sur le même
@@ -315,6 +319,141 @@ la vente sur perte de signal et la réévaluation quotidienne restent
 
 Résultats sauvegardés sous `data/backtest_options/<run_id>/` (mêmes fichiers
 que le backtest actions).
+
+### Stratégie `valuation_gap_expected_value_options` (strike par espérance de gain)
+
+Troisième stratégie options. Elle reprend **exactement** le signal de
+`valuation_gap_multiples_options` (mêmes filtres, même écart en log corrigé de
+l'inflation, mêmes seuils, mêmes poids plafonnés — elle en hérite directement)
+et n'en change **qu'une chose** : le strike n'est plus posé par convention, il
+est choisi en maximisant le taux de croissance log-optimal du contrat. La
+comparaison entre les deux ne mesure donc que l'effet de cette sélection.
+
+```bash
+python 10_backtest_options.py --strategy valuation_gap_expected_value_options --start-date 2015-01-01
+python 10_backtest_options.py --strategy valuation_gap_expected_value_options \
+    --start-date 2015-01-01 --strategy-param convergence_fraction=0.7
+```
+
+Pour chaque candidate, la stratégie :
+
+1. traduit la thèse en **dérive annualisée** `mu = fraction × ln(V / S0) / T` ;
+2. balaie une grille de strikes adaptative (de `S0·exp(−3σ√T)` à `S0·exp(+3σ√T)`,
+   par pas de `0,25·σ√T`), **restreinte aux strikes réellement cotés** quand un
+   snapshot est disponible ;
+3. retient celui qui maximise `g* = max_f E[log(1 + f·R)]`, où `R = payoff/prime − 1` ;
+4. **n'ouvre rien** si aucun candidat n'a d'espérance nette positive.
+
+Les formules sont dans `backtest/expected_value.py`, module de maths pur testé
+isolément (`tests/test_expected_value.py`, 122 tests). Le test qui porte tout le
+reste : sous `mu = r`, l'espérance actualisée du payoff **égale le prix
+Black-Scholes** (écart mesuré ~1e−14).
+
+**Pourquoi Kelly et pas un ratio gain/risque.** C'est le point décisif, et il a
+été mesuré avant d'être retenu. Un critère en ratio — Sharpe du contrat, ou
+Sortino sur le risque baissier — a un optimum **dégénéré** : il ne choisit
+jamais un strike intérieur, il se colle à un bord de grille.
+
+| Critère | Comportement mesuré | Cause |
+|---|---|---|
+| Sharpe (écart-type) | optimum collé au bord **dans la monnaie**, pour toute grille de ±2σ à ±8σ et quelle que soit la dérive | très ITM, le payoff vaut `S_T − K` : son écart-type est celui du sous-jacent, **constant en K**, pendant que l'espérance nette croît quand K baisse |
+| Sortino (semi-écart-type) | ratio de **20,3** sur un contrat qui ne paie que dans **0,1%** des scénarios | le risque baissier est **plafonné par la prime**, donc le ratio se comporte comme espérance/prime et diverge |
+| Kelly | strike **intérieur**, qui se déplace continûment avec la conviction | la perte totale a une probabilité strictement positive et `log(1−f)` diverge |
+
+Un plancher de probabilité de gain ne corrige pas les deux premiers : il colle
+l'optimum à la contrainte et le fait **basculer d'un extrême à l'autre** (à
+`mu = 20%`, un plancher de 30% choisit `K = 1,53·S0` ; un plancher de 40%
+choisit `K = 0,28·S0`). Le seuil déciderait du strike.
+
+Kelly, lui, est borné des deux côtés par construction. Mesuré à σ = 20% :
+
+| `mu` | 6% | 10% | 20% | 35% |
+|---|---|---|---|---|
+| `K*/S0` | 0,43 | 0,43 | 0,99 | 1,42 |
+| `f*` | 0,64 | 0,99 | 0,79 | 0,84 |
+
+Les cas où Kelly retient un strike de bord (avantage faible devant la
+volatilité) ne sont pas une panne : ils disent que l'avantage est trop mince
+pour payer de la convexité, et qu'il vaut mieux du delta. Le Sharpe, lui,
+disait cela **toujours**, y compris à conviction forte.
+
+`g*` n'a pas de primitive : il est évalué par **quadrature de Gauss-Legendre**
+(`OPTIONS_EV_QUADRATURE_NODES`, 128 nœuds) sur la seule région lucrative,
+l'atome de perte totale étant traité en forme fermée. L'intégrande y est
+analytique, donc la convergence est géométrique — mesuré : 1e−13 dès 32 nœuds.
+Une quadrature et non un Monte-Carlo, dont le bruit d'échantillonnage ferait
+changer le strike d'un run à l'autre sans qu'aucune donnée n'ait bougé.
+
+**Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,5).
+`fraction = 1` supposerait que le cours atteint exactement sa valeur théorique
+à l'échéance — hypothèse que rien n'étaye. Le défaut de 0,5 reprend l'hypothèse
+**déjà implicite** dans `valuation_gap_multiples_options` (dont le strike à
+mi-chemin suppose exactement la moitié du chemin), mais la rend explicite, donc
+optimisable.
+
+**Volatilité de sélection** : l'implicite réellement cotée si un snapshot est
+disponible, la volatilité réalisée sinon, et en dernier recours
+`OPTIONS_FALLBACK_VOL` — la **même** valeur que celle sur laquelle le moteur se
+replie. Écarter ces lignes serait plus prudent en apparence, mais biaiserait la
+sélection vers les seuls titres à long historique. La part des ouvertures faites
+sur IV réelle est remontée dans `metrics.json`
+(`expected_value_implied_vol_pct`), à côté du nombre de lignes écartées pour
+espérance négative (`dropped_expected_value_negative_count`).
+
+**Limite fondamentale.** Tout ce que produit cette stratégie est la traduction
+en dollars de `mu`, et `mu` est **estimé** — à partir d'une valeur théorique
+issue de multiples sectoriels, et d'une hypothèse de convergence que rien ne
+garantit. L'espérance calculée n'est pas une prédiction : c'est ce que vaudrait
+le contrat **si** la thèse était juste. Un `mu` faux donne une espérance fausse
+avec la même précision apparente à la douzième décimale, et le raffinement du
+critère de sélection n'y change rien.
+
+### Comparaison des trois stratégies (compare_options_strategies.py)
+
+Rejoue les trois stratégies sur la **même période et le même univers**, et
+produit un tableau côte à côte des métriques clés lues dans `metrics.json`,
+plus la décomposition du P&L par motif de sortie (même fonction que
+`12_analyse_put_call.py`, donc chiffres identiques à la ligne près).
+
+```bash
+python compare_options_strategies.py --start-date 2015-01-01
+python compare_options_strategies.py --start-date 2015-01-01 --end-date 2024-01-01
+python compare_options_strategies.py --reuse-existing        # ne rejoue rien
+```
+
+**Chaque stratégie tourne avec ses propres `engine_defaults`**, et c'est le
+point du script : stops, échéance, roulement et mode de volatilité font partie
+de la thèse de chacune. Les uniformiser donnerait trois variantes d'un cadre
+commun que personne n'a conçu. Ce qui est uniformisé et doit l'être : la
+période, l'univers, le capital initial, les coûts d'exécution et le benchmark.
+
+Sorties : console + `data/backtest/comparisons/comparison_<horodatage>.csv`
+(et `..._by_exit_reason.csv`). Attention à la lecture : trois runs sur une même
+période sont trois tirages d'une **même** histoire de marché, pas trois
+échantillons indépendants — un écart de Sharpe faible ne départage rien.
+
+### Optimisation de la fraction de convergence (11c_optimize_convergence_fraction.py)
+
+Grid-search sur `convergence_fraction`, calqué sur
+`11b_optimize_rebalance_threshold.py` : données chargées une seule fois, tous
+les autres réglages fixés, la fraction est le seul paramètre qui varie.
+
+```bash
+python 11c_optimize_convergence_fraction.py --start-date 2015-01-01
+python 11c_optimize_convergence_fraction.py --fraction-grid 0.3 0.5 0.7 1.0 --workers 4
+```
+
+Grille par défaut : 0,2 · 0,3 · 0,4 · 0,5 · 0,6 · 0,7 · 0,8 · 1,0. CSV sous
+`data/backtest_options/optimize_convergence_<stratégie>_<horodatage>.csv`.
+
+Deux avertissements que le script émet lui-même :
+
+- **Pas de walk-forward** à ce stade (contrairement à `11` et `11b`) : le
+  classement est *in-sample*, la fraction retenue est choisie sur les données
+  qui servent ensuite à la juger.
+- Une fraction basse écarte beaucoup de lignes pour espérance négative et peut
+  afficher un Sharpe flatteur sur une poignée de trades. Le script refuse de
+  recommander une fraction sous `--min-trades` (20 par défaut).
 
 ### Optimisation stop-loss / take-profit (11_optimize_options_stops.py)
 
@@ -892,21 +1031,72 @@ figé.
 **Régénération nécessaire** : `python 07_calcul_dcf.py` puis
 `python 06b_calcul_valorisation_combinee.py`.
 
-### Secteur GICS rétroactif (05, 07, 06b)
+### Secteur GICS rétroactif (05, 07)
 
-La colonne `sector` vient de `config.UNIVERSE_FILE`, soit la classification
-GICS **d'aujourd'hui**, appliquée telle quelle à des exercices de 2012. Elle
-pilote le WACC et les taux de croissance du DCF
+*(Corrigé pour les médianes sectorielles de 06b — voir la section suivante.
+Ce qui suit ne vaut plus que pour 07.)*
+
+La colonne `sector` produite par 02 est la classification GICS
+**d'aujourd'hui**. Elle pilote le WACC et les taux de croissance du DCF
 (`config.SECTOR_DCF_PARAMS`), les multiples jugés pertinents
 (`config.SECTOR_MULTIPLES`), le rendement du dividende du pricing d'options
 (`config.SECTOR_DIVIDEND_YIELD`) et l'exclusion du DCF
 (`config.SECTORS_SANS_DCF`).
 
-Une entreprise reclassée depuis — les GICS ont déplacé les télécoms et une
-partie de la tech vers « Services de communication » en 2018 — est donc
-comparée aux mauvais pairs et valorisée avec les mauvaises hypothèses sur
-toute sa partie ancienne. L'historique GICS point-in-time n'est pas
-disponible gratuitement.
+`06b_calcul_valorisation_combinee.py` la ramène désormais au secteur d'époque
+avant de composer ses groupes de pairs (`sector_history.sector_asof`), mais
+`07_calcul_dcf.py` applique toujours le secteur actuel à tout l'historique :
+une entreprise reclassée depuis se voit encore appliquer les mauvaises
+hypothèses de DCF sur sa partie ancienne.
+
+### Composition point-in-time du groupe de pairs (06b)
+
+Les médianes sectorielles de `06b` sont calculées sur les pairs tels qu'ils
+étaient **à la `filed_date` de chaque ligne**, sur deux dimensions
+(`sector_history.py`) :
+
+- **Appartenance à l'indice.** Un pair n'est retenu que s'il était membre du
+  S&P 500 à cette date (spans de `01b`). Cela écarte les entreprises entrées
+  depuis — une entrée dans l'indice récompense en général un parcours
+  boursier, donc les laisser peser sur une médiane de 2012 la pousse vers le
+  haut — et, une fois les données backfillées, remet les radiées dans les
+  millésimes où elles comptaient.
+- **Secteur d'époque.** Les remaniements GICS documentés sont rejoués à
+  l'envers : immobilier sorti des financières (2016), création de
+  Communication Services (2018 — Alphabet et Meta étaient en technologie
+  avant), paiements passés en financières (2023). La colonne `sector` du
+  parquet de sortie porte le secteur d'alors, `sector_current` celui
+  d'aujourd'hui.
+
+`--no-point-in-time-peers` rétablit l'ancien comportement, pour chiffrer
+l'écart entre les deux.
+
+**Ce que le code ne peut pas faire seul.** Restreindre les pairs aux membres
+d'alors ne crée pas les lignes manquantes : tant que `03b`/`04`/`04b` n'ont
+pas été backfillés sur `sp500_universe_full.csv`, les radiées restent absentes
+de `multiples.parquet`. La différence est que le trou est maintenant **mesuré**
+— 06b journalise la couverture réelle de l'univers point-in-time par millésime
+et avertit en dessous de 95 %.
+
+```bash
+python 01b_historique_univers_sp500.py
+python 02_categoriser_secteurs.py --universe data/universe/sp500_universe_full.csv
+python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
+python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv
+python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv
+python 05_calcul_multiples.py && python 07_calcul_dcf.py
+python 06b_calcul_valorisation_combinee.py
+```
+
+L'étape `02 --universe` n'est pas optionnelle : les entreprises radiées
+n'ayant pas de secteur GICS (elles ne figurent plus dans la table Wikipédia
+des membres actuels), sans elle le backfill coûte des milliers de requêtes SEC
+pour des lignes que 06b écarte faute de secteur. `05` le signale.
+
+Limite résiduelle : la table des changements de Wikipédia ne remonte qu'à
+~1996-2000, et `sector_history.GICS_RECLASSIFICATIONS` ne couvre que les
+remaniements structurels de la nomenclature — pas les reclassements
+individuels au fil de l'eau, faute de source historique gratuite.
 
 ### Risque de volatilité non modélisé (10, backtest/options_pricing.py)
 

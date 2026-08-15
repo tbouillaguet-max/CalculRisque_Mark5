@@ -22,6 +22,7 @@ Usage :
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -201,14 +202,36 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    if not config.UNIVERSE_FILE.exists():
-        logger.error("Univers introuvable: %s. Lance d'abord 01_build_universe.py.", config.UNIVERSE_FILE)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--universe", type=Path, default=config.UNIVERSE_FILE,
+        help="Fichier d'univers à catégoriser, mis à jour SUR PLACE (défaut: %(default)s). "
+             "Passe config.UNIVERSE_FULL_FILE (sortie de 01b) pour catégoriser aussi les "
+             "entreprises RADIÉES : sans secteur, elles sont exclues des médianes "
+             "sectorielles de 06b et le biais de survivance subsiste malgré le backfill.",
+    )
+    args = parser.parse_args()
+
+    if not args.universe.exists():
+        logger.error(
+            "Univers introuvable: %s. Lance d'abord 01_build_universe.py (ou "
+            "01b_historique_univers_sp500.py pour l'univers complet).", args.universe,
+        )
         return
 
-    df = pd.read_csv(config.UNIVERSE_FILE, encoding="utf-8-sig")
+    df = pd.read_csv(args.universe, encoding="utf-8-sig")
+    if "GICS_Sector" not in df.columns:
+        # UNIVERSE_FULL_FILE (01b) ne porte pas le secteur GICS : les radiées
+        # ne figurent plus dans la table Wikipedia des membres actuels. Tout
+        # passe donc par le cache, les secteurs manuels et Mistral.
+        logger.info(
+            "%s n'a pas de colonne GICS_Sector : catégorisation via le cache, %s et "
+            "l'API Mistral uniquement (attendu pour l'univers complet de 01b).",
+            args.universe, MANUAL_SECTORS_FILE,
+        )
     df_categorise = categoriser_df(df)
-    df_categorise.to_csv(config.UNIVERSE_FILE, index=False, encoding="utf-8-sig")
-    logger.info("Univers mis à jour avec les secteurs : %s", config.UNIVERSE_FILE)
+    df_categorise.to_csv(args.universe, index=False, encoding="utf-8-sig")
+    logger.info("Univers mis à jour avec les secteurs : %s", args.universe)
 
     indetermines = df_categorise[df_categorise["sector"] == "indetermine"]
     if not indetermines.empty:

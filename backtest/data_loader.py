@@ -656,6 +656,70 @@ class OptionSnapshotIndex:
             "source": "real",
         }
 
+    def _window_at(
+        self, symbol: str, option_type: str, as_of: pd.Timestamp, tolerance_days: int,
+    ) -> Optional[tuple]:
+        """(entrée, début, fin) des contrats du DERNIER snapshot publié au plus
+        tard à `as_of`, ou None si aucun n'entre dans la fenêtre de tolérance.
+
+        Extrait de `find` pour être partagé avec `quoted_strikes` : les deux
+        ont exactement la même notion de "snapshot utilisable aujourd'hui", et
+        la dupliquer exposait à ce que l'une des deux perde la discipline
+        point-in-time décrite ci-dessous."""
+        entry = self._by_key.get((symbol, option_type))
+        if entry is None:
+            return None
+        dates = entry["dates"]
+
+        moment = np.datetime64(as_of.to_datetime64())
+        # side="right" : dates[insert_at - 1] <= moment < dates[insert_at].
+        # On ne retient donc jamais que le DERNIER snapshot déjà publié.
+        insert_at = int(np.searchsorted(dates, moment, side="right"))
+        if insert_at == 0:
+            return None  # aucun snapshot antérieur à cette date
+        best_date = insert_at - 1
+
+        if moment - dates[best_date] > np.timedelta64(tolerance_days, "D"):
+            return None
+        return entry, int(entry["starts"][best_date]), int(entry["ends"][best_date])
+
+    def quoted_strikes(
+        self,
+        symbol: str,
+        option_type: str,
+        as_of: pd.Timestamp,
+        tolerance_days: int = config.OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS,
+        target_tenor_days: Optional[float] = None,
+    ) -> list:
+        """Strikes RÉELLEMENT COTÉS au dernier snapshot utilisable, triés.
+
+        Sert à une stratégie qui optimise son strike sur une grille : sans ce
+        filtre, l'optimisation retiendrait un strike que personne ne cotait, et
+        le backtest mesurerait la performance d'un contrat inachetable. Le
+        moteur, lui, se rabattrait silencieusement sur le contrat coté le plus
+        proche (cf. `find`, qui n'est contraignant sur aucun des deux critères)
+        -- donc sur un strike différent de celui que l'optimisation a choisi,
+        sans que rien ne le signale.
+
+        `target_tenor_days` restreint aux contrats de l'échéance la plus proche
+        de celle visée : les strikes cotés diffèrent d'une échéance à l'autre,
+        et mélanger deux maturités produirait une grille qui n'existe sur
+        aucune des deux.
+
+        Liste vide si aucun snapshot n'est disponible dans la fenêtre --
+        l'appelant doit alors retomber sur sa grille théorique."""
+        window = self._window_at(symbol, option_type, as_of, tolerance_days)
+        if window is None:
+            return []
+        entry, lo, hi = window
+
+        strikes = entry["cols"]["strike"][lo:hi]
+        if target_tenor_days is not None:
+            tenors = entry["cols"]["tenor_days"][lo:hi]
+            ecart = np.abs(tenors - target_tenor_days)
+            strikes = strikes[ecart <= ecart.min() + 1e-9]
+        return sorted({float(k) for k in strikes if k > 0})
+
     def find(
         self,
         symbol: str,
@@ -684,26 +748,13 @@ class OptionSnapshotIndex:
         Aucun des deux n'est contraignant -- le contrat réellement coté le
         plus proche est retenu, même s'il est loin du strike demandé : c'est à
         l'appelant de juger si l'écart reste acceptable."""
-        entry = self._by_key.get((symbol, option_type))
-        if entry is None:
+        window = self._window_at(symbol, option_type, as_of, tolerance_days)
+        if window is None:
             return None
-        dates = entry["dates"]
-
-        moment = np.datetime64(as_of.to_datetime64())
-        # side="right" : dates[insert_at - 1] <= moment < dates[insert_at].
-        # On ne retient donc jamais que le DERNIER snapshot déjà publié.
-        insert_at = int(np.searchsorted(dates, moment, side="right"))
-        if insert_at == 0:
-            return None  # aucun snapshot antérieur à cette date
-        best_date = insert_at - 1
-
-        if moment - dates[best_date] > np.timedelta64(tolerance_days, "D"):
-            return None
+        entry, lo, hi = window
 
         if target_strike is None and target_tenor_days is None:
-            return self._contract_at(entry, int(entry["starts"][best_date]))
-
-        lo, hi = int(entry["starts"][best_date]), int(entry["ends"][best_date])
+            return self._contract_at(entry, lo)
         # Sans strike demandé, le critère prioritaire reste la monnaie -- pour
         # qu'une cible portant seulement sur l'échéance ne retienne pas un
         # strike arbitraire.
