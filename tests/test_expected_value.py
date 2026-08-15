@@ -309,12 +309,12 @@ def test_le_strike_optimal_a_une_esperance_nette_positive():
     que le marché ne le facture, il doit donc exister un strike gagnant."""
     mu = 0.25
     grille = ev.strike_grid(SPOT, SIGMA, T)
-    resultat = ev.optimal_strike(SPOT, mu, SIGMA, T, "CALL", grille, r=R)
+    resultat = ev.optimal_strike(SPOT, mu, SIGMA, T, "CALL", grille, r=R, criterion="sharpe")
 
     assert resultat is not None
     assert resultat["edge"] > 0
     assert resultat["strike"] in grille
-    assert resultat["sharpe"] == pytest.approx(
+    assert resultat["score"] == pytest.approx(
         ev.sharpe_contract(SPOT, resultat["strike"], mu, SIGMA, T, "CALL", resultat["premium"]),
         rel=1e-12,
     )
@@ -323,14 +323,14 @@ def test_le_strike_optimal_a_une_esperance_nette_positive():
 def test_le_strike_optimal_maximise_bien_le_sharpe():
     mu = 0.20
     grille = ev.strike_grid(SPOT, SIGMA, T)
-    resultat = ev.optimal_strike(SPOT, mu, SIGMA, T, "CALL", grille, r=R)
+    resultat = ev.optimal_strike(SPOT, mu, SIGMA, T, "CALL", grille, r=R, criterion="sharpe")
 
     for strike in grille:
         premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
         if premium <= 0 or ev.expected_payoff_call(SPOT, strike, mu, SIGMA, T) - premium <= 0:
             continue
         sharpe = ev.sharpe_contract(SPOT, strike, mu, SIGMA, T, "CALL", premium)
-        assert sharpe <= resultat["sharpe"] + 1e-12
+        assert sharpe <= resultat["score"] + 1e-12
 
 
 def test_aucun_strike_gagnant_quand_la_these_est_baissiere():
@@ -360,6 +360,163 @@ def test_les_strikes_invalides_sont_ignores():
     assert resultat is not None
     assert resultat["strike"] == 100.0
     assert resultat["n_candidates"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Taux de croissance log-optimal (Kelly)
+# --------------------------------------------------------------------------- #
+
+def _prime(strike, option_type="CALL", sigma=SIGMA, t_years=T):
+    return options_pricing.bs_price(SPOT, strike, t_years, sigma, option_type, r=R, q=0.0)
+
+
+def test_la_quadrature_a_converge_bien_avant_le_reglage_par_defaut():
+    """L'intégrande est analytique sur la région lucrative (l'atome de perte
+    totale est traité en forme fermée), donc Gauss-Legendre y converge
+    géométriquement. Mesuré : 32 nœuds suffisent déjà à 1e-12 près."""
+    premium = _prime(120.0)
+    reference = ev.kelly_optimum(SPOT, 120.0, 0.20, SIGMA, T, "CALL", premium, n_nodes=2048)[1]
+    for n_nodes in (32, 64, 128, 512):
+        valeur = ev.kelly_optimum(SPOT, 120.0, 0.20, SIGMA, T, "CALL", premium, n_nodes=n_nodes)[1]
+        assert valeur == pytest.approx(reference, abs=1e-12)
+
+
+def test_la_quadrature_est_reproductible():
+    """Un Monte-Carlo rendrait une valeur différente à chaque appel, et ferait
+    donc changer le strike retenu sans qu'aucune donnée n'ait bougé."""
+    premium = _prime(115.0)
+    appels = [ev.kelly_optimum(SPOT, 115.0, 0.18, SIGMA, T, "CALL", premium) for _ in range(5)]
+    assert all(appel == appels[0] for appel in appels)
+
+
+@pytest.mark.parametrize("option_type, strike, mu", [
+    ("CALL", 120.0, 0.20), ("CALL", 80.0, 0.10), ("PUT", 90.0, -0.15),
+])
+def test_le_taux_de_croissance_est_coherent_avec_une_simulation(option_type, strike, mu):
+    import numpy as np
+
+    premium = _prime(strike, option_type)
+    fraction, croissance = ev.kelly_optimum(SPOT, strike, mu, SIGMA, T, option_type, premium)
+
+    rng = np.random.default_rng(3)
+    s_t = SPOT * np.exp((mu - 0.5 * SIGMA ** 2) * T + SIGMA * math.sqrt(T) * rng.standard_normal(2_000_000))
+    payoff = np.maximum(s_t - strike, 0.0) if option_type == "CALL" else np.maximum(strike - s_t, 0.0)
+    assert croissance == pytest.approx(np.log1p(fraction * (payoff / premium - 1.0)).mean(), abs=2e-3)
+
+
+def test_la_fraction_de_kelly_maximise_bien_la_croissance():
+    """Contrôle direct de la bissection : g doit décroître de part et d'autre
+    de f*."""
+    import numpy as np
+
+    premium = _prime(120.0)
+    fraction, croissance = ev.kelly_optimum(SPOT, 120.0, 0.20, SIGMA, T, "CALL", premium)
+    prob_perte, poids, rendements = ev._return_nodes(
+        SPOT, 120.0, 0.20, SIGMA, T, "CALL", premium, 128)
+
+    def g(f):
+        return float(np.sum(poids * np.log1p(f * rendements))) + prob_perte * math.log1p(-f)
+
+    assert 0.0 < fraction < 1.0
+    assert g(fraction - 0.02) < croissance
+    assert g(fraction + 0.02) < croissance
+
+
+def test_sans_esperance_nette_positive_il_n_y_a_pas_de_mise_optimale():
+    """La condition d'existence de Kelly (E[R] > 0) EST la règle « espérance
+    positive obligatoire » : ce n'est pas un filtre ajouté par-dessus."""
+    premium = _prime(120.0)
+    assert ev.expected_payoff_call(SPOT, 120.0, -0.10, SIGMA, T) < premium
+    assert ev.kelly_optimum(SPOT, 120.0, -0.10, SIGMA, T, "CALL", premium) is None
+
+
+def test_sous_mu_egal_r_la_mise_reste_marginale():
+    """Sans avantage informationnel réel, Kelly ne mise presque rien : le seul
+    edge est la valeur temps du taux sans risque."""
+    premium = _prime(100.0)
+    fraction, _ = ev.kelly_optimum(SPOT, 100.0, R, SIGMA, T, "CALL", premium)
+    assert fraction < 0.20
+
+
+def test_la_fraction_de_kelly_croit_avec_la_conviction():
+    fractions = [
+        ev.kelly_optimum(SPOT, 110.0, mu, SIGMA, T, "CALL", _prime(110.0))[0]
+        for mu in (0.08, 0.12, 0.18, 0.25)
+    ]
+    assert all(a < b for a, b in zip(fractions, fractions[1:]))
+
+
+def test_kelly_refuse_un_contrat_sans_prime():
+    assert ev.kelly_optimum(SPOT, 100.0, 0.20, SIGMA, T, "CALL", premium=0.0) is None
+
+
+def test_kelly_refuse_un_type_inconnu():
+    with pytest.raises(ValueError):
+        ev._return_nodes(SPOT, 100.0, 0.20, SIGMA, T, "STRADDLE", 10.0, 64)
+
+
+# --------------------------------------------------------------------------- #
+# Sélection de strike : le critère de Kelly n'est pas dégénéré
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("sigma, mu", [(0.20, 0.20), (0.20, 0.35), (0.30, 0.20), (0.30, 0.35)])
+def test_l_optimum_de_kelly_est_interieur_quand_l_edge_est_reel(sigma, mu):
+    """Le défaut central des deux critères en ratio est un optimum collé au
+    bord de la grille. Dès que la thèse porte un avantage significatif, Kelly
+    choisit un strike STRICTEMENT INTÉRIEUR."""
+    grille = ev.strike_grid(SPOT, sigma, T)
+    resultat = ev.optimal_strike(SPOT, mu, sigma, T, "CALL", grille, r=R)
+
+    assert resultat is not None
+    assert grille[0] < resultat["strike"] < grille[-1]
+
+
+def test_le_strike_de_kelly_se_deplace_avec_la_conviction():
+    """Propriété qui distingue Kelly des ratios : plus l'avantage est fort,
+    plus le strike optimal s'éloigne vers le hors-la-monnaie, continûment."""
+    strikes = [
+        ev.optimal_strike(SPOT, mu, 0.20, T, "CALL", ev.strike_grid(SPOT, 0.20, T), r=R)["strike"]
+        for mu in (0.10, 0.20, 0.28, 0.35)
+    ]
+    assert all(a <= b for a, b in zip(strikes, strikes[1:]))
+    assert strikes[-1] > strikes[0]
+
+
+def test_le_sharpe_lui_reste_colle_au_bord_dans_la_monnaie():
+    """Témoin du problème documenté : conservé pour que la régression soit
+    visible si quelqu'un rebranchait le Sharpe en production."""
+    for mu in (0.10, 0.20, 0.35):
+        grille = ev.strike_grid(SPOT, SIGMA, T)
+        resultat = ev.optimal_strike(SPOT, mu, SIGMA, T, "CALL", grille, r=R, criterion="sharpe")
+        assert resultat["strike"] == pytest.approx(grille[0])
+
+
+def test_le_score_rendu_correspond_bien_au_critere_demande():
+    grille = ev.strike_grid(SPOT, SIGMA, T)
+    resultat = ev.optimal_strike(SPOT, 0.25, SIGMA, T, "CALL", grille, r=R)
+    attendu = ev.kelly_optimum(
+        SPOT, resultat["strike"], 0.25, SIGMA, T, "CALL", resultat["premium"])
+    assert resultat["kelly_fraction"] == pytest.approx(attendu[0])
+    assert resultat["score"] == pytest.approx(attendu[1])
+    assert resultat["log_growth"] == pytest.approx(attendu[1])
+
+
+def test_un_critere_inconnu_est_refuse():
+    with pytest.raises(ValueError):
+        ev.optimal_strike(SPOT, 0.20, SIGMA, T, "CALL", [100.0], r=R, criterion="sortino")
+
+
+def test_le_resultat_porte_les_diagnostics_du_contrat_retenu():
+    """Ils alimentent les compteurs agrégés du backtest, et évitent à
+    l'appelant de refaire les mêmes calculs."""
+    grille = ev.strike_grid(SPOT, SIGMA, T)
+    resultat = ev.optimal_strike(SPOT, 0.25, SIGMA, T, "CALL", grille, r=R)
+    for cle in ("strike", "criterion", "score", "kelly_fraction", "expected_payoff", "premium",
+                "edge", "std_payoff", "downside_semideviation", "probability_of_profit",
+                "n_candidates", "n_negative_edge"):
+        assert cle in resultat
+    assert 0.0 < resultat["probability_of_profit"] < 1.0
+    assert resultat["edge"] == pytest.approx(resultat["expected_payoff"] - resultat["premium"])
 
 
 # --------------------------------------------------------------------------- #

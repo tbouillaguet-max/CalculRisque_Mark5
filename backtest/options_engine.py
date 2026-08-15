@@ -163,7 +163,9 @@ import pandas as pd
 import config
 from backtest import data_loader, options_pricing
 from backtest import engine as engine_mod
-from backtest.strategies.options_base import OptionsStrategy
+from backtest.strategies.options_base import (
+    MarketContext as OptionsStrategyMarketContext, OptionsStrategy,
+)
 
 logger = logging.getLogger("backtest.options_engine")
 
@@ -1173,7 +1175,12 @@ class OptionsBacktestEngine:
             self.prices.close_history(symbol, today), self.realized_vol_lookback_days,
         )
         if vol is None:
-            vol = 0.30  # repli conservateur si même l'historique de cours est trop court
+            # Repli conservateur si même l'historique de cours est trop court.
+            # Constante partagée avec les stratégies qui choisissent leur
+            # strike en fonction de la volatilité : elles doivent se replier
+            # sur la MÊME valeur, sinon elles écarteraient des lignes que le
+            # moteur aurait su ouvrir (cf. config.OPTIONS_FALLBACK_VOL).
+            vol = config.OPTIONS_FALLBACK_VOL
             logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, vol * 100)
 
         # Simulé : strike exact demandé (ou ATM), pas de grille de strikes discrets.
@@ -2207,6 +2214,15 @@ class OptionsBacktestEngine:
         if eligible_signals.empty:
             return eligible_signals, {}, {}
 
+        # Les stratégies qui OPTIMISENT leur strike (plutôt que de le poser
+        # ATM ou à mi-chemin) ont besoin de la volatilité et des strikes
+        # réellement cotés, que la trame de signaux ne porte pas. Voir
+        # options_base.MarketContext pour le détail du contrat -- notamment
+        # pourquoi la stratégie ne doit surtout pas recalculer sa volatilité
+        # dans son coin.
+        if getattr(self.strategy, "needs_market_context", False):
+            self.strategy.bind_market_context(self._market_context(today))
+
         current_option_types = {sym: pos.option_type for sym, pos in self.positions.items()}
         if self.exit_when_signal_lost or self.roll_when_days_left:
             # UN SEUL passage : les cibles et les sens encore justifiés
@@ -2222,6 +2238,40 @@ class OptionsBacktestEngine:
         targets = {s: t for s, t in targets.items() if t["weight"] > 0}
 
         return eligible_signals, targets, eligible_directions
+
+    def _market_context(self, today: pd.Timestamp) -> OptionsStrategyMarketContext:
+        """État de marché du jour exposé aux stratégies qui en dépendent.
+
+        La volatilité rendue est CELLE DU REPRICING (volatilité réalisée sur
+        realized_vol_lookback_days, bornée comme dans _repricing_vol) : une
+        stratégie qui choisit son contrat sur une autre volatilité que celle
+        qui le repricera ensuite verrait un saut de P&L artificiel dès le
+        lendemain de l'ouverture."""
+        def volatilite_realisee(symbol: str) -> Optional[float]:
+            realized = self.prices.realized_vol_at(symbol, today, self.realized_vol_lookback_days)
+            if realized is None or realized <= 0:
+                return None
+            return min(max(realized, MIN_REPRICING_VOL), MAX_REPRICING_VOL)
+
+        def volatilite_implicite(symbol: str, option_type: str, tenor_days: float) -> Optional[float]:
+            real = self.option_index.find(
+                symbol, option_type, today, self.real_snapshot_tolerance_days,
+                target_tenor_days=float(tenor_days),
+            )
+            if real is None or not real["implied_vol"] or real["implied_vol"] <= 0:
+                return None
+            return min(max(float(real["implied_vol"]), MIN_REPRICING_VOL), MAX_REPRICING_VOL)
+
+        return OptionsStrategyMarketContext(
+            today=today,
+            realized_vol=volatilite_realisee,
+            pricing_context=lambda symbol: self._pricing_context(symbol, today),
+            implied_vol=volatilite_implicite,
+            quoted_strikes=lambda symbol, option_type, tenor_days: self.option_index.quoted_strikes(
+                symbol, option_type, today, self.real_snapshot_tolerance_days,
+                target_tenor_days=float(tenor_days),
+            ),
+        )
 
     def _log_gap_at(self, symbol: str, price: Optional[float]) -> Optional[float]:
         """log(V/P) au sens de la refonte du rebalancement (voir la
@@ -2503,7 +2553,27 @@ class OptionsBacktestEngine:
             "total_friction_pct_of_initial": (
                 float(total_friction / initial_nav * 100) if initial_nav else None
             ),
+            # Compteurs propres à la STRATÉGIE, fusionnés tels quels. Une
+            # stratégie qui écarte des lignes pour ses propres raisons (par
+            # exemple une espérance de gain négative) doit pouvoir le rendre
+            # visible dans metrics.json au même titre que dropped_orders_by_reason,
+            # sans que le moteur ait à connaître ces motifs.
+            **self._strategy_diagnostics(),
         }
+
+    def _strategy_diagnostics(self) -> dict:
+        """Compteurs exposés par la stratégie, ou {} si elle n'en expose pas.
+
+        Optionnel par construction : une stratégie tierce n'a rien à
+        implémenter, et le moteur n'a rien à savoir de ce qu'elle compte."""
+        diagnostics = getattr(self.strategy, "diagnostics", None)
+        if not callable(diagnostics):
+            return {}
+        try:
+            return dict(diagnostics())
+        except Exception:  # pragma: no cover - un compteur ne doit jamais casser un run
+            logger.warning("Diagnostics de la stratégie illisibles, ignorés.", exc_info=True)
+            return {}
 
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne

@@ -71,15 +71,30 @@ fausse avec la même précision apparente à la douzième décimale.
 from __future__ import annotations
 
 import math
-from typing import Callable, Iterable, List, Optional, Sequence
+from functools import lru_cache
+from typing import Callable, Iterable, List, Optional
+
+import numpy as np
 
 import config
 from backtest import options_pricing
 
 _INV_SQRT_2 = 1.0 / math.sqrt(2.0)
+_INV_SQRT_2PI = 1.0 / math.sqrt(2.0 * math.pi)
 
 CALL = "CALL"
 PUT = "PUT"
+
+# Bornes d'intégration en écarts-types de la loi normale sous-jacente. La
+# densité au-delà de 10 sigma vaut ~1e-23 : la tronquer coûte moins que
+# l'erreur d'arrondi du reste du calcul.
+_Z_MAX = 10.0
+
+# Fraction de Kelly maximale autorisée. Une option longue peut perdre 100 % de
+# la mise, donc log(1 - f) diverge en f = 1 : le taux de croissance n'est fini
+# que strictement sous 1. La borne est numérique, pas économique -- le
+# dimensionnement réel reste celui du portefeuille.
+_F_MAX = 0.999
 
 
 def _norm_cdf(x: float) -> float:
@@ -407,6 +422,178 @@ def probability_of_profit(
 
 
 # ----------------------------------------------------------------------------
+# Taux de croissance log-optimal (Kelly)
+# ----------------------------------------------------------------------------
+#
+# POURQUOI NI SHARPE NI SORTINO. Les deux ratios ont un optimum DÉGÉNÉRÉ, aux
+# deux bouts opposés, et la cause est commune : un ratio invariant d'échelle
+# est gouverné, dans la queue de distribution, par le rapport de vraisemblance
+# entre la mesure physique et la mesure risque-neutre, qui est monotone en K.
+#
+#   - Écart-type : il croît plus vite que la prime quand on s'éloigne dans le
+#     hors-la-monnaie, donc le Sharpe s'effondre et l'optimum FUIT VERS LE
+#     DEDANS de la monnaie. Mesuré : optimum collé à la borne basse pour toute
+#     grille de +/-2 à +/-8 sigma, quelle que soit la dérive.
+#   - Semi-écart-type baissier : il est PLAFONNÉ PAR LA PRIME (la perte d'une
+#     option longue est bornée par la mise), donc le Sortino se comporte comme
+#     espérance/prime, qui diverge, et l'optimum FUIT VERS LE DEHORS. Mesuré :
+#     ratio de 20,3 sur un contrat qui ne paie que dans 0,1 % des scénarios.
+#
+# Un plancher de probabilité de gain ne corrige pas cela, il ne fait que coller
+# l'optimum à la contrainte -- et le fait basculer d'un extrême à l'autre :
+# à mu = 20 %, un plancher de 30 % choisit K = 1,53·S0, un plancher de 40 %
+# choisit K = 0,28·S0. Le seuil décide du strike ; ce n'est pas une sélection.
+#
+# LE CRITÈRE DE KELLY N'A PAS CE DÉFAUT, par construction et non par réglage.
+# On maximise le taux de croissance logarithmique du capital :
+#
+#     g*(K) = max_f  E[ log(1 + f·R) ],   R = payoff/prime - 1
+#
+# La perte totale (R = -1) a une probabilité STRICTEMENT POSITIVE, et
+# log(1 - f) diverge : le critère refuse donc de charger un contrat qui ne paie
+# presque jamais, ce qui borne le côté hors-la-monnaie. Et le levier atteignable
+# borne le côté dans-la-monnaie. Résultat mesuré : le strike optimal se déplace
+# CONTINÛMENT avec la conviction (à sigma = 20 % : K*/S0 = 0,43 pour mu = 6 %,
+# puis 0,99 pour mu = 20 %, puis 1,52 pour mu = 35 %), au lieu de sauter d'un
+# bord à l'autre.
+#
+# ATTENTION : c'est l'optimisation CONJOINTE en (K, f) qui est bien posée. À f
+# petit et FIXÉ, log(1 + f·R) ~ f·E[R] et le critère redevient « espérance par
+# dollar de prime », donc redivergent vers le hors-la-monnaie. La fraction doit
+# rester libre pendant la sélection ; le plafonnement éventuel (demi-Kelly, ou
+# les poids du portefeuille) s'applique APRÈS, au dimensionnement.
+
+
+@lru_cache(maxsize=8)
+def _legendre_nodes(n_nodes: int) -> tuple:
+    """Nœuds et poids de Gauss-Legendre sur [-1, 1], mis en cache.
+
+    Quadrature DÉTERMINISTE, et c'est la raison de son emploi : le taux de
+    croissance de Kelly n'a pas de primitive, mais l'estimer par Monte-Carlo
+    transmettrait le bruit d'échantillonnage au CHOIX du strike, qui changerait
+    d'un run à l'autre sans qu'aucune donnée n'ait bougé. Une quadrature rend
+    exactement la même valeur à chaque appel."""
+    x, w = np.polynomial.legendre.leggauss(n_nodes)
+    return x, w
+
+
+def _return_nodes(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
+    premium: float, n_nodes: int,
+) -> Optional[tuple]:
+    """Discrétisation du rendement R = payoff/prime - 1 en deux morceaux :
+
+        (probabilité de perte TOTALE, poids de quadrature, valeurs de R)
+
+    Le payoff a un POINT ANGULEUX au strike, et une quadrature gaussienne
+    converge mal sur un intégrande non lisse. On découpe donc analytiquement :
+
+      - Du côté où l'option expire sans valeur, R vaut exactement -1 : c'est un
+        ATOME, dont la probabilité est connue en forme fermée (N(±z_K)). Aucune
+        quadrature n'est nécessaire, et surtout aucune ne peut le lisser par
+        erreur -- or c'est précisément cet atome qui borne le critère.
+      - Du côté lucratif, R est analytique, et Gauss-Legendre y converge
+        géométriquement.
+
+    None si le contrat ne peut structurellement jamais payer (toute la masse
+    est sur l'atome de perte totale)."""
+    if premium <= 0 or spot <= 0 or strike <= 0 or sigma <= 0 or t_years <= 0:
+        return None
+
+    sigma_sqrt_t = sigma * math.sqrt(t_years)
+    # Écart-type standardisé du seuil : S_T <= K  <=>  z <= z_k.
+    z_k = (math.log(strike / spot) - (mu - 0.5 * sigma * sigma) * t_years) / sigma_sqrt_t
+
+    if option_type == CALL:
+        lo, hi = z_k, _Z_MAX          # l'option paie au-DESSUS du strike
+        prob_perte = _norm_cdf(z_k)
+    elif option_type == PUT:
+        lo, hi = -_Z_MAX, z_k         # l'option paie au-DESSOUS du strike
+        prob_perte = 1.0 - _norm_cdf(z_k)
+    else:
+        raise ValueError(f"option_type attend 'CALL' ou 'PUT', reçu {option_type!r}.")
+
+    if hi <= lo:
+        return None  # la région lucrative est hors du support numérique
+
+    x, w = _legendre_nodes(n_nodes)
+    demi = 0.5 * (hi - lo)
+    z = demi * x + 0.5 * (hi + lo)
+    # Poids = poids de Gauss-Legendre x densité normale x jacobien du changement
+    # de variable. Leur somme vaut la probabilité de la région lucrative.
+    poids = w * demi * _INV_SQRT_2PI * np.exp(-0.5 * z * z)
+
+    s_t = spot * np.exp((mu - 0.5 * sigma * sigma) * t_years + sigma_sqrt_t * z)
+    payoff = (s_t - strike) if option_type == CALL else (strike - s_t)
+    return prob_perte, poids, payoff / premium - 1.0
+
+
+def kelly_optimum(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
+    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES,
+) -> Optional[tuple]:
+    """(fraction de Kelly f*, taux de croissance g*) du contrat.
+
+    f* est la part du capital qu'il serait log-optimal d'engager sur ce
+    contrat ; g* = E[log(1 + f*·R)] est le taux de croissance qui en résulte.
+    C'est g* qui sert de score de sélection entre strikes -- une grandeur en
+    unités de croissance, pas un ratio sans dimension, donc comparable d'un
+    strike à l'autre sans être invariant d'échelle.
+
+    La dérivée dg/df = E[R/(1 + f·R)] est strictement DÉCROISSANTE en f (g est
+    concave), vaut E[R] en f = 0 et tend vers -infini quand f tend vers 1 à
+    cause de l'atome de perte totale. Le maximum est donc unique et s'obtient
+    par bissection sur la dérivée -- pas de recherche par section dorée, pas de
+    dépendance à un point de départ.
+
+    None si le contrat n'a pas d'espérance nette positive : c'est exactement la
+    condition E[R] > 0, c'est-à-dire E[payoff] > prime. La règle « espérance
+    positive obligatoire » n'est donc pas un filtre ajouté par-dessus Kelly,
+    c'est la condition d'existence d'une mise log-optimale non nulle."""
+    noeuds = _return_nodes(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+    if noeuds is None:
+        return None
+    prob_perte, poids, rendements = noeuds
+
+    def derivee(f: float) -> float:
+        return float(np.sum(poids * rendements / (1.0 + f * rendements))) - prob_perte / (1.0 - f)
+
+    if derivee(0.0) <= 0.0:
+        return None  # espérance nette négative : aucune mise ne fait croître le capital
+
+    lo, hi = 0.0, _F_MAX
+    if derivee(hi) > 0.0:
+        # Pas d'atome de perte détectable (très dans la monnaie) : le levier
+        # log-optimal sature la borne numérique. Le contrat est alors une
+        # position à effet de levier sur le sous-jacent, ce que g* traduira.
+        f_star = hi
+    else:
+        for _ in range(80):  # bissection : 80 tours ramènent l'intervalle sous 1e-24
+            milieu = 0.5 * (lo + hi)
+            if derivee(milieu) > 0.0:
+                lo = milieu
+            else:
+                hi = milieu
+        f_star = 0.5 * (lo + hi)
+
+    croissance = float(np.sum(poids * np.log1p(f_star * rendements)))
+    if prob_perte > 0.0:
+        croissance += prob_perte * math.log1p(-f_star)
+    if not math.isfinite(croissance):
+        return None
+    return f_star, croissance
+
+
+def log_growth_rate(
+    spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
+    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES,
+) -> Optional[float]:
+    """Taux de croissance log-optimal g* seul (voir kelly_optimum)."""
+    optimum = kelly_optimum(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+    return None if optimum is None else optimum[1]
+
+
+# ----------------------------------------------------------------------------
 # Sharpe du contrat et choix du strike
 # ----------------------------------------------------------------------------
 
@@ -435,7 +622,8 @@ def sharpe_contract(
 
 def strike_grid(
     spot: float, sigma: float, t_years: float,
-    n_sigma: float = 3.0, step_sigma: float = 0.25,
+    n_sigma: float = config.OPTIONS_EV_STRIKE_GRID_N_SIGMA,
+    step_sigma: float = config.OPTIONS_EV_STRIKE_GRID_STEP_SIGMA,
 ) -> List[float]:
     """Strikes candidats de S0·exp(-n·sigma√T) à S0·exp(+n·sigma√T), par pas de
     `step_sigma`·sigma·√T en LOG-prix.
@@ -463,21 +651,39 @@ def optimal_strike(
     premium_fn: Optional[Callable[[float], float]] = None,
     r: Optional[float] = None,
     q: float = 0.0,
+    criterion: str = "kelly",
+    n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES,
 ) -> Optional[dict]:
-    """Strike qui maximise le Sharpe du contrat parmi `strikes`, sous
-    contrainte d'espérance nette strictement positive.
+    """Meilleur strike parmi `strikes`, sous contrainte d'espérance nette
+    strictement positive.
 
-    `premium_fn(strike) -> prime` permet à l'appelant d'injecter un prix
-    coté réel ; par défaut, la prime est le prix Black-Scholes au taux sans
-    risque `r` (config.RISK_FREE_RATE si non fourni) et au rendement de
-    dividende `q`. Dans les deux cas, la prime est un prix de MARCHÉ : jamais
-    recalculée sous `mu`, sinon l'espérance nette serait nulle par
-    construction et le Sharpe ne classerait plus rien.
+    `criterion` vaut "kelly" (défaut) ou "sharpe" :
+
+      - "kelly" maximise le taux de croissance log-optimal g*. C'est le seul
+        des trois critères dont l'optimum ne fuit pas systématiquement vers un
+        bord de grille -- voir le pavé de commentaires de la section Kelly.
+      - "sharpe" maximise (E[payoff] - prime)/écart-type. CONSERVÉ POUR
+        COMPARAISON UNIQUEMENT : son optimum est monotone en K et se colle
+        toujours au strike le plus dans la monnaie. Il sert de témoin dans les
+        tests et dans le script de comparaison, pas de critère de production.
+
+    `premium_fn(strike) -> prime` permet à l'appelant d'injecter un prix coté
+    réel ; par défaut, la prime est le prix Black-Scholes au taux sans risque
+    `r` (config.RISK_FREE_RATE si non fourni) et au rendement de dividende `q`.
+    Dans les deux cas, la prime est un prix de MARCHÉ : jamais recalculée sous
+    `mu`, sinon l'espérance nette serait nulle par construction et plus rien ne
+    classerait les strikes.
 
     None si aucun candidat n'a d'espérance nette positive -- la stratégie
     appelante doit alors ÉCARTER la ligne du portefeuille du jour plutôt que
     d'ouvrir au moins mauvais strike. Un pari dont on calcule soi-même qu'il
-    perd en moyenne n'a aucune raison d'être pris."""
+    perd en moyenne n'a aucune raison d'être pris.
+
+    Le dictionnaire rendu porte, outre le strike retenu, tous les diagnostics
+    du contrat choisi : ils servent aux compteurs agrégés du backtest et
+    évitent à l'appelant de refaire les mêmes calculs."""
+    if criterion not in ("kelly", "sharpe"):
+        raise ValueError(f"criterion attend 'kelly' ou 'sharpe', reçu {criterion!r}.")
     if r is None:
         r = config.RISK_FREE_RATE
 
@@ -497,8 +703,8 @@ def optimal_strike(
 
         premium = prime_de(strike)
         if not math.isfinite(premium) or premium <= 0:
-            # Sans mise, le ratio gain/risque n'est pas comparable aux autres
-            # (et un prix nul est le signe d'un strike hors de tout usage).
+            # Sans mise, aucun rendement n'est définissable (et un prix nul est
+            # le signe d'un strike hors de tout usage).
             continue
 
         esperance = expected_payoff(spot, strike, mu, sigma, t_years, option_type)
@@ -507,15 +713,34 @@ def optimal_strike(
             n_esperance_negative += 1
             continue
 
-        sharpe = sharpe_contract(spot, strike, mu, sigma, t_years, option_type, premium)
-        if sharpe is None:
-            continue
+        if criterion == "kelly":
+            optimum = kelly_optimum(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+            if optimum is None:
+                continue
+            fraction, score = optimum
+        else:
+            score = sharpe_contract(spot, strike, mu, sigma, t_years, option_type, premium)
+            if score is None:
+                continue
+            fraction = None
 
-        if meilleur is None or sharpe > meilleur["sharpe"]:
+        if meilleur is None or score > meilleur["score"]:
+            variance = variance_payoff(spot, strike, mu, sigma, t_years, option_type)
+            semi_variance = downside_semivariance(
+                spot, strike, mu, sigma, t_years, option_type, premium)
             meilleur = {
-                "strike": strike, "sharpe": sharpe, "expected_payoff": esperance,
-                "premium": premium, "edge": edge,
-                "std_payoff": math.sqrt(variance_payoff(spot, strike, mu, sigma, t_years, option_type)),
+                "strike": strike,
+                "criterion": criterion,
+                "score": score,
+                "kelly_fraction": fraction,
+                "log_growth": score if criterion == "kelly" else None,
+                "expected_payoff": esperance,
+                "premium": premium,
+                "edge": edge,
+                "std_payoff": math.sqrt(variance),
+                "downside_semideviation": math.sqrt(semi_variance),
+                "probability_of_profit": probability_of_profit(
+                    spot, strike, mu, sigma, t_years, option_type, premium),
             }
 
     if meilleur is None:

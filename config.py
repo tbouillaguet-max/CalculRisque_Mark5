@@ -591,6 +591,66 @@ OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
 # quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
 OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 
+# --------------------------------------------------------------------------- #
+# Stratégie « espérance de gain » (valuation_gap_expected_value_options)
+# --------------------------------------------------------------------------- #
+#
+# Cette stratégie choisit son strike en maximisant le TAUX DE CROISSANCE
+# LOG-OPTIMAL (Kelly) du contrat, au lieu de le poser ad hoc comme les deux
+# autres (ATM, ou mi-chemin cours/valeur théorique). Voir
+# backtest/expected_value.py pour les formules et backtest/strategies/
+# valuation_gap_expected_value_options.py pour l'articulation avec le signal.
+
+# Part du chemin vers la valeur théorique que la stratégie suppose parcourue à
+# l'échéance : mu = fraction x ln(V/S0) / T.
+#
+# 1.0 supposerait que le cours atteint EXACTEMENT sa valeur théorique à
+# l'échéance -- hypothèse que rien n'étaye, et qui transformerait chaque écart
+# de valorisation en gain certain. 0.5 ne suppose que la moitié du chemin :
+# c'est la même hypothèse implicite que valuation_gap_multiples_options, qui
+# place son strike à mi-chemin entre cours et valeur théorique, rendue ici
+# EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
+OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.5
+
+# Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
+# de S0·exp(-N·sigma·racine(T)) à S0·exp(+N·sigma·racine(T)), par pas de
+# PAS·sigma·racine(T).
+#
+# Adaptative par construction : la largeur suit la volatilité et la maturité,
+# donc la grille couvre toujours la même portion de la distribution du
+# sous-jacent. Une grille en pourcentage fixe du spot serait trop large sur un
+# titre calme à trois mois et trop étroite sur un titre nerveux à deux ans --
+# dans les deux cas le strike optimal se retrouverait sur un bord de grille,
+# c'est-à-dire non optimal.
+OPTIONS_EV_STRIKE_GRID_N_SIGMA = 3.0
+OPTIONS_EV_STRIKE_GRID_STEP_SIGMA = 0.25
+
+# Nombre de nœuds de la quadrature de Gauss-Legendre qui évalue le taux de
+# croissance de Kelly (pas de primitive analytique).
+#
+# La quadrature ne porte que sur la région LUCRATIVE du payoff, l'atome de
+# perte totale étant traité en forme fermée : l'intégrande y est analytique, et
+# Gauss-Legendre y converge géométriquement. Mesuré : l'écart entre 64 et 512
+# nœuds est inférieur à 1e-12 sur le taux de croissance, et 128 suffit
+# largement. Le coût est de toute façon marginal -- les nœuds sont mis en
+# cache et la sélection ne balaie que quelques dizaines de strikes par ligne.
+#
+# Une quadrature et non un Monte-Carlo : le bruit d'échantillonnage se
+# transmettrait au CHOIX du strike, qui changerait d'un run à l'autre sans
+# qu'aucune donnée n'ait bougé.
+OPTIONS_EV_QUADRATURE_NODES = 128
+
+# Volatilité de repli quand l'historique de cours est trop court pour estimer
+# une volatilité réalisée (titre récemment introduit, ou début de backtest).
+#
+# Lue à DEUX endroits qui doivent impérativement s'accorder : le pricing
+# d'entrée du moteur (options_engine._select_contract) et la sélection de
+# strike de la stratégie « espérance de gain ». Si la stratégie écartait ces
+# lignes au lieu de se replier, elle introduirait un biais de sélection vers
+# les seuls titres à long historique -- alors que le moteur, lui, aurait
+# parfaitement su ouvrir la position.
+OPTIONS_FALLBACK_VOL = 0.30
+
 # Filtre de micro-trades, à DEUX points d'application :
 #   1. Redimensionnement sur dépôt SEC (_open_or_resize) : second filet,
 #      APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD ci-dessous) --
