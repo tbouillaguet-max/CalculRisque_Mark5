@@ -36,45 +36,55 @@ config.SECTORS_SANS_DCF) peut avoir une valorisation par les multiples même
 quand son DCF est impossible à calculer -- les multiples ne nécessitent pas
 l'EBIT.
 
-LIMITE CONNUE : MÉDIANES SECTORIELLES CALCULÉES SUR LES SURVIVANTS
--------------------------------------------------------------------
-Recalculer les multiples par millésime de publication supprime bien le
-look-ahead temporel (le P/E médian de la tech en 2012 n'est pas celui de
-2021). Il reste en revanche un BIAIS DE SURVIVANCE dans la composition des
-pairs : ces médianes sont calculées à partir de multiples.parquet (05), qui
-ne contient que l'univers ACTUEL (config.UNIVERSE_FILE). Les médianes
-sectorielles de 2012 sont donc établies sur les seules entreprises encore
-présentes dans l'indice aujourd'hui -- celles qui ont fait faillite, été
-rachetées ou sorties de l'indice entre-temps n'y figurent pas.
+COMPOSITION DU GROUPE DE PAIRS (biais de survivance, reclassements GICS)
+------------------------------------------------------------------------
+Recalculer les multiples par millésime de publication supprime le look-ahead
+temporel (le P/E médian de la tech en 2012 n'est pas celui de 2021), mais pas
+les erreurs de COMPOSITION du groupe de pairs. Deux d'entre elles sont
+désormais corrigées ici, via sector_history.py :
 
-Sens de l'erreur : les disparues étaient en moyenne moins bien valorisées que
-les survivantes, donc la médiane sectorielle historique est probablement
-SURESTIMÉE, et avec elle les valorisations théoriques et les écarts calculés
-contre elles. L'ampleur n'est pas mesurable sans backfill.
+    - QUI était dans l'indice. Les pairs d'une ligne sont restreints aux
+      entreprises qui étaient MEMBRES de l'indice à sa filed_date
+      (config.UNIVERSE_HISTORY_FILE, 01b). Cela écarte les entrantes
+      postérieures -- une entreprise entrée au S&P 500 en 2020 ne pesait pas
+      dans la médiane de 2012 -- et, une fois les données backfillées, remet
+      les radiées dans les millésimes où elles comptaient.
 
-Le nombre de pairs réellement utilisés par (secteur, millésime) est exposé
-dans les colonnes *_n_peers et journalisé en fin de run, pour que la
-robustesse de chaque médiane soit vérifiable plutôt que supposée. Si
-config.UNIVERSE_FULL_FILE (01b) existe, un avertissement signale les tickers
-radiés absents de multiples.parquet.
+    - DANS QUEL SECTEUR elle était. Le secteur GICS actuel n'est plus appliqué
+      rétroactivement par-dessus les remaniements de la nomenclature : la
+      colonne `sector` porte le secteur POINT-IN-TIME (sector_history::
+      sector_asof), et `sector_current` le secteur d'aujourd'hui. Avant
+      septembre 2018, Alphabet et Meta sont donc de nouveau comparées à la
+      technologie et non aux médias.
 
-CORRECTION COMPLÈTE (non faite ici, procédure dans le README) : backfiller
-03b et 04 sur l'univers COMPLET (UNIVERSE_FULL_FILE), puis régénérer 05 et
-06b. C'est un rattrapage long (plusieurs milliers de requêtes SEC et IBKR) et
-délibérément laissé à la décision de l'utilisateur.
+CE QUI RESTE À FAIRE HORS DE CE SCRIPT : restreindre les pairs aux membres
+d'alors ne CRÉE pas les lignes manquantes. Tant que 03b/04/04b n'ont pas été
+backfillés sur config.UNIVERSE_FULL_FILE (01b), les entreprises radiées restent
+absentes de multiples.parquet. La différence est qu'elle est maintenant
+MESURÉE et non plus supposée : la couverture réelle de l'univers point-in-time
+est calculée par millésime et journalisée en fin de run (part de l'indice
+d'alors réellement présente dans les médianes). Procédure de backfill dans le
+README.
+
+Le nombre de pairs réellement utilisés par ligne est exposé dans les colonnes
+*_n_peers, et la robustesse par (secteur, millésime) reste journalisée.
 
 Usage :
     python 06b_calcul_valorisation_combinee.py
+    python 06b_calcul_valorisation_combinee.py --no-point-in-time-peers
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 import config
+import sector_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -170,10 +180,12 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def compute_pit_sector_multiples(df: pd.DataFrame) -> pd.DataFrame:
+def compute_pit_sector_multiples(
+    df: pd.DataFrame, membership: Optional[sector_history.MembershipIndex] = None,
+) -> pd.DataFrame:
     """Médianes sectorielles POINT-IN-TIME : pour chaque ligne, la médiane
     n'est calculée que sur les pairs du même millésime DÉJÀ DÉPOSÉS à sa
-    propre filed_date.
+    propre filed_date, et qui étaient MEMBRES DE L'INDICE à cette date.
 
     POURQUOI. Regrouper par millésime de publication supprime le mélange
     ENTRE millésimes (le P/E médian de la tech en 2012 n'est pas celui de
@@ -190,6 +202,14 @@ def compute_pit_sector_multiples(df: pd.DataFrame) -> pd.DataFrame:
     de pairs, parfois moins que MIN_PEERS_PER_SECTOR_YEAR -- ils retombent
     alors sur le repli DCF (source="dcf_fallback"). C'est la réalité de
     l'information disponible à cette date, pas une dégradation.
+
+    APPARTENANCE À L'INDICE (`membership`, cf. sector_history) : un pair n'est
+    retenu que s'il était membre de l'indice à la filed_date de la ligne
+    valorisée. Sans ce filtre, la médiane de 2012 intègre les entreprises
+    ENTRÉES depuis -- or une entrée au S&P 500 récompense en général un
+    parcours boursier, ce qui pousse la médiane vers le haut exactement comme
+    l'absence des radiées. `membership=None` désactive la restriction
+    (comportement d'avant, conservé pour comparaison chiffrée).
 
     Le nombre de pairs RÉELLEMENT utilisés est reporté par ligne dans
     `<multiple>_n_peers` (et non plus par groupe) : deux entreprises du même
@@ -208,19 +228,34 @@ def compute_pit_sector_multiples(df: pd.DataFrame) -> pd.DataFrame:
         ordered_filed = filed.iloc[order].to_numpy(dtype="datetime64[ns]")
 
         cleaned = {col: _clean_multiple(ordered[col], col) for col in MULTIPLE_COLUMNS}
+        ordered_symbols = (
+            ordered["symbol"].to_numpy() if "symbol" in ordered.columns else None
+        )
 
         for position, (idx, when) in enumerate(zip(ordered.index, ordered_filed)):
+            # Membres de l'indice à CETTE date, parmi les pairs déjà déposés.
+            # Calculé une fois par ligne (et non par multiple) : les trois
+            # colonnes partagent la même restriction d'appartenance.
+            deja_deposes = ordered.index[: position + 1]
+            if membership and ordered_symbols is not None and not np.isnat(when):
+                membres = pd.Index([
+                    peer_idx for peer_idx, peer_symbol
+                    in zip(deja_deposes, ordered_symbols[: position + 1])
+                    if membership.is_member(peer_symbol, when)
+                ])
+            else:
+                membres = deja_deposes
+
             row = {}
             for col in MULTIPLE_COLUMNS:
                 vals = cleaned[col]
                 if np.isnat(when):
                     visible = vals  # date inconnue : pas de restriction possible
                 else:
-                    # Pairs dont la filed_date est <= la nôtre. `ordered` est
-                    # trié par date, donc ce sont les `position+1` premières
-                    # lignes -- restreintes à celles qui ont un multiple
-                    # exploitable pour cette colonne.
-                    visible = vals[vals.index.isin(ordered.index[: position + 1])]
+                    # Pairs dont la filed_date est <= la nôtre ET qui étaient
+                    # membres de l'indice à cette date -- restreints à ceux
+                    # qui ont un multiple exploitable pour cette colonne.
+                    visible = vals[vals.index.isin(membres)]
                 # La ligne elle-même est exclue de sa propre médiane : se
                 # comparer à soi tire mécaniquement l'écart vers zéro.
                 visible = visible.drop(index=idx, errors="ignore")
@@ -263,6 +298,111 @@ def log_peer_coverage(sector_year_multiples: pd.DataFrame) -> None:
         )
 
 
+def apply_point_in_time_sectors(multiples: pd.DataFrame) -> pd.DataFrame:
+    """Remplace `sector` (photo GICS actuelle) par le secteur tel qu'il était
+    classé à la filed_date de chaque ligne, et conserve l'ancien dans
+    `sector_current`.
+
+    Le remplacement porte sur la colonne `sector` elle-même, et pas sur une
+    colonne parallèle, pour que TOUT ce qui suit en hérite sans le savoir : le
+    regroupement des pairs, mais aussi config.SECTOR_MULTIPLES (quels multiples
+    ont un sens pour ce secteur). Une ligne Alphabet de 2015 doit être
+    comparée à la technologie ET jugée avec les multiples de la technologie."""
+    if "sector" not in multiples.columns:
+        return multiples
+
+    df = sector_history.apply_sector_asof(
+        multiples, symbol_col="symbol", sector_col="sector",
+        date_col="filed_date", target_col="_sector_asof",
+    )
+    df["sector_current"] = df["sector"]
+    df["sector"] = df["_sector_asof"]
+    df = df.drop(columns=["_sector_asof"])
+
+    reclasses = df["sector"] != df["sector_current"]
+    reclasses &= df["sector"].notna() & df["sector_current"].notna()
+    if reclasses.any():
+        detail = (
+            df.loc[reclasses]
+            .groupby(["sector_current", "sector"], dropna=False)["symbol"].nunique()
+            .sort_values(ascending=False)
+        )
+        logger.info(
+            "Reclassements GICS appliqués : %d lignes (%d entreprises) reclassées à leur "
+            "secteur d'époque. Mouvements (secteur actuel -> secteur d'alors, nb entreprises) : %s",
+            int(reclasses.sum()), df.loc[reclasses, "symbol"].nunique(),
+            {f"{actuel} -> {alors}": int(n) for (actuel, alors), n in detail.items()},
+        )
+    else:
+        logger.info(
+            "Aucun reclassement GICS applicable sur cet historique (aucune entreprise de "
+            "sector_history.GICS_RECLASSIFICATIONS présente, ou historique entièrement "
+            "postérieur au dernier remaniement)."
+        )
+    return df
+
+
+def log_universe_coverage(multiples: pd.DataFrame, history: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Couverture de l'univers RÉEL par millésime : quelle part de l'indice
+    d'alors est effectivement présente dans les médianes.
+
+    C'est la mesure du biais de survivance RÉSIDUEL. Elle remplace l'ancien
+    avertissement binaire ("des radiées manquent") par un chiffre daté : une
+    couverture de 100 % dit que la médiane de ce millésime porte sur l'indice
+    complet, 62 % dit exactement de combien elle est amputée."""
+    vide = pd.DataFrame(columns=["fiscal_year", "members", "present", "coverage_ratio"])
+    if history is None or history.empty or "filed_date" not in multiples.columns:
+        logger.warning(
+            "01b_historique_univers_sp500.py jamais lancé (%s absent) : la composition "
+            "point-in-time des pairs est DÉSACTIVÉE et le biais de survivance reste "
+            "non mesurable. Lance 01b, puis backfille 03b/04/04b avec --tickers %s.",
+            getattr(config, "UNIVERSE_HISTORY_FILE", "?"),
+            getattr(config, "UNIVERSE_FULL_FILE", "?"),
+        )
+        return vide
+
+    dates = pd.to_datetime(multiples["filed_date"], errors="coerce")
+    annees = dates.dt.year
+    rows = []
+    for annee in sorted(annees.dropna().unique()):
+        presents = set(multiples.loc[annees == annee, "symbol"].dropna())
+        # Milieu d'année : une date de référence unique par millésime suffit
+        # pour une statistique de couverture, et évite de dépendre de la
+        # dispersion des dates de dépôt à l'intérieur de l'année.
+        rapport = sector_history.coverage_report(
+            history, presents, pd.Timestamp(year=int(annee), month=7, day=1),
+        )
+        if rapport is None:
+            continue
+        rows.append({
+            "fiscal_year": int(annee), "members": rapport["members"],
+            "present": rapport["present"], "coverage_ratio": rapport["coverage_ratio"],
+        })
+
+    couverture = pd.DataFrame(rows)
+    if couverture.empty:
+        return vide
+
+    moyenne = couverture["coverage_ratio"].mean()
+    pire = couverture.loc[couverture["coverage_ratio"].idxmin()]
+    logger.info(
+        "Couverture de l'univers point-in-time : %.0f%% en moyenne sur %d millésimes "
+        "(pire : %.0f%% en %d, %d/%d membres présents).",
+        moyenne * 100, len(couverture), pire["coverage_ratio"] * 100,
+        int(pire["fiscal_year"]), int(pire["present"]), int(pire["members"]),
+    )
+    if moyenne < 0.95:
+        logger.warning(
+            "Il manque en moyenne %.0f%% de l'indice d'alors dans %s : les entreprises "
+            "radiées n'ayant jamais été backfillées, les médianes sectorielles historiques "
+            "restent calculées sur les survivantes et donc SURESTIMÉES. Backfille 03b, 04 "
+            "et 04b avec --tickers %s, puis relance 05 et 06b.",
+            (1 - moyenne) * 100, config.MULTIPLES_FILE,
+            getattr(config, "UNIVERSE_FULL_FILE", "?"),
+        )
+    return couverture
+
+
 def warn_if_delisted_missing(multiples: pd.DataFrame) -> None:
     """Avertit quand des entreprises RADIÉES connues de 01b sont absentes de
     multiples.parquet : ce sont exactement celles dont l'absence biaise les
@@ -301,13 +441,17 @@ def warn_if_delisted_missing(multiples: pd.DataFrame) -> None:
         )
 
 
-def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataFrame = None) -> pd.DataFrame:
+def compute_implied_valuations(
+    df: pd.DataFrame, sector_year_multiples: pd.DataFrame = None,
+    membership: Optional[sector_history.MembershipIndex] = None,
+) -> pd.DataFrame:
     """`sector_year_multiples` : table par GROUP_COLUMNS (comportement
     historique, non point-in-time) ou None pour calculer les médianes
-    POINT-IN-TIME ligne à ligne (défaut, cf. compute_pit_sector_multiples)."""
+    POINT-IN-TIME ligne à ligne (défaut, cf. compute_pit_sector_multiples).
+    `membership` : voir compute_pit_sector_multiples."""
     df = _normalize_fiscal_quarter(df).reset_index(drop=True)
     if sector_year_multiples is None:
-        df = pd.concat([df, compute_pit_sector_multiples(df)], axis=1)
+        df = pd.concat([df, compute_pit_sector_multiples(df, membership)], axis=1)
     else:
         sector_year_multiples = _normalize_fiscal_quarter(sector_year_multiples)
         df = df.merge(sector_year_multiples, on=GROUP_COLUMNS, how="left")
@@ -359,7 +503,7 @@ def compute_implied_valuations(df: pd.DataFrame, sector_year_multiples: pd.DataF
     return df
 
 
-def build_combined_valuation() -> pd.DataFrame:
+def build_combined_valuation(point_in_time_peers: bool = True) -> pd.DataFrame:
     multiples = pd.read_parquet(config.MULTIPLES_FILE)
     if "filed_date" not in multiples.columns:
         # multiples.parquet régénéré par 05 à partir d'un financials.parquet
@@ -385,12 +529,29 @@ def build_combined_valuation() -> pd.DataFrame:
     dcf_history = _ensure_period_columns(dcf_history, str(config.DCF_HISTORY_FILE))
     dcf_history = _normalize_fiscal_quarter(dcf_history)
 
+    # Composition point-in-time du groupe de pairs (voir l'en-tête de fichier
+    # et sector_history.py) : secteur d'époque d'abord, appartenance à
+    # l'indice ensuite. L'ordre compte -- le regroupement par secteur doit
+    # déjà porter les libellés d'époque quand les médianes sont calculées.
+    history = sector_history.load_universe_history() if point_in_time_peers else None
+    if point_in_time_peers:
+        multiples = apply_point_in_time_sectors(multiples)
+    else:
+        logger.warning(
+            "--no-point-in-time-peers : secteur ACTUEL appliqué rétroactivement et pairs "
+            "non restreints aux membres de l'indice d'alors. Comportement d'avant la "
+            "correction, à n'utiliser que pour chiffrer l'écart entre les deux."
+        )
+    membership = sector_history.MembershipIndex(history)
+    log_universe_coverage(multiples, history)
+
     # La table par millésime ne sert plus qu'à la statistique de couverture :
     # la valorisation, elle, passe par les médianes POINT-IN-TIME (S4), qui
-    # n'intègrent que les pairs déjà déposés à la filed_date de chaque ligne.
+    # n'intègrent que les pairs déjà déposés à la filed_date de chaque ligne
+    # et membres de l'indice à cette date.
     log_peer_coverage(compute_sector_year_multiples(multiples))
     warn_if_delisted_missing(multiples)
-    df = compute_implied_valuations(multiples)
+    df = compute_implied_valuations(multiples, membership=membership if membership else None)
     df = _normalize_fiscal_quarter(df)
 
     df = df.merge(
@@ -432,15 +593,29 @@ def build_combined_valuation() -> pd.DataFrame:
     df = df.dropna(subset=["valuation_theoretical_per_share", "close"]).copy()
     df["gap_pct"] = (df["valuation_theoretical_per_share"] - df["close"]) / df["close"] * 100
 
-    return df[[
+    colonnes = [
         "symbol", "sector", "period_type", "year", "fiscal_quarter", "filed_date", "close",
         "valuation_multiples_per_share", "valuation_dcf_per_share", "valuation_theoretical_per_share",
         "source", "gap_pct", "n_multiples_used", "n_peers",
         "price_from_ev_ebitda", "price_from_ev_sales", "price_from_pe",
-    ]].sort_values(["symbol", "filed_date"]).reset_index(drop=True)
+    ]
+    # `sector` porte le secteur D'ÉPOQUE ; `sector_current` (celui
+    # d'aujourd'hui) est propagé pour que l'écart reste auditable en aval.
+    if "sector_current" in df.columns:
+        colonnes.insert(colonnes.index("sector") + 1, "sector_current")
+    return df[colonnes].sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--no-point-in-time-peers", action="store_true",
+        help="Désactive la composition point-in-time du groupe de pairs (secteur d'époque "
+             "et appartenance à l'indice) : rétablit le comportement d'avant la correction, "
+             "pour chiffrer l'écart entre les deux.",
+    )
+    args = parser.parse_args()
+
     if not config.MULTIPLES_FILE.exists():
         logger.error("Fichier manquant: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
         return
@@ -448,7 +623,7 @@ def main() -> None:
         logger.error("Fichier manquant: %s. Lance d'abord 07_calcul_dcf.py.", config.DCF_HISTORY_FILE)
         return
 
-    df = build_combined_valuation()
+    df = build_combined_valuation(point_in_time_peers=not args.no_point_in_time_peers)
     if df.empty:
         logger.error("Aucune valorisation combinée calculée. Vérifie les données d'entrée.")
         return

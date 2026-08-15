@@ -892,21 +892,72 @@ figé.
 **Régénération nécessaire** : `python 07_calcul_dcf.py` puis
 `python 06b_calcul_valorisation_combinee.py`.
 
-### Secteur GICS rétroactif (05, 07, 06b)
+### Secteur GICS rétroactif (05, 07)
 
-La colonne `sector` vient de `config.UNIVERSE_FILE`, soit la classification
-GICS **d'aujourd'hui**, appliquée telle quelle à des exercices de 2012. Elle
-pilote le WACC et les taux de croissance du DCF
+*(Corrigé pour les médianes sectorielles de 06b — voir la section suivante.
+Ce qui suit ne vaut plus que pour 07.)*
+
+La colonne `sector` produite par 02 est la classification GICS
+**d'aujourd'hui**. Elle pilote le WACC et les taux de croissance du DCF
 (`config.SECTOR_DCF_PARAMS`), les multiples jugés pertinents
 (`config.SECTOR_MULTIPLES`), le rendement du dividende du pricing d'options
 (`config.SECTOR_DIVIDEND_YIELD`) et l'exclusion du DCF
 (`config.SECTORS_SANS_DCF`).
 
-Une entreprise reclassée depuis — les GICS ont déplacé les télécoms et une
-partie de la tech vers « Services de communication » en 2018 — est donc
-comparée aux mauvais pairs et valorisée avec les mauvaises hypothèses sur
-toute sa partie ancienne. L'historique GICS point-in-time n'est pas
-disponible gratuitement.
+`06b_calcul_valorisation_combinee.py` la ramène désormais au secteur d'époque
+avant de composer ses groupes de pairs (`sector_history.sector_asof`), mais
+`07_calcul_dcf.py` applique toujours le secteur actuel à tout l'historique :
+une entreprise reclassée depuis se voit encore appliquer les mauvaises
+hypothèses de DCF sur sa partie ancienne.
+
+### Composition point-in-time du groupe de pairs (06b)
+
+Les médianes sectorielles de `06b` sont calculées sur les pairs tels qu'ils
+étaient **à la `filed_date` de chaque ligne**, sur deux dimensions
+(`sector_history.py`) :
+
+- **Appartenance à l'indice.** Un pair n'est retenu que s'il était membre du
+  S&P 500 à cette date (spans de `01b`). Cela écarte les entreprises entrées
+  depuis — une entrée dans l'indice récompense en général un parcours
+  boursier, donc les laisser peser sur une médiane de 2012 la pousse vers le
+  haut — et, une fois les données backfillées, remet les radiées dans les
+  millésimes où elles comptaient.
+- **Secteur d'époque.** Les remaniements GICS documentés sont rejoués à
+  l'envers : immobilier sorti des financières (2016), création de
+  Communication Services (2018 — Alphabet et Meta étaient en technologie
+  avant), paiements passés en financières (2023). La colonne `sector` du
+  parquet de sortie porte le secteur d'alors, `sector_current` celui
+  d'aujourd'hui.
+
+`--no-point-in-time-peers` rétablit l'ancien comportement, pour chiffrer
+l'écart entre les deux.
+
+**Ce que le code ne peut pas faire seul.** Restreindre les pairs aux membres
+d'alors ne crée pas les lignes manquantes : tant que `03b`/`04`/`04b` n'ont
+pas été backfillés sur `sp500_universe_full.csv`, les radiées restent absentes
+de `multiples.parquet`. La différence est que le trou est maintenant **mesuré**
+— 06b journalise la couverture réelle de l'univers point-in-time par millésime
+et avertit en dessous de 95 %.
+
+```bash
+python 01b_historique_univers_sp500.py
+python 02_categoriser_secteurs.py --universe data/universe/sp500_universe_full.csv
+python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
+python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv
+python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv
+python 05_calcul_multiples.py && python 07_calcul_dcf.py
+python 06b_calcul_valorisation_combinee.py
+```
+
+L'étape `02 --universe` n'est pas optionnelle : les entreprises radiées
+n'ayant pas de secteur GICS (elles ne figurent plus dans la table Wikipédia
+des membres actuels), sans elle le backfill coûte des milliers de requêtes SEC
+pour des lignes que 06b écarte faute de secteur. `05` le signale.
+
+Limite résiduelle : la table des changements de Wikipédia ne remonte qu'à
+~1996-2000, et `sector_history.GICS_RECLASSIFICATIONS` ne couvre que les
+remaniements structurels de la nomenclature — pas les reclassements
+individuels au fil de l'eau, faute de source historique gratuite.
 
 ### Risque de volatilité non modélisé (10, backtest/options_pricing.py)
 
