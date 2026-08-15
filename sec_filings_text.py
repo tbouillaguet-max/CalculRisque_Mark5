@@ -44,7 +44,10 @@ import logging
 import os
 import random
 import re
+import threading
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional, Tuple
 
 from pathlib import Path
@@ -101,14 +104,38 @@ _PARSER: Optional[str] = None
 MISTRAL_API_KEY_ENV = "MISTRAL_API_KEY"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = "mistral-large-latest"
-MISTRAL_MAX_RETRIES = 3
+# Reprises RÉSEAU (dont les 429). Trois ne suffisaient pas : avec le backoff
+# ci-dessous elles épuisaient la patience du script en ~15 secondes, alors
+# qu'une fenêtre de quota Mistral se compte en dizaines de secondes. Le
+# 04c_recuperation_8k.py abandonnait donc la classification (category=
+# "non_evalue") dès la première rafale de 429, sur des milliers de documents.
+MISTRAL_MAX_RETRIES = 6
 # Reprises sur réponse NON PARSABLE (distinct des reprises réseau ci-dessus) :
 # une seule. L'ancienne version n'en faisait aucune (abandon immédiat), mais
 # insister sur un modèle qui vient de répondre hors format coûte des appels
 # payants pour un gain marginal.
 MISTRAL_MAX_PARSE_RETRIES = 2
 MISTRAL_RETRY_DELAY = 2
+MISTRAL_MAX_RETRY_DELAY = 90.0
 MISTRAL_TEMPERATURE = 0.1
+
+# Codes HTTP qui justifient un réessai. Tout le reste (401 clé invalide, 403
+# compte suspendu, 422 prompt refusé) est DÉFINITIF : réessayer trois fois ne
+# fait que retarder l'inévitable en brûlant des appels.
+MISTRAL_RETRYABLE_STATUS = frozenset((408, 409, 425, 429, 500, 502, 503, 504))
+
+# Débit sortant vers Mistral. Le vrai correctif du 429 n'est pas de mieux
+# réessayer : c'est de ne pas dépasser le quota. Sans limiteur, 04c enchaînait
+# ses appels aussi vite que le réseau le permettait et se faisait jeter dès le
+# premier ticker. 1 requête/seconde tient dans le quota de tous les plans
+# Mistral ; ajustable via MISTRAL_REQUESTS_PER_SECOND pour un plan plus large.
+MISTRAL_REQUESTS_PER_SECOND_ENV = "MISTRAL_REQUESTS_PER_SECOND"
+MISTRAL_DEFAULT_REQUESTS_PER_SECOND = 1.0
+# Plafond de l'auto-freinage : au-delà, ce n'est plus une rafale à lisser mais
+# un quota épuisé, et il vaut mieux échouer visiblement que ramper.
+MISTRAL_MAX_INTERVAL = 30.0
+# Succès consécutifs avant de resserrer l'intervalle élargi par un 429.
+MISTRAL_SUCCESSES_BEFORE_SPEEDUP = 20
 
 # Délimiteurs de bloc de code Markdown, que les modèles ajoutent volontiers
 # autour d'un JSON ("```json\n{...}\n```") -- l'ancienne exigence
@@ -537,6 +564,121 @@ def _parse_json_reponse(content) -> Optional[dict]:
         return None
 
 
+class AdaptiveRateLimiter:
+    """Limiteur de débit qui se resserre tout seul quand le serveur dit non.
+
+    Même principe que sec_http.RateLimiter (attente sous verrou, donc débit
+    global borné quel que soit le nombre de threads), avec une différence :
+    l'intervalle n'est pas figé. Le quota Mistral dépend du plan du compte et
+    n'est annoncé nulle part -- le seul moyen de le connaître est de s'y
+    cogner. Chaque 429 DOUBLE donc l'intervalle (jusqu'à `max_interval`), et
+    une série de succès le ramène progressivement vers sa valeur nominale.
+
+    Sans ça, réessayer après un 429 ne fait que déplacer le problème : la
+    requête suivante repart au même rythme et se fait refuser de nouveau."""
+
+    def __init__(self, rate_per_second: float, max_interval: float = MISTRAL_MAX_INTERVAL,
+                 successes_before_speedup: int = MISTRAL_SUCCESSES_BEFORE_SPEEDUP):
+        self._base_interval = 1.0 / rate_per_second if rate_per_second > 0 else 0.0
+        self._interval = self._base_interval
+        self._max_interval = max_interval
+        self._successes_before_speedup = successes_before_speedup
+        self._successes = 0
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+
+    @property
+    def interval(self) -> float:
+        return self._interval
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._next_slot - now
+            if wait > 0:
+                time.sleep(wait)
+                now = self._next_slot
+            self._next_slot = now + self._interval
+
+    def penalize(self, pause: float = 0.0) -> float:
+        """Un 429 vient d'arriver : on ralentit, et on décale le prochain
+        créneau d'au moins `pause` (typiquement la valeur de Retry-After) pour
+        que la reprise ne parte pas avant la fin de la fenêtre de quota."""
+        with self._lock:
+            self._successes = 0
+            self._interval = min(max(self._interval * 2, self._base_interval or 1.0), self._max_interval)
+            self._next_slot = max(self._next_slot, time.monotonic() + max(pause, 0.0))
+            return self._interval
+
+    def reward(self) -> None:
+        """Appel réussi : après une série assez longue, on desserre d'un cran
+        (jamais en dessous de l'intervalle nominal)."""
+        with self._lock:
+            if self._interval <= self._base_interval:
+                return
+            self._successes += 1
+            if self._successes >= self._successes_before_speedup:
+                self._successes = 0
+                self._interval = max(self._interval / 2, self._base_interval)
+
+
+def _mistral_rate_per_second() -> float:
+    brut = os.environ.get(MISTRAL_REQUESTS_PER_SECOND_ENV, "").strip()
+    if not brut:
+        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+    try:
+        valeur = float(brut)
+    except ValueError:
+        logger.warning("%s='%s' illisible, valeur par défaut (%s req/s).",
+                       MISTRAL_REQUESTS_PER_SECOND_ENV, brut, MISTRAL_DEFAULT_REQUESTS_PER_SECOND)
+        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+    if valeur <= 0:
+        logger.warning("%s doit être > 0 (reçu %s), valeur par défaut (%s req/s).",
+                       MISTRAL_REQUESTS_PER_SECOND_ENV, valeur, MISTRAL_DEFAULT_REQUESTS_PER_SECOND)
+        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+    return valeur
+
+
+# Limiteur GLOBAL au processus, partagé par 04c et 07b : deux modules qui
+# appelleraient Mistral en parallèle avec chacun le sien doubleraient le débit
+# réel, donc le taux de 429.
+MISTRAL_RATE_LIMITER = AdaptiveRateLimiter(_mistral_rate_per_second())
+
+
+def _retry_after_seconds(response: Optional["requests.Response"]) -> Optional[float]:
+    """Valeur de l'en-tête Retry-After, en secondes. L'en-tête admet deux
+    formes (un nombre de secondes ou une date HTTP) et Mistral utilise la
+    première ; la seconde est gérée pour ne pas dépendre de ce détail."""
+    if response is None:
+        return None
+    brut = (getattr(response, "headers", None) or {}).get("Retry-After")
+    if not brut:
+        return None
+    brut = str(brut).strip()
+    try:
+        return max(float(brut), 0.0)
+    except ValueError:
+        pass
+    try:
+        cible = parsedate_to_datetime(brut)
+    except (TypeError, ValueError):
+        return None
+    if cible is None:
+        return None
+    maintenant = datetime.now(timezone.utc) if cible.tzinfo else datetime.now()
+    return max((cible - maintenant).total_seconds(), 0.0)
+
+
+def _mistral_retry_delay(response: Optional["requests.Response"], attempt: int) -> float:
+    """Retry-After s'il est fourni (le serveur sait mieux que nous), sinon
+    backoff exponentiel plafonné avec jitter -- le jitter évite que plusieurs
+    appelants repartis en même temps ne se resynchronisent sur le quota."""
+    retry_after = _retry_after_seconds(response)
+    if retry_after is not None:
+        return min(retry_after + random.uniform(0, 1), MISTRAL_MAX_RETRY_DELAY)
+    return min(MISTRAL_RETRY_DELAY * (2 ** attempt), MISTRAL_MAX_RETRY_DELAY) + random.uniform(0, 1)
+
+
 def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     """Appelle Mistral avec un prompt demandant une réponse JSON stricte --
     même pattern que 02_categoriser_secteurs.py::appeler_mistral (retries
@@ -545,7 +687,11 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
     construit son propre prompt et valide les clés qu'il attend dans le dict
     retourné. None si MISTRAL_API_KEY est absente, ou après épuisement des
     tentatives -- l'appelant doit traiter ce cas comme "pas de verdict",
-    jamais planter."""
+    jamais planter.
+
+    Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter) :
+    espacés en amont pour ne pas provoquer de 429, et espacés DAVANTAGE dès
+    qu'un 429 survient malgré tout."""
     api_key = os.environ.get(MISTRAL_API_KEY_ENV)
     if not api_key:
         return None
@@ -562,20 +708,48 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
     }
 
     parse_failures = 0
-    for attempt in range(MISTRAL_MAX_RETRIES):
+    network_failures = 0
+    derniere_erreur: Optional[Exception] = None
+
+    while network_failures < MISTRAL_MAX_RETRIES:
+        MISTRAL_RATE_LIMITER.acquire()
+        resp = None
         try:
             resp = requests.post(MISTRAL_URL, headers=headers, json=payload, timeout=45)
-            resp.raise_for_status()
+            statut = getattr(resp, "status_code", None)
+            if statut is not None and statut >= 400:
+                raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
             content = resp.json()["choices"][0]["message"]["content"]
         except requests.exceptions.RequestException as e:
-            delay = MISTRAL_RETRY_DELAY * (2 ** attempt) + random.uniform(0, 1)
-            logger.warning("Tentative Mistral %d échouée: %s. Nouvel essai dans %.1fs...", attempt + 1, e, delay)
+            statut = getattr(getattr(e, "response", None), "status_code", None)
+            if statut is not None and statut not in MISTRAL_RETRYABLE_STATUS:
+                # 401 (clé invalide), 403, 422... : la réponse ne changera pas.
+                logger.error("Appel Mistral refusé définitivement (HTTP %s), aucun réessai : %s", statut, e)
+                return None
+
+            network_failures += 1
+            derniere_erreur = e
+            if network_failures >= MISTRAL_MAX_RETRIES:
+                break
+
+            delay = _mistral_retry_delay(resp, network_failures - 1)
+            if statut == 429:
+                intervalle = MISTRAL_RATE_LIMITER.penalize(pause=delay)
+                logger.warning(
+                    "Quota Mistral atteint (429, tentative %d/%d). Débit ramené à un appel "
+                    "toutes les %.1fs ; nouvel essai dans %.1fs...",
+                    network_failures, MISTRAL_MAX_RETRIES, intervalle, delay,
+                )
+            else:
+                logger.warning("Tentative Mistral %d/%d échouée: %s. Nouvel essai dans %.1fs...",
+                               network_failures, MISTRAL_MAX_RETRIES, e, delay)
             time.sleep(delay)
             continue
         except (KeyError, ValueError) as e:
             logger.error("Réponse Mistral inexploitable (enveloppe): %s", e)
             return None
 
+        MISTRAL_RATE_LIMITER.reward()
         parsed = _parse_json_reponse(content)
         if parsed is not None:
             return parsed
@@ -590,5 +764,5 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
             return None
         logger.warning("Réponse Mistral non parsable, une nouvelle tentative : %s", str(content)[:200])
 
-    logger.error("Échec après %d tentatives Mistral.", MISTRAL_MAX_RETRIES)
+    logger.error("Échec après %d tentatives Mistral : %s", MISTRAL_MAX_RETRIES, derniere_erreur)
     return None
