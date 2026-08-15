@@ -28,17 +28,35 @@ autres événements, Item 1.01 = accord matériel) : gratuite et fiable, gardée
 en plus du verdict LLM (pas à sa place) pour un recoupement rapide côté
 rapport, sans dépendre uniquement de la classification sémantique du modèle.
 
+Mémoire des classifications (cache_8k_mistral.jsonl)
+----------------------------------------------------
+Un 8-K est un document FIGÉ : son texte ne changera plus, donc sa
+classification non plus. Chaque 8-K classifié AVEC SUCCÈS par Mistral est
+mémorisé (clé : symbole + numéro d'accession) dans un cache JSONL persistant,
+et n'est jamais ré-analysé -- ni son texte re-téléchargé auprès de la SEC.
+Seuls les 8-K réellement classifiés y entrent : un "non_evalue" (quota Mistral
+épuisé, clé absente, réponse hors format) n'est PAS mémorisé, sinon un incident
+passager gèlerait définitivement un trou dans les données.
+
+Ce cache est indépendant de --resume : --resume reprend un run interrompu (au
+grain du ticker), le cache survit à TOUS les runs (au grain du document). Un
+run complet relancé après une interruption ne repaie donc pas les milliers
+d'appels déjà effectués. --no-llm-cache force la ré-analyse.
+
 Prérequis :
     pip install requests beautifulsoup4
     export MISTRAL_API_KEY="ta_cle"   (voir 02_categoriser_secteurs.py -- sans
     cette variable, les 8-K sont journalisés avec category="non_evalue"
     plutôt que de planter)
+    export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers
+    Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
 
 Usage :
     python 04c_recuperation_8k.py
     python 04c_recuperation_8k.py --limit 10
     python 04c_recuperation_8k.py --resume
     python 04c_recuperation_8k.py --ticker AAPL
+    python 04c_recuperation_8k.py --no-llm-cache
 """
 
 from __future__ import annotations
@@ -51,7 +69,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -62,6 +80,16 @@ logger = logging.getLogger("recuperation_8k")
 
 CHECKPOINT_EVERY = 10
 ITEM_CODE_PATTERN = re.compile(r"Item\s+\d+\.\d+", re.IGNORECASE)
+
+# Cache persistant des 8-K DÉJÀ classifiés par Mistral (voir le docstring).
+# JSONL append-only : écrit ligne par ligne au fil du run, donc utilisable même
+# après un Ctrl-C ou une coupure -- un JSON réécrit en bloc en fin de run
+# perdrait tout le travail d'un run interrompu, exactement le cas qu'il s'agit
+# d'éviter.
+LLM_CACHE_FILENAME = "cache_8k_mistral.jsonl"
+# Classifications qui ne valent PAS mémorisation : ce sont des non-réponses
+# (quota épuisé, clé absente, format illisible), pas des verdicts.
+NON_CACHEABLE_CATEGORIES = frozenset({None, "", "non_evalue"})
 
 # Au-delà de cette part d'entreprises en échec RÉSEAU, le run échoue
 # bruyamment sans rien écrire. Un material_events_8k.parquet incomplet est
@@ -135,8 +163,94 @@ def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
     }
 
 
-def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]:
+# ----------------------------------------------------------------------------
+# Mémoire des 8-K déjà classifiés (cache_8k_mistral.jsonl)
+# ----------------------------------------------------------------------------
+
+def llm_cache_path(output_dir: Path) -> Path:
+    return output_dir / LLM_CACHE_FILENAME
+
+
+def cache_key(symbol: str, accession_number: str) -> str:
+    return f"{symbol}:{accession_number}"
+
+
+def is_cacheable(classification: dict) -> bool:
+    """Vrai seulement si Mistral a rendu un verdict exploitable. Mémoriser un
+    "non_evalue" reviendrait à graver dans le marbre l'échec du jour (quota
+    Mistral atteint) : le 8-K ne serait plus jamais reproposé à l'analyse."""
+    return classification.get("category") not in NON_CACHEABLE_CATEGORIES
+
+
+def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
+    """Cache des classifications déjà obtenues, indexé par symbole:accession.
+
+    Tolérant aux lignes corrompues (un run tué en plein write laisse une ligne
+    tronquée) : on ignore la ligne fautive plutôt que de perdre tout le cache
+    -- une entrée manquante coûte un appel Mistral, un cache illisible en
+    coûte des milliers."""
+    path = llm_cache_path(output_dir)
+    if not path.exists():
+        return {}
+    cache: Dict[str, dict] = {}
+    ignorees = 0
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                ignorees += 1
+                continue
+            symbol, accession = entry.get("symbol"), entry.get("accession_number")
+            if not symbol or not accession:
+                ignorees += 1
+                continue
+            # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
+            # remplace l'ancien verdict sans qu'il faille réécrire le fichier.
+            cache[cache_key(symbol, accession)] = entry
+    if ignorees:
+        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    logger.info("Mémoire des classifications : %d 8-K déjà analysés dans %s.", len(cache), path)
+    return cache
+
+
+def append_llm_cache(output_dir: Path, entry: dict) -> None:
+    """Écriture IMMÉDIATE, une ligne par 8-K classifié. L'appel Mistral vient
+    d'être payé : il ne doit pas être reperdu par un Ctrl-C dix secondes plus
+    tard."""
+    path = llm_cache_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, default=str, ensure_ascii=False) + "\n")
+        f.flush()
+
+
+def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
+    """Ligne de sortie reconstruite depuis le cache. Les champs d'identité
+    viennent du filing courant (source de vérité), le verdict du cache."""
+    return {
+        "symbol": symbol, "cik": cik, "filed_date": filing["filing_date"],
+        "accession_number": filing["accession_number"],
+        "item_codes": entry.get("item_codes") or [],
+        "category": entry.get("category"),
+        "materiality": entry.get("materiality"),
+        "summary": entry.get("summary"),
+        "fetch_timestamp": entry.get("fetch_timestamp"),
+        "from_cache": True,
+    }
+
+
+def process_ticker_8k(
+    symbol: str, cik: str, windows: List[tuple],
+    llm_cache: Optional[Dict[str, dict]] = None, output_dir: Optional[Path] = None,
+) -> tuple:
+    """Lignes 8-K du ticker, plus le nombre de classifications servies par le
+    cache. `llm_cache` à None désactive complètement la mémoire (--no-llm-cache)."""
     rows = []
+    cache_hits = 0
     seen_accessions = set()
     # UNE seule requête submissions par entreprise, puis filtrage en mémoire.
     # Auparavant, list_company_filings était appelée une fois PAR FENÊTRE :
@@ -150,6 +264,16 @@ def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]
             if filing["accession_number"] in seen_accessions:
                 continue  # deux fenêtres adjacentes peuvent se recouvrir sur leur borne commune
             seen_accessions.add(filing["accession_number"])
+
+            # Déjà classifié lors d'un run précédent : ni téléchargement SEC,
+            # ni appel Mistral. Le test vient AVANT fetch_filing_text, sinon
+            # l'économie se limiterait au LLM.
+            if llm_cache is not None:
+                connu = llm_cache.get(cache_key(symbol, filing["accession_number"]))
+                if connu is not None:
+                    rows.append(row_from_cache(connu, symbol, cik, filing))
+                    cache_hits += 1
+                    continue
 
             if not filing.get("primary_document"):
                 logger.warning(
@@ -167,13 +291,20 @@ def process_ticker_8k(symbol: str, cik: str, windows: List[tuple]) -> List[dict]
             text, _extraction_mode = extracted
 
             classification = classify_8k(symbol, filing["filing_date"], text)
-            rows.append({
+            row = {
                 "symbol": symbol, "cik": cik, "filed_date": filing["filing_date"],
                 "accession_number": filing["accession_number"],
                 **classification,
                 "fetch_timestamp": datetime.now().isoformat(timespec="seconds"),
-            })
-    return rows
+                "from_cache": False,
+            }
+            rows.append(row)
+
+            if llm_cache is not None and is_cacheable(classification):
+                llm_cache[cache_key(symbol, filing["accession_number"])] = row
+                if output_dir is not None:
+                    append_llm_cache(output_dir, row)
+    return rows, cache_hits
 
 
 # ----------------------------------------------------------------------------
@@ -235,6 +366,11 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Ignore " + LLM_CACHE_FILENAME + " et re-soumet à Mistral des 8-K déjà classifiés "
+             "(à réserver à un changement de prompt ou de modèle : chaque appel est payant).",
+    )
+    parser.add_argument(
         "--max-failure-ratio", type=float, default=DEFAULT_MAX_FAILURE_RATIO,
         help="Part maximale d'entreprises en échec RÉSEAU tolérée avant d'abandonner le run "
              "sans rien écrire (défaut: %(default)s). Un material_events_8k.parquet incomplet "
@@ -251,6 +387,12 @@ def main() -> None:
         logger.warning(
             "MISTRAL_API_KEY non définie : les 8-K seront journalisés avec category='non_evalue' "
             "(pas d'appel Mistral). export MISTRAL_API_KEY=... pour activer la classification."
+        )
+    else:
+        logger.info(
+            "Débit Mistral : un appel toutes les %.2fs (%s pour l'ajuster au quota de ton plan). "
+            "Le débit se resserre automatiquement en cas de 429.",
+            sft.MISTRAL_RATE_LIMITER.interval, sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
         )
 
     if not config.FINANCIALS_TTM_FILE.exists():
@@ -279,8 +421,19 @@ def main() -> None:
         processed_keys = load_progress(args.output_dir)
         logger.info("Reprise : %d tickers déjà traités.", len(processed_keys))
     else:
+        # Progression et checkpoint sont propres à UN run et repartent de zéro.
+        # Le cache des classifications, lui, est délibérément conservé : c'est
+        # une mémoire de documents figés, pas l'état d'avancement d'un run.
         _progress_path(args.output_dir).unlink(missing_ok=True)
         _checkpoint_path(args.output_dir).unlink(missing_ok=True)
+
+    llm_cache: Optional[Dict[str, dict]] = None
+    if args.no_llm_cache:
+        logger.warning(
+            "--no-llm-cache : les 8-K déjà classifiés seront re-téléchargés et re-soumis à Mistral."
+        )
+    else:
+        llm_cache = load_llm_cache(args.output_dir)
 
     today = datetime.now()
     to_process = []
@@ -299,14 +452,24 @@ def main() -> None:
     # même chose. Seuls les échecs RÉSEAU remettent en cause la complétude du
     # fichier de sortie (cf. le seuil en fin de run).
     ok_count, not_found_count, network_fail_count, event_count = 0, 0, 0, 0
+    cache_hit_count = 0
     since_checkpoint = 0
+    interrompu = False
     try:
         for i, symbol in enumerate(to_process, start=1):
             cik = cik_by_symbol[symbol]
             windows = compute_search_windows(ttm, symbol, today)
             logger.info("[%d/%d] %s (CIK %s, %d fenêtre(s))...", i, len(to_process), symbol, cik, len(windows))
+            hits = 0
             try:
-                rows = process_ticker_8k(symbol, cik, windows)
+                rows, hits = process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir)
+            except KeyboardInterrupt:
+                # Ctrl-C pendant une attente de quota : sortie propre (le
+                # cache et le checkpoint sont déjà sur disque), pas une trace
+                # de pile de vingt lignes.
+                logger.warning("Interruption demandée : arrêt après %d/%d tickers.", i - 1, len(to_process))
+                interrompu = True
+                break
             except sft.sec_http.SecNotFound:
                 # CIK inconnu de la SEC : réponse définitive, il n'y a rien à
                 # récupérer et rien à réessayer. Ce n'est pas un incident.
@@ -326,6 +489,7 @@ def main() -> None:
             else:
                 ok_count += 1
                 event_count += len(rows)
+                cache_hit_count += hits
                 if rows:
                     append_checkpoint(args.output_dir, rows)
 
@@ -338,9 +502,25 @@ def main() -> None:
         save_progress(args.output_dir, processed_keys)
 
     logger.info(
-        "Terminé. OK: %d | CIK introuvables: %d | Échecs réseau: %d | 8-K détectés: %d",
+        "Terminé. OK: %d | CIK introuvables: %d | Échecs réseau: %d | 8-K détectés: %d "
+        "(dont %d servis par la mémoire, %d nouvellement analysés)",
         ok_count, not_found_count, network_fail_count, event_count,
+        cache_hit_count, event_count - cache_hit_count,
     )
+    if llm_cache is not None:
+        logger.info("Mémoire des classifications : %d 8-K au total dans %s.",
+                    len(llm_cache), llm_cache_path(args.output_dir))
+
+    if interrompu:
+        # Le fichier de sortie serait tronqué à l'endroit exact du Ctrl-C, et
+        # un material_events_8k.parquet partiel désactive silencieusement le
+        # filtre d'événements matériels du backtest. Rien n'est écrit.
+        logger.warning(
+            "Run interrompu : aucun fichier de sortie généré. Le travail déjà payé est "
+            "conservé (%s) ; relance avec --resume pour reprendre là où tu en étais.",
+            llm_cache_path(args.output_dir),
+        )
+        sys.exit(130)
 
     failure_ratio = network_fail_count / len(to_process) if to_process else 0.0
     if failure_ratio > args.max_failure_ratio:
@@ -361,6 +541,11 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if "from_cache" in df.columns:
+        # Un checkpoint écrit par une version antérieure n'a pas la colonne :
+        # sans normalisation, le mélange bool/NaN part en colonne "object" et
+        # pyarrow refuse d'inférer un type.
+        df["from_cache"] = df["from_cache"].fillna(False).astype(bool)
     config.MATERIAL_EVENTS_8K_FILE.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(config.MATERIAL_EVENTS_8K_FILE, index=False, engine="pyarrow")
     logger.info("8-K sauvegardés : %s (%d lignes, %d entreprises).", config.MATERIAL_EVENTS_8K_FILE, len(df), df["symbol"].nunique())

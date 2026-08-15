@@ -43,20 +43,31 @@ def test_les_reponses_reellement_inexploitables_sont_refusees(reponse):
 # --------------------------------------------------------------------------- #
 
 class _ReponseHttp:
-    def __init__(self, contenu):
+    def __init__(self, contenu, status_code=200, headers=None):
         self._contenu = contenu
+        self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise requests.exceptions.HTTPError(f"HTTP {self.status_code}", response=self)
 
     def json(self):
         return {"choices": [{"message": {"content": self._contenu}}]}
+
+
+def _erreur_http(status_code, headers=None):
+    """Réponse d'erreur telle que la renvoie l'API (429 de quota, 401...)."""
+    return _ReponseHttp("", status_code=status_code, headers=headers)
 
 
 @pytest.fixture
 def api(monkeypatch):
     monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "cle-de-test")
     monkeypatch.setattr(sft.time, "sleep", lambda _s: None)
+    # Limiteur neuf par test : l'état (intervalle élargi par un 429) est
+    # global au processus et fuiterait d'un test à l'autre.
+    monkeypatch.setattr(sft, "MISTRAL_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
 
     appels = []
 
@@ -66,7 +77,9 @@ def api(monkeypatch):
             item = reponses.pop(0)
             if isinstance(item, Exception):
                 raise item
-            return _ReponseHttp(item)
+            # Une réponse déjà construite (code HTTP d'erreur) passe telle
+            # quelle ; une chaîne est le contenu d'une réponse 200.
+            return item if isinstance(item, _ReponseHttp) else _ReponseHttp(item)
         monkeypatch.setattr(sft.requests, "post", faux_post)
         return appels
 
@@ -103,6 +116,79 @@ def test_les_erreurs_reseau_gardent_leurs_trois_tentatives(api):
     assert len(appels) == 3
 
 
+# --------------------------------------------------------------------------- #
+# Quota (429)
+# --------------------------------------------------------------------------- #
+
+def test_un_429_est_reessaye_puis_finit_par_passer(api):
+    """Le symptôme d'origine : trois tentatives seulement, et 04c abandonnait
+    la classification (category="non_evalue") dès la première rafale de 429."""
+    appels = api([
+        _erreur_http(429), _erreur_http(429), _erreur_http(429), _erreur_http(429),
+        '{"verdict": "coherent"}',
+    ])
+    assert sft.analyser_texte_mistral("prompt") == {"verdict": "coherent"}
+    assert len(appels) == 5
+
+
+def test_un_429_ralentit_le_debit_sortant(api, monkeypatch):
+    """Réessayer ne suffit pas : sans élargir l'intervalle, l'appel suivant
+    repart au même rythme et se fait refuser de nouveau."""
+    limiteur = sft.AdaptiveRateLimiter(1.0)
+    monkeypatch.setattr(sft, "MISTRAL_RATE_LIMITER", limiteur)
+    avant = limiteur.interval
+
+    api([_erreur_http(429), '{"verdict": "coherent"}'])
+    sft.analyser_texte_mistral("prompt")
+
+    assert limiteur.interval > avant
+
+
+def test_le_retry_after_du_serveur_est_respecte(api, monkeypatch):
+    """Quand Mistral annonce lui-même le délai, on l'applique au lieu du
+    backoff maison."""
+    attentes = []
+    monkeypatch.setattr(sft.time, "sleep", attentes.append)
+
+    api([_erreur_http(429, headers={"Retry-After": "30"}), '{"verdict": "coherent"}'])
+    assert sft.analyser_texte_mistral("prompt") == {"verdict": "coherent"}
+    assert any(30 <= a <= 31 for a in attentes), attentes
+
+
+def test_une_erreur_definitive_n_est_pas_reessayee(api):
+    """Une clé invalide (401) ne deviendra pas valide à la troisième tentative :
+    insister ne fait que retarder le diagnostic."""
+    appels = api([_erreur_http(401), '{"verdict": "coherent"}'])
+    assert sft.analyser_texte_mistral("prompt") is None
+    assert len(appels) == 1
+
+
+def test_le_debit_se_resserre_apres_une_serie_de_succes():
+    """L'auto-freinage doit être réversible : un 429 isolé ne doit pas
+    condamner tout le reste du run à ramper."""
+    limiteur = sft.AdaptiveRateLimiter(1.0, successes_before_speedup=2)
+    nominal = limiteur.interval
+    limiteur.penalize()
+    limiteur.penalize()
+    penalise = limiteur.interval
+    assert penalise > nominal
+
+    for _ in range(2):
+        limiteur.reward()
+    assert limiteur.interval == pytest.approx(penalise / 2)
+
+    for _ in range(10):
+        limiteur.reward()
+    assert limiteur.interval == pytest.approx(nominal)
+
+
+def test_le_debit_penalise_reste_borne():
+    limiteur = sft.AdaptiveRateLimiter(1.0, max_interval=8.0)
+    for _ in range(20):
+        limiteur.penalize()
+    assert limiteur.interval == 8.0
+
+
 def test_sans_cle_api_aucun_appel(monkeypatch):
     monkeypatch.delenv(sft.MISTRAL_API_KEY_ENV, raising=False)
 
@@ -118,8 +204,12 @@ def test_enveloppe_inattendue_ne_plante_pas(monkeypatch):
     échec définitif, pas une réponse à reparser indéfiniment."""
     monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "cle-de-test")
     monkeypatch.setattr(sft.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(sft, "MISTRAL_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
 
     class _SansChoices:
+        status_code = 200
+        headers = {}
+
         def raise_for_status(self):
             pass
 
