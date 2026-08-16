@@ -68,7 +68,10 @@ Classées par importance (détails: `docs/optimization_guide_kelly_strategy.md`)
 | Variable | Défaut | Optimisation |
 |----------|--------|--------------|
 | `convergence_fraction` | 0.5 | `11c_optimize_convergence_fraction.py` |
-| `entry_threshold_pct` | 10% | Tuning exogène (rarement) |
+| `entry_threshold_pct` | 18.23 (= écart 20 %) | `11d_optimize_entry_threshold.py` |
+
+⚠️ `entry_threshold_pct` s'exprime en **points de log × 100**, pas en pourcentage :
+`log(1.20) × 100 = 18.23` correspond à un écart de 20 %.
 
 ### TIER 2 — ÉLEVÉE
 | Variable | Défaut | Optimisation |
@@ -81,7 +84,8 @@ Classées par importance (détails: `docs/optimization_guide_kelly_strategy.md`)
 | Variable | Défaut | Optimisation |
 |----------|--------|--------------|
 | `weight_cap_pct` | 100% | Tuning par secteur |
-| `exit_threshold_ratio` | 1.0 | Tuning exogène |
+| `exit_threshold_ratio` | 0.70 | Se fixe via `11d --exit-threshold-ratio` |
+| `rebalance_log_gap_threshold` (ε) | 0.15 | `11b_optimize_rebalance_threshold.py` |
 | `daily_rebalance` | True | Choix stratégique (architectural) |
 
 ### TIER 4 — FAIBLE (Architecturaux — Ne pas changer)
@@ -95,38 +99,61 @@ Classées par importance (détails: `docs/optimization_guide_kelly_strategy.md`)
 
 ## Scripts d'optimisation
 
+Tous écrivent leur CSV sous `data/backtest_options/`.
+
 ### 11c_optimize_convergence_fraction.py
-**Optimise:** `convergence_fraction` ∈ [0.2, 1.0]
-**Temps:** 20-45 min
+**Optimise:** `convergence_fraction` ∈ `]0, 1]` — valeurs hors bornes **rejetées**
+**Temps:** 20-45 min | **Classement:** in-sample (pas de walk-forward)
 ```bash
 python 11c_optimize_convergence_fraction.py \
   --start-date 2015-01-01 \
   --end-date 2024-01-01 \
-  --fraction-grid 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0
+  --fraction-grid 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1.0
 ```
-**Sortie:** `data/backtest/optimization/convergence_*.csv`
+**Sortie:** `optimize_convergence_<stratégie>_<horodatage>.csv`
 
 ### 11_optimize_options_stops.py
-**Optimise:** `(stop_loss_pct, take_profit_pct)` joints
-**Temps:** 30-60 min
+**Optimise:** `stop_loss_pct` × take-profit (surface 2D)
+**Temps:** 30-60 min | **Classement:** walk-forward
 ```bash
 python 11_optimize_options_stops.py \
   --strategy valuation_gap_expected_value_options \
   --start-date 2015-01-01 \
-  --end-date 2024-01-01
+  --end-date 2024-01-01 \
+  --stop-loss-grid -30 -25 -20 -15 \
+  --take-profit-grid 0.6 0.8 1.0 1.2
 ```
-**Sortie:** `data/backtest/optimization/stops_*.csv`
+⚠️ Kelly porte `targets_convergence = True` : le take-profit se balaie en **fractions de
+convergence** (défaut `[0.4 … 1.2]`), pas en pourcentages. `take_profit_pct` est inerte
+sur cette stratégie.
+
+**Sortie:** `optimize_<stratégie>_<horodatage>.csv`
+
+### 11d_optimize_entry_threshold.py
+**Optimise:** `entry_threshold_pct` (seuil d'entrée)
+**Temps:** 15-45 min | **Classement:** walk-forward
+```bash
+python 11d_optimize_entry_threshold.py \
+  --strategy valuation_gap_expected_value_options \
+  --start-date 2015-01-01 \
+  --end-date 2024-01-01 \
+  --gap-grid 10 15 20 25 30 40      # en % d'écart, converti en points de log
+```
+Le seuil de sortie suit l'entrée (`sortie = entrée × exit_threshold_ratio`) : le CSV
+porte les deux, plus `ecart_equivalent_pct` pour la conversion d'unité.
+
+**Sortie:** `optimize_entry_threshold_<stratégie>_<horodatage>.csv`
 
 ### 11b_optimize_rebalance_threshold.py
-**Optimise:** `entry_threshold_pct` (ε)
-**Temps:** 15-45 min
+**Optimise:** `rebalance_log_gap_threshold` (ε) — churn de rééquilibrage, **pas** le seuil d'entrée
+**Temps:** 15-45 min | **Classement:** walk-forward
 ```bash
 python 11b_optimize_rebalance_threshold.py \
   --strategy valuation_gap_expected_value_options \
   --start-date 2015-01-01 \
-  --threshold-grid 0.05 0.075 0.10 0.125 0.15
+  --epsilon-grid 0 0.05 0.10 0.15 0.20 0.30
 ```
-**Sortie:** `data/backtest/optimization/rebalance_*.csv`
+**Sortie:** `optimize_rebalance_<stratégie>_<horodatage>.csv`
 
 ## Workflow d'optimisation recommandé (4 semaines)
 
@@ -196,9 +223,10 @@ tests/
   └─ test_compare_options_strategies.py          # Tests comparaison
 
 scripts d'optimisation:
-  11c_optimize_convergence_fraction.py           # Grid-search fraction
-  11_optimize_options_stops.py                   # Grid-search stops
-  11b_optimize_rebalance_threshold.py            # Grid-search seuil
+  11c_optimize_convergence_fraction.py           # Grid-search fraction de convergence
+  11_optimize_options_stops.py                   # Grid-search stops (surface 2D)
+  11d_optimize_entry_threshold.py                # Grid-search seuil d'entrée
+  11b_optimize_rebalance_threshold.py            # Grid-search ε (churn de rééquilibrage)
 
 scripts de comparaison:
   compare_options_strategies.py                  # Côte à côte 3 stratégies

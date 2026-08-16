@@ -111,14 +111,14 @@ python 11c_optimize_convergence_fraction.py \
 
 **À vérifier après:**
 - [ ] Script termine
-- [ ] Créé `data/backtest/optimization/convergence_*.csv`
+- [ ] Créé `data/backtest_options/optimize_convergence_<stratégie>_<horodatage>.csv`
 
 ### Étape 2.2 — Analyser la grille
 
 **Lire la CSV:**
 ```bash
 # Exemple d'affichage rapide
-head -20 data/backtest/optimization/convergence_*.csv
+head -20 data/backtest_options/optimize_convergence_*.csv
 ```
 
 **Tableau à créer:**
@@ -205,9 +205,14 @@ python 11_optimize_options_stops.py \
   --strategy valuation_gap_expected_value_options \
   --start-date 2015-01-01 \
   --end-date 2024-01-01 \
-  --stop-grid -30 -25 -20 -15 \
-  --profit-grid 20 25 30 35
+  --stop-loss-grid -30 -25 -20 -15 \
+  --take-profit-grid 0.6 0.8 1.0 1.2
 ```
+
+⚠️ **Unité du take-profit.** Kelly porte `targets_convergence = True` : la grille attend
+des **fractions de convergence** (0.4–1.2), pas des pourcentages. Passer `20 25 30 35`
+ici testerait des fractions de 2000 % à 3500 %. Sur cette stratégie, `take_profit_pct`
+est inerte — c'est `take_profit_convergence_fraction` qui agit.
 
 **À vérifier pendant:**
 - [ ] Voir des logs de progession (chaque paire)
@@ -215,34 +220,39 @@ python 11_optimize_options_stops.py \
 
 **À vérifier après:**
 - [ ] Script termine
-- [ ] Créé `data/backtest/optimization/stops_*.csv`
+- [ ] Créé `data/backtest_options/optimize_<stratégie>_<horodatage>.csv`
 
 ### Étape 3.2 — Analyser la heatmap
 
 **Lire la CSV et construire une heatmap:**
 
 ```python
+import glob
 import pandas as pd
-stops = pd.read_csv("data/backtest/optimization/stops_*.csv")
-# Créer pivot: stop-loss (lignes) x take-profit (colonnes)
-# Valeurs = CAGR ou Sharpe
+
+stops = pd.read_csv(sorted(glob.glob("data/backtest_options/optimize_*.csv"))[-1])
+# take_profit porte la FRACTION de convergence pour Kelly (colonne "take_profit")
+print(stops.pivot_table(index="stop_loss_pct", columns="take_profit",
+                        values="train_sharpe_ratio"))
 ```
 
-**Heatmap attendue (exemple):**
+**Heatmap attendue (exemple, valeurs = Sharpe):**
 
 ```
-Take-Profit →  20    25    30    35
+Take-Profit →  0.6   0.8   1.0   1.2      (fractions de convergence)
 Stop-Loss ↓
--30            8.2%  8.5%  8.3%  8.1%
--25            8.4%  8.7%  8.6%  8.4%   ← OPTIMUM (8.7%)
--20            8.1%  8.4%  8.5%  8.3%
--15            7.9%  8.2%  8.4%  8.2%
+-30            0.82  0.85  0.83  0.81
+-25            0.84  0.87  0.86  0.84   ← OPTIMUM (0.87)
+-20            0.81  0.84  0.85  0.83
+-15            0.79  0.82  0.84  0.82
 ```
 
 **Interprétation:**
-- [ ] Trouver la cellule avec CAGR max
-- [ ] Optimale = (-25%, 25%) dans cet exemple
+- [ ] Trouver la cellule avec `train_sharpe_ratio` max
+- [ ] Optimale = (-25 %, fraction 0.8) dans cet exemple
 - [ ] Vérifier que c'est un pic, pas un plateau
+- [ ] Regarder `test_sharpe_ratio` sur cette cellule : si l'écart avec le train est fort,
+      l'optimum ne survit pas aux données qui ne l'ont pas choisi
 
 ### Étape 3.3 — Mettre à jour les engine_defaults
 
@@ -283,6 +293,56 @@ python compare_options_strategies.py \
 
 - [ ] Kelly s'est amélioré?
 - [ ] Gap vs ATM/Multiples réduit?
+
+---
+
+## 🟠 PHASE 3bis: OPTIMISER LE SEUIL D'ENTRÉE (Semaine 3, 15-45 min)
+
+**Objectif:** Trouver le seuil de valorisation qui fait entrer les bonnes lignes
+
+### Étape 3bis.1 — Grid-search sur le seuil
+
+```bash
+python 11d_optimize_entry_threshold.py \
+  --strategy valuation_gap_expected_value_options \
+  --start-date 2015-01-01 \
+  --end-date 2024-01-01 \
+  --gap-grid 10 15 20 25 30 40
+```
+
+⚠️ **Unité.** `entry_threshold_pct` est en **points de log × 100**, pas en pourcentage.
+`--gap-grid` accepte des % d'écart et fait la conversion ; `--entry-threshold-grid`
+attend l'unité interne. Le défaut en production est 18.23 (= écart de 20 %).
+
+**À vérifier après:**
+- [ ] Script termine sans erreur
+- [ ] Créé `data/backtest_options/optimize_entry_threshold_*.csv`
+
+### Étape 3bis.2 — Analyser la grille
+
+| Seuil (log) | Écart % | Sortie | Trades | Exposition % | CAGR % | train_sharpe | test_sharpe |
+|-------------|---------|--------|--------|--------------|--------|--------------|-------------|
+| 9.53 | 10 | ? | ? | ? | ? | ? | ? |
+| 13.98 | 15 | ? | ? | ? | ? | ? | ? |
+| 18.23 | 20 | ? | ? | ? | ? | ? | ? (défaut) |
+| 22.31 | 25 | ? | ? | ? | ? | ? | ? |
+| 26.24 | 30 | ? | ? | ? | ? | ? | ? |
+| 33.65 | 40 | ? | ? | ? | ? | ? | ? |
+
+**Ce qu'il faut lire — et pas seulement le Sharpe:**
+- [ ] **`num_trades`** : un seuil haut finit par n'ouvrir que quelques positions. Le script
+      écarte du classement celles sous `--min-trades` (15 par défaut), mais les garde au CSV
+- [ ] **`avg_exposure_pct`** : un seuil haut peut « améliorer » le Sharpe en n'investissant
+      plus. Du cash qui dort n'est pas une performance
+- [ ] **`exit_threshold_pct`** : il suit l'entrée (× 0.70). La moitié du changement testé
+      est là, pas dans le seuil d'entrée seul
+- [ ] **`test_sharpe_ratio`** vs `train_sharpe_ratio` : c'est le second qui dit si l'optimum
+      survit à des données qui ne l'ont pas choisi
+
+### Étape 3bis.3 — Mettre à jour le défaut
+
+- [ ] Éditer `config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT` (en points de log)
+- [ ] Re-run phase 1 pour mesurer l'impact total
 
 ---
 
@@ -378,11 +438,14 @@ python run_pipeline_quarterly.py \
 **Cause:** Grille trop étroite (chercher le vrai optimum dehors)
 
 **Actions:**
-1. [ ] Élargir grille:
+1. [ ] Élargir la grille — mais **seulement vers le bas** :
    ```bash
    python 11c_optimize_convergence_fraction.py \
-     --fraction-grid 0.1 0.15 0.2 ... 1.0 1.1 1.2 1.3
+     --fraction-grid 0.05 0.1 0.15 0.2 0.3 0.4 0.5
    ```
+   ⚠️ La stratégie **rejette** toute fraction hors de `]0, 1]` (`ValueError` au démarrage).
+   Un pic collé à 1.0 ne peut donc pas être « débordé » : il signifie que la thèse
+   supporterait une convergence complète, et c'est le résultat lui-même.
 2. [ ] Re-analyser (2.2)
 
 ### ❌ Problème: Phase 3 — Pas de pic clair (plateau)
@@ -419,15 +482,18 @@ Après toutes les phases:
 - [ ] **Phase 1 OK:** Baseline établie, Kelly évalué
 - [ ] **Phase 2 OK:** `convergence_fraction` optimisée
 - [ ] **Phase 3 OK:** `(stop_loss, take_profit)` optimisés
+- [ ] **Phase 3bis OK:** `entry_threshold_pct` optimisé
 - [ ] **Phase 4 OK:** Généralisation OOS validée
 
 **Fichiers modifiés:**
-- [ ] `backtest/strategies/valuation_gap_expected_value_options.py` (mis à jour)
+- [ ] `backtest/strategies/valuation_gap_expected_value_options.py` (convergence_fraction, stops)
+- [ ] `config.py` (`OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT` si phase 3bis a bougé le seuil)
 - [ ] Tous les commits poussés vers branche
 
-**Résultats à sauvegarder:**
-- [ ] `data/backtest/optimization/convergence_*.csv`
-- [ ] `data/backtest/optimization/stops_*.csv`
+**Résultats à sauvegarder** (tous sous `data/backtest_options/`):
+- [ ] `optimize_convergence_<stratégie>_<horodatage>.csv`
+- [ ] `optimize_<stratégie>_<horodatage>.csv` (stops)
+- [ ] `optimize_entry_threshold_<stratégie>_<horodatage>.csv`
 - [ ] `data/backtest/comparisons/comparison_*.csv`
 - [ ] Screenshots/tableaux comparatifs IS vs OOS
 

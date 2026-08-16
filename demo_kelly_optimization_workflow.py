@@ -17,6 +17,10 @@ ValuationGapExpectedValueOptionsStrategy:
         - Grid-search stop-loss/take-profit
         - Heatmap de performance
 
+    Phase 3bis (Seuil d'entrée):
+        - Grid-search sur entry_threshold_pct
+        - Arbitrage sélectivité / nombre de positions / exposition
+
     Phase 4 (Validation):
         - Backtest out-of-sample sur données non-vues
         - Confirmation de la stabilité de l'optimisation
@@ -178,16 +182,62 @@ def phase_3_stops(args: argparse.Namespace) -> int:
         return 1
 
     logger.info("\n📊 RÉSULTATS PHASE 3 (Stops):")
-    logger.info("   - Grille stops: data/backtest/optimization/stops_*.csv")
+    logger.info("   - Grille stops: data/backtest_options/optimize_<stratégie>_<horodatage>.csv")
     logger.info("\n   Interprétation:")
     logger.info("   → Heatmap (stop_loss vs take_profit) avec Sharpe")
-    logger.info("   → Identifier la cellule optimale")
-    logger.info("   → Vérifier stabilité (pic vs plateau)")
+    logger.info("   → Kelly vise une valeur théorique : la colonne 'take_profit' porte une")
+    logger.info("     FRACTION de convergence (0.4-1.2), pas un pourcentage")
+    logger.info("   → Identifier la cellule optimale, puis lire test_sharpe_ratio dessus")
     logger.info("\n   Actions recommandées:")
     logger.info("   1. Créer une heatmap CSV → Excel/matplotlib")
-    logger.info("   2. Identifier la combinaison (stop, profit) optimale")
-    logger.info("   3. Affiner autour du pic si nécessaire")
+    logger.info("   2. Identifier la combinaison (stop, fraction) optimale")
+    logger.info("   3. Vérifier que l'optimum survit hors échantillon (test_sharpe_ratio)")
     logger.info("   4. Mettre à jour les engine_defaults dans la stratégie")
+    logger.info("   5. Re-run phase 1 pour mesurer l'impact total\n")
+
+    return 0
+
+
+def phase_3bis_entry_threshold(args: argparse.Namespace) -> int:
+    """
+    Phase 3bis: Optimiser le seuil d'entrée.
+
+    Balaie `entry_threshold_pct`, l'écart de valorisation minimal qui fait
+    entrer une ligne dans l'univers des candidates. Le seuil de sortie suit
+    (sortie = entrée x exit_threshold_ratio), donc la grille déplace les deux
+    à hystérésis constante.
+    """
+    logger.info("\n" + "🟠 " * 20)
+    logger.info("PHASE 3bis: OPTIMISER LE SEUIL D'ENTRÉE (15-45 min)")
+    logger.info("🟠 " * 20 + "\n")
+
+    cmd = [
+        sys.executable, "11d_optimize_entry_threshold.py",
+        "--strategy", "valuation_gap_expected_value_options",
+    ]
+    if args.start_date:
+        cmd += ["--start-date", args.start_date]
+    if args.end_date:
+        cmd += ["--end-date", args.end_date]
+    if args.workers:
+        cmd += ["--workers", str(args.workers)]
+
+    if run_command(cmd, "Grid-search sur entry_threshold_pct") != 0:
+        return 1
+
+    logger.info("\n📊 RÉSULTATS PHASE 3bis (Seuil d'entrée):")
+    logger.info("   - Grille: data/backtest_options/optimize_entry_threshold_<stratégie>_*.csv")
+    logger.info("\n   Interprétation:")
+    logger.info("   → Le seuil est en POINTS DE LOG x 100 : la colonne ecart_equivalent_pct")
+    logger.info("     donne l'écart en %% (18.23 points = 20 %% d'écart)")
+    logger.info("   → num_trades : un seuil haut concentre le portefeuille")
+    logger.info("   → avg_exposure_pct : un seuil haut peut « gagner » en n'investissant plus")
+    logger.info("   → exit_threshold_pct : il suit l'entrée, la moitié du changement est là")
+    logger.info("\n   Actions recommandées:")
+    logger.info("   1. Repérer le pic sur train_sharpe_ratio")
+    logger.info("   2. Vérifier test_sharpe_ratio sur ce pic (généralisation)")
+    logger.info("   3. Écarter les seuils sous le plancher de trades (--min-trades)")
+    logger.info("   4. Mettre à jour config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT")
     logger.info("   5. Re-run phase 1 pour mesurer l'impact total\n")
 
     return 0
@@ -248,8 +298,9 @@ def main() -> None:
     parser.add_argument(
         "--phase",
         default="1",
-        choices=["1", "2", "3", "4", "all"],
-        help="Quelle(s) phase(s) exécuter (défaut: 1)",
+        choices=["1", "2", "3", "3bis", "4", "all"],
+        help="Quelle(s) phase(s) exécuter (défaut: 1). 'all' les enchaîne dans l'ordre "
+             "1 → 2 → 3 → 3bis → 4.",
     )
     parser.add_argument(
         "--start-date",
@@ -288,11 +339,12 @@ def main() -> None:
         "1": phase_1_baseline,
         "2": phase_2_convergence,
         "3": phase_3_stops,
+        "3bis": phase_3bis_entry_threshold,
         "4": phase_4_validation,
     }
 
     if args.phase == "all":
-        phases_to_run = ["1", "2", "3", "4"]
+        phases_to_run = ["1", "2", "3", "3bis", "4"]
     else:
         phases_to_run = [args.phase]
 

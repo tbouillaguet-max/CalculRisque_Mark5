@@ -28,9 +28,10 @@ R(K) = (payoff(K) / prime(K)) - 1
     - μ = 35% (fraction 1.75) → K/S₀ ≈ 1.42
 
 **Optimisation:**
-- **Outil:** `11c_optimize_convergence_fraction.py`
-- **Méthode:** Grid-search (défaut: 0.2 à 1.0 par pas de 0.1)
-- **Approche:** In-sample uniquement (charge les données UNE FOIS, rejoint le backtest pour chaque fraction)
+- **Outil:** `11c_optimize_convergence_fraction.py` (Kelly est sa stratégie par défaut)
+- **Méthode:** Grid-search (défaut: `[0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0]`)
+- **Approche:** In-sample uniquement — pas de walk-forward dans ce script, contrairement à 11, 11b et 11d
+- **Contrainte:** la stratégie **rejette** toute fraction hors de `]0, 1]` (`ValueError`). Une grille contenant 1.1 ou 1.2 échoue avant de tourner.
 - **Commandes typiques:**
   ```bash
   # Grid-search complet sur la période 2015-2024
@@ -43,15 +44,27 @@ R(K) = (payoff(K) / prime(K)) - 1
 
 ---
 
-#### 2. `entry_threshold_pct` (hérité de MultiplesStrategy, défaut: 10%)
-- **Rôle:** Filtre de valorisation — écart de log(cours/valeur) qui décllenche l'ouverture
-- **Impact:** Affecte le volume de positions ouvertes et la concentration du portefeuille
-- **Calibration:** Trop bas = bruit, trop haut = trop peu de candidats
-- **Défaut du référentiel:** Hérité depuis `backtest/strategies/valuation_gap_multiples_options.py`
+#### 2. `entry_threshold_pct` (hérité de MultiplesStrategy, défaut: 18.23)
+- **Rôle:** Filtre de valorisation — écart minimal qui fait entrer une ligne dans l'univers des candidates
+- **⚠️ Unité:** **points de log × 100**, PAS un pourcentage d'écart. Le défaut `config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT` vaut `log(1.20) × 100 = 18.23`, soit un écart de **20 %**. Lire « 30 » comme « 30 % » (c'est 35 %) fausse toute la grille.
+- **Impact:** Affecte le nombre de candidates, donc la concentration du portefeuille ET l'exposition moyenne (un seuil haut laisse dormir du cash)
+- **Couplage:** `exit_threshold_pct = entry_threshold_pct × exit_threshold_ratio` — balayer l'entrée déplace **aussi** la sortie, à hystérésis constante
+- **Calibration:** Trop bas = bruit du modèle de multiples ; trop haut = titres en difficulté réelle, où l'écart s'explique autrement qu'par une erreur de marché
 
 **Optimisation:**
-- **Méthode:** Tuning exogène par régime de marché ou via 11b (ε threshold)
-- **Approche:** Rarement modifié — l'ajustement se fait plutôt sur le seuil de rééquilibrage
+- **Outil:** `11d_optimize_entry_threshold.py`
+- **Méthode:** Grid-search avec walk-forward (`--train-fraction 0.60` par défaut)
+- **Commandes typiques:**
+  ```bash
+  # Grille par défaut (écarts de 10 % à 50 %)
+  python 11d_optimize_entry_threshold.py --start-date 2015-01-01 --end-date 2024-01-01
+
+  # Saisie directe en % d'écart, sans conversion mentale
+  python 11d_optimize_entry_threshold.py --gap-grid 10 15 20 25 30 40
+
+  # Ou en points de log, si on préfère l'unité interne
+  python 11d_optimize_entry_threshold.py --entry-threshold-grid 9.53 13.98 18.23 22.31
+  ```
 
 ---
 
@@ -200,7 +213,7 @@ python 11c_optimize_convergence_fraction.py \
   --start-date 2015-01-01 \
   --end-date 2024-01-01
 
-# Lecture des résultats: data/backtest/optimization/convergence_*.csv
+# Lecture: data/backtest_options/optimize_convergence_<stratégie>_<horodatage>.csv
 # Colonne "cagr_pct" indique le CAGR pour chaque fraction
 ```
 
@@ -218,38 +231,67 @@ python 11_optimize_options_stops.py \
   --strategy valuation_gap_expected_value_options \
   --start-date 2015-01-01 \
   --end-date 2024-01-01 \
-  --stop-grid -30 -25 -20 -15 \
-  --profit-grid 20 25 30 35
+  --stop-loss-grid -30 -25 -20 -15 \
+  --take-profit-grid 0.6 0.8 1.0 1.2
 
-# Lecture: data/backtest/optimization/stops_*.csv
+# Lecture: data/backtest_options/optimize_<stratégie>_<horodatage>.csv
 # Heatmap (stop_loss vs take_profit) avec Sharpe ou CAGR
 ```
 
+**⚠️ Unité du take-profit pour Kelly.** La stratégie porte `targets_convergence = True` :
+le mode `auto` bascule donc sur **`--take-profit-mode convergence`**, et la grille attend
+des **fractions de convergence** (défaut `[0.4 … 1.2]`), pas des pourcentages. Sur une
+stratégie de convergence, `take_profit_pct` est **inerte** — le balayer ne mesurerait rien.
+
 **Considérations:**
 - Stops plus serrés (-30%) = moins de perte/trade mais plus de whipsaws
-- Profits plus hauts (35%) = attendre plus longtemps, theta risk plus élevé
+- Fraction de convergence plus haute (1.0+) = viser la valeur théorique entière, donc attendre plus longtemps et subir plus de theta
 
 ---
 
-#### Chemin C: `entry_threshold_pct` (ε, MOYENNE)
+#### Chemin C: `entry_threshold_pct` — seuil d'entrée (HAUTE)
 ```bash
-# Grid-search sur le seuil d'écart
+# Grid-search sur le seuil d'entrée, saisi en % d'écart
+python 11d_optimize_entry_threshold.py \
+  --strategy valuation_gap_expected_value_options \
+  --start-date 2015-01-01 \
+  --end-date 2024-01-01 \
+  --gap-grid 10 15 20 25 30 40
+
+# Lecture: data/backtest_options/optimize_entry_threshold_<stratégie>_<horodatage>.csv
+```
+
+Le tableau porte `ecart_equivalent_pct` et `exit_threshold_pct` à côté du seuil, pour que
+la conversion d'unité et le couplage entrée/sortie restent visibles.
+
+---
+
+#### Chemin D: `rebalance_log_gap_threshold` (ε) — churn de rééquilibrage (MOYENNE)
+```bash
+# Grid-search sur ε — un paramètre du MOTEUR, pas de la stratégie
 python 11b_optimize_rebalance_threshold.py \
   --strategy valuation_gap_expected_value_options \
   --start-date 2015-01-01 \
-  --threshold-grid 0.05 0.075 0.10 0.125 0.15
+  --epsilon-grid 0 0.05 0.10 0.15 0.20 0.30
 
-# Lecture: data/backtest/optimization/rebalance_*.csv
+# Lecture: data/backtest_options/optimize_rebalance_<stratégie>_<horodatage>.csv
 ```
+
+**À ne pas confondre avec le chemin C.** ε ne filtre pas les entrées : il contrôle le
+redimensionnement d'une position **déjà détenue** sur dépôt SEC (une position n'est
+retouchée que si `|log(V/P) − last_rebalance_log_gap|` dépasse ε). C'est un levier de
+friction et de churn, pas de sélection. La colonne à lire est `num_rebalance_trades`.
 
 ---
 
 ### 2. OPTIMISATION SECONDAIRE — Tuning manuel
 
-#### Variables de tuning exogène:
+Ces variables n'ont **pas** de script de grid-search dédié : elles s'ajustent à la main,
+en relançant `10_backtest_options.py` et en comparant.
+
 - **`strike_grid_n_sigma`:** Observer l'optimum sur plusieurs backtests; élargir si systématiquement au bord
 - **`weight_cap_pct`:** Par secteur, selon concentration maximale tolérable
-- **`exit_threshold_ratio`:** Si signal oscillant, tester 0.8–1.2
+- **`exit_threshold_ratio`:** Si signal oscillant, tester 0.8–1.2. Se fixe aussi depuis `11d_optimize_entry_threshold.py --exit-threshold-ratio`, où il reste constant sur toute la grille
 
 **Exemple: Tuning de `strike_grid_n_sigma`**
 ```python
@@ -425,11 +467,16 @@ Les variables suivantes sont des choix architecturaux et font partie de la **th�
 
 | Script | Optimise | Méthode | Temps typique |
 |--------|----------|---------|---------------|
-| `11c_optimize_convergence_fraction.py` | `convergence_fraction` | Grid-search in-sample | 10–30 min |
-| `11_optimize_options_stops.py` | `(stop_loss, take_profit)` | Grid-search in-sample | 20–60 min |
-| `11b_optimize_rebalance_threshold.py` | `entry_threshold_pct` | Grid-search in-sample | 15–45 min |
+| `11c_optimize_convergence_fraction.py` | `convergence_fraction` | Grid-search **in-sample** | 10–30 min |
+| `11_optimize_options_stops.py` | `stop_loss_pct` × take-profit | Grid-search + walk-forward | 20–60 min |
+| `11d_optimize_entry_threshold.py` | `entry_threshold_pct` | Grid-search + walk-forward | 15–45 min |
+| `11b_optimize_rebalance_threshold.py` | `rebalance_log_gap_threshold` (ε) | Grid-search + walk-forward | 15–45 min |
 | `compare_options_strategies.py` | Comparaison 3 stratégies | Backtest complet | 30–90 min |
 | `10_backtest_options.py` | Single strategy run | Backtest complet | 10–30 min |
+
+Seul 11c classe **in-sample** ; les trois autres réservent une part de l'historique
+(`--train-fraction`, 0.60 par défaut) pour juger l'optimum sur des données qui ne l'ont
+pas choisi, et affichent `test_sharpe_ratio` à côté de `train_sharpe_ratio`.
 
 ---
 
