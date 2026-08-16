@@ -343,27 +343,38 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         """Mêmes candidates et mêmes poids que la stratégie multiples, mais le
         strike de chaque ligne est optimisé plutôt que posé à mi-chemin.
 
-        L'ASTUCE DU STRIKE, ET SA FRAGILITÉ. Le moteur ne sait pas recevoir un
-        strike : il reçoit un PRIX DE RÉFÉRENCE et retient
-        (strike_reference_price + spot) / 2 (options_engine._select_contract).
-        Pour qu'il retienne K*, il faut donc lui passer 2 x K* - spot, de sorte
-        que la moyenne redonne K*. C'est une inversion d'une formule qui vit
-        ailleurs : toute évolution de _select_contract la casse SILENCIEUSEMENT
-        (le run continuerait, sur un strike simplement faux).
+        LE STRIKE EST TRANSMIS EN MONEYNESS (K* / spot), pas en prix de
+        référence. La première version inversait la moyenne du moteur en lui
+        passant 2K* - spot ; c'était faux sur trois points, tous constatés en
+        run réel :
 
-        Deux conséquences à connaître :
+          1. Le prix de référence est REJOUÉ TEL QUEL au roulement, des mois
+             plus tard, contre un spot qui a bougé. Sur un titre qui a baissé,
+             la moyenne (référence + spot) / 2 devenait négative et faisait
+             échouer le logarithme de Black-Scholes en plein backtest.
+          2. Quand un signal frais existait, le moteur ÉCRASAIT la référence
+             par la valeur théorique (_roll_position) : le contrat renouvelé
+             repartait sur le strike à mi-chemin de la stratégie multiples, et
+             l'optimisation était silencieusement perdue à chaque roulement.
+          3. La prise de gain par convergence lit strike_reference_price comme
+             une valeur théorique (_convergence_fraction) : lui donner
+             2K* - spot faisait viser 80 % du chemin vers une grandeur qui
+             n'avait aucun sens économique.
 
-          1. Le prix de référence transmis n'est PAS une valeur théorique,
-             contrairement aux autres stratégies. Il peut même être négatif si
-             K* < spot / 2 (strike très dans la monnaie) -- ce qui reste
-             inoffensif, la seule chose qui compte étant la moyenne.
-          2. Le spot utilisé ici est la CLÔTURE du jour de décision, alors que
-             le moteur exécutera à l'OUVERTURE du lendemain. Le strike retenu
-             dérive donc de la moitié du mouvement de nuit -- soit quelques
-             dixièmes de pour cent de spot, contre un pas de grille de
-             0,25 x sigma x racine(T) (environ 10 % de spot à sigma = 30 % et
-             deux ans). L'écart est très inférieur au pas de grille, donc sans
-             effet sur le contrat effectivement retenu.
+        Une moneyness n'a aucun de ces défauts : elle est relative au spot,
+        donc valide à toute date, et c'est déjà ainsi que la grille de
+        candidats est définie (multiplicative en spot). `strike_reference_price`
+        retrouve du même coup son sens documenté -- la valeur théorique -- et
+        pilote correctement la prise de gain par convergence et le
+        rafraîchissement au roulement.
+
+        Le roulement reconduit la moneyness sans réoptimiser : le contrat est
+        recentré sur le cours du jour, mais la volatilité et l'écart de
+        valorisation ayant pu changer, ce n'est plus exactement le strike que
+        Kelly choisirait aujourd'hui. C'est une approximation assumée -- le
+        moteur ne sait pas redemander une optimisation en cours de route, et la
+        reconduction relative est de loin plus proche du choix initial que le
+        retour au mi-chemin.
         """
         base = super()._targets_from(candidates)
         if not base:
@@ -387,7 +398,9 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
 
             cibles[symbol] = {
                 **cible,
-                # 2K* - spot : inverse la moyenne du moteur (voir ci-dessus).
-                "strike_reference_price": 2.0 * strike - spot,
+                "strike_moneyness": strike / spot,
+                # Conservée telle quelle (et NON inversée) : c'est elle que
+                # lisent la prise de gain par convergence et le roulement.
+                "strike_reference_price": theoretical,
             }
         return cibles

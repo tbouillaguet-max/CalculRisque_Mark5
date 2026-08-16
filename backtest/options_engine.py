@@ -283,6 +283,15 @@ class OptionPosition:
     # moteur), conservé pour pouvoir reconstruire le même type de contrat lors
     # d'un roulement.
     strike_reference_price: Optional[float] = None
+    # Strike demandé en MONEYNESS (K / spot) plutôt qu'en prix de référence.
+    # Une stratégie qui OPTIMISE son strike ne peut pas l'exprimer par un prix
+    # de référence : celui-ci est moyenné avec le spot d'exécution, et surtout
+    # il est rejoué tel quel au roulement, des mois plus tard, contre un spot
+    # qui a bougé. La moneyness, elle, reste valide à tout spot -- c'est
+    # d'ailleurs ainsi que ces stratégies définissent leur grille de candidats
+    # (multiplicative en spot). Prioritaire sur strike_reference_price quand
+    # les deux sont fournis.
+    strike_moneyness: Optional[float] = None
     tenor_days: Optional[int] = None
 
     # Dernière prime reprise par Black-Scholes, et le jour où elle l'a été.
@@ -841,6 +850,7 @@ class OptionsBacktestEngine:
                     symbol, spec.get("option_type"), order.target_dollar, spot, today, order.reason,
                     strike_reference_price=spec.get("strike_reference_price"),
                     tenor_days=spec.get("tenor_days"),
+                    strike_moneyness=spec.get("strike_moneyness"),
                 )
             self._pending_spec.pop(symbol, None)
         self.pending_orders = still_pending
@@ -1113,14 +1123,34 @@ class OptionsBacktestEngine:
         today: pd.Timestamp,
         strike_reference_price: Optional[float] = None,
         tenor_days: Optional[int] = None,
+        strike_moneyness: Optional[float] = None,
     ) -> dict:
         """Contrat retenu pour une ENTRÉE. Par défaut (aucun argument
         optionnel) : ATM à l'échéance cible du moteur, comportement
         historique. Avec strike_reference_price, le strike visé est à
         mi-chemin entre ce prix de référence (typiquement la valorisation
-        théorique) et le spot d'exécution."""
+        théorique) et le spot d'exécution. Avec strike_moneyness, il vaut
+        directement moneyness x spot -- forme réservée aux stratégies qui
+        CALCULENT leur strike (cf. OptionPosition.strike_moneyness)."""
         tenor = int(tenor_days) if tenor_days else self.target_tenor_days
-        target_strike = (strike_reference_price + spot) / 2 if strike_reference_price is not None else None
+        if strike_moneyness is not None and strike_moneyness > 0:
+            target_strike = strike_moneyness * spot
+        elif strike_reference_price is not None:
+            target_strike = (strike_reference_price + spot) / 2
+        else:
+            target_strike = None
+        # Un strike nul ou négatif ferait échouer le logarithme de
+        # Black-Scholes en plein run. La moyenne avec le spot peut y conduire
+        # dès qu'un prix de référence négatif est rejoué contre un spot qui a
+        # chuté depuis -- garde-fou, pas correctif : l'appelant doit fournir
+        # une référence qui garde un sens à tout spot.
+        if target_strike is not None and target_strike <= 0:
+            logger.warning(
+                "%s : strike visé non positif (%.4f) au spot %.2f -- repli sur l'ATM. "
+                "Vérifie la référence de strike transmise par la stratégie.",
+                symbol, target_strike, spot,
+            )
+            target_strike = None
 
         # L'échéance visée est transmise même quand la stratégie n'en impose
         # aucune : sans elle, un snapshot réel disponible ferait entrer sur le
@@ -1498,6 +1528,7 @@ class OptionsBacktestEngine:
         reason: str,
         strike_reference_price: Optional[float] = None,
         tenor_days: Optional[int] = None,
+        strike_moneyness: Optional[float] = None,
     ) -> None:
         existing = self.positions.get(symbol)
         if existing is not None and option_type is not None and existing.option_type != option_type:
@@ -1526,6 +1557,7 @@ class OptionsBacktestEngine:
         contract = self._select_contract(
             symbol, option_type, spot, today,
             strike_reference_price=strike_reference_price, tenor_days=tenor_days,
+            strike_moneyness=strike_moneyness,
         )
         delta = contract["delta"] or 0.0
         if abs(delta) < 1e-6:
@@ -1624,6 +1656,7 @@ class OptionsBacktestEngine:
                 # Références de stop posées ICI et nulle part ailleurs.
                 stop_reference_premium=effective_premium, stop_reference_spot=spot,
                 strike_reference_price=strike_reference_price, tenor_days=tenor_days,
+                strike_moneyness=strike_moneyness,
                 vol_ratio=self._entry_vol_ratio(symbol, today, contract["vol"]),
                 last_rebalance_log_gap=new_log_gap, open_reason=reason,
             )
@@ -2056,6 +2089,12 @@ class OptionsBacktestEngine:
         self._open_or_resize(
             symbol, option_type, target_dollar, spot, today, "roll",
             strike_reference_price=reference, tenor_days=tenor_days,
+            # Reconduite TELLE QUELLE : une moneyness est relative au spot,
+            # donc elle reste valide des mois plus tard, contrairement à un
+            # prix de référence figé à l'entrée. Le strike du contrat renouvelé
+            # est ainsi recentré sur le cours du jour, sans que le moteur ait à
+            # redemander une optimisation à la stratégie.
+            strike_moneyness=pos.strike_moneyness,
         )
 
     def _handle_stale_underlyings(self, today: pd.Timestamp) -> set[str]:
@@ -2320,6 +2359,7 @@ class OptionsBacktestEngine:
             "option_type": target["option_type"],
             "strike_reference_price": target.get("strike_reference_price"),
             "tenor_days": target.get("tenor_days"),
+            "strike_moneyness": target.get("strike_moneyness"),
         }
         self.pending_orders[symbol] = _PendingOrder(target["weight"] * active_budget, reason, today)
 
