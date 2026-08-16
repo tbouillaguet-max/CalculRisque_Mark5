@@ -384,6 +384,35 @@ analytique, donc la convergence est géométrique — mesuré : 1e−13 dès 32 
 Une quadrature et non un Monte-Carlo, dont le bruit d'échantillonnage ferait
 changer le strike d'un run à l'autre sans qu'aucune donnée n'ait bougé.
 
+**Transmission du strike au moteur.** Le moteur ne sait pas recevoir un strike
+absolu : `strike_reference_price` est *moyenné* avec le spot d'exécution. Cette
+stratégie transmet donc son strike en **moneyness** (`strike_moneyness = K*/spot`),
+et laisse `strike_reference_price` à sa valeur documentée — la valeur théorique,
+qui pilote la prise de gain par convergence et le rafraîchissement au roulement.
+
+Une première version inversait la moyenne (`2K* − spot`). C'était faux sur trois
+points, tous constatés en run réel :
+
+1. **Crash.** Le prix de référence est rejoué tel quel sur les ordres en attente
+   et au roulement, contre un spot qui a bougé depuis. Sous un certain niveau, la
+   moyenne devenait négative et `math.log(spot/strike)` levait `ValueError` en
+   plein backtest. La chute nécessaire dépend de σ, qui fixe la borne basse de la
+   grille : −44 % à σ = 30 %, mais −84 % à σ = 60 %.
+2. **Perte silencieuse de l'optimisation.** Quand un signal frais existait,
+   `_roll_position` écrasait la référence par la valeur théorique : le contrat
+   renouvelé repartait sur le strike à mi-chemin de la stratégie multiples, donc
+   l'optimisation était perdue à chaque roulement (tous les 9 mois).
+3. **Take-profit incohérent.** `_convergence_fraction` lit
+   `strike_reference_price` comme une valeur théorique ; lui donner `2K* − spot`
+   faisait viser 80 % du chemin vers une grandeur sans sens économique.
+
+Le roulement reconduit la moneyness **sans réoptimiser** : le contrat est
+recentré sur le cours du jour, mais σ et l'écart de valorisation ayant pu
+changer, ce n'est plus exactement le strike que Kelly choisirait aujourd'hui.
+Approximation assumée — le moteur ne sait pas redemander une optimisation en
+cours de route, et la reconduction relative reste bien plus proche du choix
+initial que le retour au mi-chemin.
+
 **Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,5).
 `fraction = 1` supposerait que le cours atteint exactement sa valeur théorique
 à l'échéance — hypothèse que rien n'étaye. Le défaut de 0,5 reprend l'hypothèse
