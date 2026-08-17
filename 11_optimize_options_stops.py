@@ -108,6 +108,22 @@ def _load_data(args: argparse.Namespace) -> dict:
     }
 
 
+def _init_worker(args: argparse.Namespace) -> None:
+    """Garantit que _DATA est rempli DANS le worker, quelle que soit la façon
+    dont le pool a démarré le process.
+
+    Sous fork (défaut Linux), le worker hérite du _DATA déjà rempli par le
+    parent : il n'y a rien à charger, et le test ci-dessous court-circuite.
+    Sous spawn (défaut Windows, et macOS depuis 3.8), le worker ré-importe le
+    module à neuf -- _DATA y vaut {} et CHAQUE tâche échouerait en
+    KeyError: 'price_panel'. C'est exactement ce qui se produisait tant que ce
+    module supposait le fork."""
+    global _DATA
+    if _DATA:
+        return
+    _DATA = _load_data(args)
+
+
 def _run_combo(
     stop_loss_pct: float,
     take_profit: float,
@@ -215,6 +231,12 @@ def rank_results(results: pd.DataFrame, objective: str, min_trades: int) -> pd.D
     ranking_key = f"train_{objective}"
     if ranking_key not in usable.columns or usable[ranking_key].isna().all():
         ranking_key = objective
+    # Quand TOUTES les combinaisons ont échoué, aucune colonne de métrique n'a
+    # jamais été écrite : trier sur l'objectif lèverait un KeyError obscur, là
+    # où l'appelant sait déjà dire « aucune combinaison exploitable ». Rendre
+    # le tableau vide tel quel le laisse produire ce message.
+    if usable.empty or ranking_key not in usable.columns:
+        return usable
     return usable.sort_values(ranking_key, ascending=False, na_position="last")
 
 
@@ -380,10 +402,14 @@ def main() -> None:
                 start_date, end_date, take_profit_is_convergence, args.train_fraction,
             ))
     else:
-        # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
-        # workers héritent de _DATA (déjà rempli ci-dessus) par
-        # copy-on-write, sans le repasser en argument ni le recharger.
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # initializer plutôt que fork implicite : sous fork le worker hérite
+        # de _DATA et _init_worker ne fait rien, sous spawn il le charge. Sans
+        # cela, tout le pool échoue sur les plateformes qui ne forkent pas.
+        with ProcessPoolExecutor(
+            max_workers=args.workers,
+            initializer=_init_worker,
+            initargs=(args,),
+        ) as pool:
             futures = {
                 pool.submit(
                     _run_combo, sl, tp, args.strategy, strategy_params,

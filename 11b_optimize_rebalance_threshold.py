@@ -97,6 +97,22 @@ def _load_data(benchmark_symbol: str) -> dict:
     }
 
 
+def _init_worker(benchmark_symbol: str) -> None:
+    """Garantit que _DATA est rempli DANS le worker, quelle que soit la façon
+    dont le pool a démarré le process.
+
+    Sous fork (défaut Linux), le worker hérite du _DATA déjà rempli par le
+    parent : il n'y a rien à charger, et le test ci-dessous court-circuite.
+    Sous spawn (défaut Windows, et macOS depuis 3.8), le worker ré-importe le
+    module à neuf -- _DATA y vaut {} et CHAQUE tâche échouerait en
+    KeyError: 'price_panel'. C'est exactement ce qui se produisait tant que ce
+    module supposait le fork."""
+    global _DATA
+    if _DATA:
+        return
+    _DATA = _load_data(benchmark_symbol)
+
+
 def _run_one(
     epsilon: float,
     strategy_name: str,
@@ -288,10 +304,14 @@ def main() -> None:
                 start_date, end_date, args.train_fraction,
             ))
     else:
-        # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
-        # workers héritent de _DATA (déjà rempli ci-dessus) par
-        # copy-on-write, sans le repasser en argument ni le recharger.
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # initializer plutôt que fork implicite : sous fork le worker hérite
+        # de _DATA et _init_worker ne fait rien, sous spawn il le charge. Sans
+        # cela, tout le pool échoue sur les plateformes qui ne forkent pas.
+        with ProcessPoolExecutor(
+            max_workers=args.workers,
+            initializer=_init_worker,
+            initargs=(args.benchmark_symbol,),
+        ) as pool:
             futures = {
                 pool.submit(
                     _run_one, eps, args.strategy, strategy_params,
