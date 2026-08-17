@@ -1095,6 +1095,7 @@ class OptionsBacktestEngine:
                     "deploy_idle_cash", pos.option_type, pos.multiplier,
                     mid_premium=premium,
                     commission=cost - extra * pos.multiplier * gross_premium,
+                    strike=pos.strike, expiry=pos.expiry,
                 )
                 # Prix de revient moyenné (P&L), référence de stop INTACTE
                 # (cf. OptionPosition.stop_reference_premium).
@@ -1393,6 +1394,7 @@ class OptionsBacktestEngine:
         self, symbol: str, side: str, contracts: float, price: float, cash_flow: float,
         today: pd.Timestamp, reason: str, option_type: str, multiplier: float,
         mid_premium: float, commission: float, slippage_rate: Optional[float] = None,
+        strike: Optional[float] = None, expiry: Optional[pd.Timestamp] = None,
     ) -> None:
         """Enregistre un fill RÉELLEMENT EXÉCUTÉ : sa friction (cumuls
         total_commission / total_slippage) ET sa ligne au journal des
@@ -1423,6 +1425,14 @@ class OptionsBacktestEngine:
         côtés -- sa somme sur tout le run vaut donc exactement la variation de
         cash due aux options.
 
+        `strike` / `expiry` IDENTIFIENT LE CONTRAT, et pas seulement le
+        sous-jacent. Sans eux, le journal ne se solde qu'au niveau du symbole :
+        un roulement (clôture d'un contrat + réouverture immédiate sur un
+        autre strike le MÊME jour, cf. _roll_position) y devient invisible, et
+        le contrat neuf semble vendu sans avoir jamais été acheté. Avec eux,
+        chaque ligne se rattache à un contrat précis et le solde se vérifie
+        contrat par contrat.
+
         Appelé après _affordable et _cap_order_size (donc après toute
         réduction) et seulement là où le cash bouge réellement : un ordre
         abandonné ne coûte rien, et l'inclure gonflerait la friction d'ordres
@@ -1432,6 +1442,7 @@ class OptionsBacktestEngine:
         self.total_slippage += slippage
         self.executions.append({
             "date": today, "symbol": symbol, "side": side, "option_type": option_type,
+            "strike": strike, "expiry": expiry,
             "contracts": contracts, "price": price, "cash_flow": cash_flow,
             "multiplier": multiplier, "reason": reason,
             "commission": commission, "slippage": slippage,
@@ -1637,6 +1648,7 @@ class OptionsBacktestEngine:
                 reason, option_type, multiplier,
                 mid_premium=contract["premium"],
                 commission=cost - target_contracts * multiplier * gross_premium,
+                strike=contract["strike"], expiry=contract["expiry"],
             )
             self.positions[symbol] = OptionPosition(
                 symbol=symbol, option_type=option_type, strike=contract["strike"], expiry=contract["expiry"],
@@ -1758,6 +1770,10 @@ class OptionsBacktestEngine:
                     reason, option_type, multiplier,
                     mid_premium=current_premium,
                     commission=cost - delta_contracts * multiplier * gross_premium,
+                    # Renforcement : le contrat n'est PAS re-sélectionné (cf.
+                    # le commentaire d'entrée de cette branche), c'est celui
+                    # déjà détenu qu'on achète en plus.
+                    strike=existing.strike, expiry=existing.expiry,
                 )
                 # Idem : le prix de revient suit le renfort, le seuil de stop
                 # non (cf. OptionPosition.stop_reference_premium).
@@ -1854,6 +1870,7 @@ class OptionsBacktestEngine:
             reason, pos.option_type, pos.multiplier,
             mid_premium=current_premium, commission=commission_paid,
             slippage_rate=slippage_rate,
+            strike=pos.strike, expiry=pos.expiry,
         )
         pnl = (effective_premium - pos.entry_premium) * contracts_to_sell * pos.multiplier
         self.trades.append({

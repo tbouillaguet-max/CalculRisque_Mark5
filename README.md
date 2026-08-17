@@ -872,13 +872,34 @@ sorties** : aucun achat intermédiaire n'apparaissait nulle part.
 
 `executions.parquet` corrige ça : **une ligne par fill, achat comme vente**,
 avec `contracts`, `price`, `cash_flow` (signé, frais inclus), `commission`,
-`slippage` et `reason`. Trois invariants en découlent, tous testés :
+`slippage`, `reason`, et le **contrat lui-même** (`option_type`, `strike`,
+`expiry`). Quatre invariants en découlent, tous testés :
 
 | invariant | vérifie |
 |---|---|
 | Σ achats − Σ ventes = contrats encore détenus, par symbole | rien n'est vendu sans avoir été acheté |
+| solde courant ≥ 0, **contrat par contrat** | un roulement n'invente pas de contrats |
 | capital initial + Σ `cash_flow` = cash final | le journal explique tout le mouvement de cash |
 | Σ `commission` / Σ `slippage` = totaux du moteur | aucun fill n'échappe à la friction |
+
+**Pourquoi le contrat, et pas seulement le symbole.** Un roulement
+(`_roll_position`) clôture un contrat et en rouvre **un autre le même jour**,
+sur le même sous-jacent. Tant que le journal du rapport déduisait les achats
+des variations de quantité détenue *par symbole*, cet achat-là était
+invisible — la quantité nette bougeait à peine — alors que la vente du contrat
+neuf, elle, apparaissait des mois plus tard. Le journal montrait donc des
+ventes sans achat correspondant. La page **Stratégies** lit désormais
+`executions.parquet` directement (colonnes *Contrat* et *Solde*), au lieu de
+reconstruire les achats ; les runs antérieurs au journal retombent sur la
+reconstruction, signalée par une bannière.
+
+Deuxième défaut du même tableau, corrigé aussi : `trades.parquet` porte à la
+fois `contracts` et `shares` = `contracts × 100`. Le journal lisait `shares`
+côté vente contre des contrats côté achat, d'où un facteur 100 entre les deux
+moitiés d'un même tableau (*24 + 9 achetés, 3 300 « vendus »*). `shares` reste
+la bonne colonne là où elle sert : **les notionnels en dollars**
+(`metrics.turnover_dollar`, `put_call_analysis`), où `shares × prime` donne
+bien la valeur échangée.
 
 **Bug corrigé au passage** : `_deploy_idle_cash` (le redéploiement du cash
 oisif, appelé **chaque jour de bourse**) débitait le cash **sans jamais

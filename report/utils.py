@@ -314,7 +314,7 @@ def cluster_multiples(
 # Page Stratégies : runs de backtest (09_backtest.py / 10_backtest_options.py)
 # ============================================================================
 
-BACKTEST_RUN_FILES = ("equity_curve", "positions_history", "trades", "signals_history")
+BACKTEST_RUN_FILES = ("equity_curve", "positions_history", "trades", "signals_history", "executions")
 
 
 def _backtest_base_dir(kind: str) -> Path:
@@ -336,10 +336,15 @@ def list_backtest_runs(kind: str) -> list[str]:
 
 @st.cache_data(ttl=60)
 def load_backtest_run(kind: str, run_id: str) -> dict:
-    """Charge les 4 tables Parquet + les 2 JSON écrits par 09/10 en fin de
-    run (même schéma de fichiers dans les deux cas, cf. leurs main()).
+    """Charge les tables Parquet + les 2 JSON écrits par 09/10 en fin de run.
     Tables absentes (run antérieur à un ajout de fichier) -> DataFrame vide,
-    pas une erreur."""
+    pas une erreur.
+
+    `executions` n'est écrit que par 10_backtest_options.py : le moteur
+    actions (backtest/engine.py) n'a pas de journal de fills. Un run actions,
+    comme un run options antérieur à ce journal, renvoie donc un DataFrame
+    vide ici -- ce que build_trade_log traite comme le signal de retomber sur
+    la reconstruction depuis positions_history."""
     run_dir = _backtest_base_dir(kind) / run_id
     result: dict = {}
     for name in BACKTEST_RUN_FILES:
@@ -467,31 +472,235 @@ def _first_present(df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[st
     return None
 
 
-def build_trade_log(positions_history: pd.DataFrame, trades: pd.DataFrame, signals_history: pd.DataFrame) -> pd.DataFrame:
-    """Journal achats/ventes unifié, pour affichage ("quand et pourquoi").
+TRADE_LOG_COLUMNS = ["date", "symbol", "contrat", "action", "quantite", "prix", "raison", "pnl", "return_pct"]
 
-    trades.parquet ne logue QUE les ventes : BacktestEngine._execute_trade /
-    OptionsBacktestEngine._reduce_position n'appellent self.trades.append que
-    côté vente (cf. backtest/engine.py, backtest/options_engine.py) -- une
-    vente y a déjà sa raison (exit_reason: stop_loss/take_profit/rebalance/
-    data_gap/expiry). Les achats n'y sont PAS logués : reconstruits ici à
-    partir des hausses quotidiennes de quantité détenue dans
-    positions_history (nouvelle position ou renforcement), avec pour raison
-    le dernier signal connu (gap_pct) à cette date pour une nouvelle position.
+# Motifs d'exécution du moteur options (options_engine : `reason` d'un fill),
+# en clair. Un motif inconnu est affiché tel quel plutôt que masqué.
+EXECUTION_REASON_LABELS = {
+    "rebalance": "rebalancement",
+    "roll": "roulement",
+    "deploy_idle_cash": "redéploiement du cash oisif",
+    "delever": "dé-levier",
+    "stop_loss": "stop-loss",
+    "take_profit": "take-profit",
+    "signal_lost": "signal perdu",
+    "direction_flip": "retournement du signal",
+    "expiry": "expiration",
+    "data_gap": "cours du sous-jacent indisponible",
+}
 
-    Gère les deux schémas (actions: colonnes shares/price ; options:
-    contracts/premium, option_type/strike en plus) sans les fusionner en un
-    schéma commun -- juste les colonnes minimales nécessaires à l'affichage."""
+
+def _contract_label(row) -> str:
+    """« CALL 31.75 éch. 2014-01-17 » -- ce qui identifie le CONTRAT, et pas
+    seulement le sous-jacent. Chaîne vide sur un run actions.
+
+    Colonne à part entière (et non fondue dans le motif) : c'est la maille à
+    laquelle un achat répond à une vente, donc celle sur laquelle on veut
+    pouvoir trier et filtrer. Le strike est arrondi au centime -- le moteur
+    calcule un strike théorique en flottant, dont les douze décimales ne
+    disent rien de plus que les deux premières."""
+    option_type = row.get("option_type")
+    if option_type is None or not pd.notna(option_type):
+        return ""
+    parts = [str(option_type)]
+    strike = row.get("strike")
+    if strike is not None and pd.notna(strike):
+        parts.append(f"{float(strike):.2f}")
+    expiry = row.get("expiry")
+    if expiry is not None and pd.notna(expiry):
+        parts.append(f"éch. {pd.Timestamp(expiry):%Y-%m-%d}")
+    return " ".join(parts)
+
+
+def _drop_empty_contract_column(log: pd.DataFrame) -> pd.DataFrame:
+    """Un run actions n'a pas de contrat à montrer : plutôt qu'une colonne
+    vide, pas de colonne."""
+    if "contrat" in log.columns and not log["contrat"].astype(bool).any():
+        return log.drop(columns=["contrat"])
+    return log
+
+
+def _contract_key(df: pd.DataFrame) -> list[str]:
+    """Colonnes qui identifient un contrat dans le journal des exécutions.
+
+    Le symbole NE SUFFIT PAS : un roulement clôture un contrat et en rouvre un
+    autre sur le même sous-jacent le même jour. Strike et échéance ne sont
+    présents que sur les runs postérieurs à leur ajout au journal -- sur un run
+    plus ancien, on retombe sur (symbole, sens), ce qui laisse le solde
+    fusionner les contrats successifs."""
+    return [c for c in ("symbol", "option_type", "strike", "expiry") if c in df.columns]
+
+
+def _last_known_gap(sig: pd.DataFrame, symbol: str, date: pd.Timestamp) -> Optional[float]:
+    if sig.empty:
+        return None
+    candidates = sig[(sig["symbol"] == symbol) & (sig["date"] <= date)]
+    if candidates.empty:
+        return None
+    gap = candidates.iloc[-1].get("gap_pct")
+    return float(gap) if pd.notna(gap) else None
+
+
+def _sorted_signals(signals_history: pd.DataFrame) -> pd.DataFrame:
+    if signals_history is None or signals_history.empty:
+        return pd.DataFrame()
+    sig = signals_history.copy()
+    sig["date"] = pd.to_datetime(sig["date"])
+    return sig.sort_values(["symbol", "date"])
+
+
+def build_trade_log(
+    positions_history: pd.DataFrame,
+    trades: pd.DataFrame,
+    signals_history: pd.DataFrame,
+    executions: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Journal achats/ventes, pour affichage ("quand, quoi, pourquoi").
+
+    DEUX SOURCES POSSIBLES, très inégales.
+
+    1. executions.parquet (runs options) : une ligne par fill RÉELLEMENT
+       EXÉCUTÉ, achat comme vente, avec sa quantité en CONTRATS, son contrat
+       (sens/strike/échéance) et son motif. C'est la comptabilité du moteur
+       elle-même ; le journal en est alors une simple mise en forme, et la
+       colonne `solde` (contrats détenus après le fill, contrat par contrat)
+       se vérifie ligne à ligne.
+
+    2. À défaut (runs actions, ou runs options antérieurs au journal) :
+       reconstruction depuis positions_history, puisque trades.parquet ne
+       logue que les VENTES (cf. engine._execute_trade / options_engine.
+       _reduce_position). Les achats y sont déduits des hausses quotidiennes
+       de quantité détenue. Approximation acceptable pour les actions -- un
+       symbole = un instrument -- mais FAUSSE sur les options, où un
+       roulement remplace un contrat par un autre le même jour sans variation
+       nette de quantité : l'achat du contrat neuf disparaît, et sa vente
+       ultérieure semble alors porter sur des contrats jamais achetés.
+
+    C'est ce qu'un rapport d'incohérence a mis au jour (33 contrats achetés,
+    3 300 « vendus »), doublé d'une confusion d'unités : trades.parquet porte
+    à la fois `contracts` et `shares` = contracts x 100, et le journal lisait
+    `shares` côté vente contre des contrats côté achat."""
+    if executions is not None and not executions.empty:
+        return _trade_log_from_executions(executions, trades, signals_history)
+    return _trade_log_from_positions(positions_history, trades, signals_history)
+
+
+def _trade_log_from_executions(
+    executions: pd.DataFrame, trades: pd.DataFrame, signals_history: pd.DataFrame,
+) -> pd.DataFrame:
+    ex = executions.copy()
+    ex["date"] = pd.to_datetime(ex["date"])
+    if "expiry" in ex.columns:
+        ex["expiry"] = pd.to_datetime(ex["expiry"])
+
+    # L'ORDRE DES LIGNES EST L'ORDRE D'EXÉCUTION du moteur, et il porte de
+    # l'information : plusieurs fills tombent le même jour (les ventes sont
+    # exécutées avant les achats qu'elles financent, cf.
+    # options_engine._execution_order), et un roulement y est une vente suivie
+    # d'un achat à la même date. Le tri d'affichage est par date : on garde
+    # donc le rang d'origine pour départager, et on calcule le solde
+    # AVANT de trier.
+    ex = ex.reset_index(drop=True)
+    ex["_seq"] = np.arange(len(ex))
+
+    ex["_signed"] = ex["contracts"] * ex["side"].map({"buy": 1.0, "sell": -1.0})
+    # dropna=False : strike/échéance sont nuls sur un run antérieur à leur
+    # ajout au journal -- sans cela, pandas écarterait ces lignes du
+    # regroupement et le solde y serait vide plutôt qu'approché.
+    ex["solde"] = ex.groupby(_contract_key(ex), dropna=False)["_signed"].cumsum()
+    ex["solde_avant"] = ex["solde"] - ex["_signed"]
+
+    pnl, return_pct = _attach_sell_pnl(ex, trades)
+    sig = _sorted_signals(signals_history)
+
+    rows: list[dict] = []
+    for i, e in ex.iterrows():
+        label = EXECUTION_REASON_LABELS.get(e["reason"], str(e["reason"]))
+        if e["side"] == "buy":
+            if e["solde_avant"] > 1e-9:
+                raison = f"Renforcement — {label}"
+            elif e["reason"] == "roll":
+                # Un roulement n'exprime AUCUN signal neuf : c'est la même
+                # thèse reconduite sur une échéance pleine. Lui accoler le
+                # dernier écart connu (vieux de plusieurs mois) laisserait
+                # croire à une décision qui n'a pas été prise.
+                raison = "Ouverture du contrat de remplacement — roulement"
+            else:
+                raison = f"Ouverture — {label}"
+                gap = _last_known_gap(sig, e["symbol"], e["date"])
+                if gap is not None:
+                    sens = "sous-évaluation" if gap > 0 else "survalorisation"
+                    raison = f"Ouverture — signal {sens} (écart {gap:.1f}%), {label}"
+        else:
+            raison = f"Clôture — {label}" if e["solde"] <= 1e-9 else f"Réduction — {label}"
+        rows.append({
+            "date": e["date"], "symbol": e["symbol"], "contrat": _contract_label(e),
+            "action": "Achat" if e["side"] == "buy" else "Vente",
+            "quantite": e["contracts"], "prix": e["price"],
+            "raison": raison, "solde": e["solde"],
+            "pnl": pnl[i], "return_pct": return_pct[i],
+        })
+
+    log = pd.DataFrame(rows)
+    # Tri d'affichage : le plus récent d'abord, l'ordre d'exécution du moteur
+    # départageant les fills d'une même journée (mergesort = tri stable).
+    log = log.sort_values("date", ascending=False, kind="mergesort").reset_index(drop=True)
+    return _drop_empty_contract_column(log)
+
+
+def _attach_sell_pnl(ex: pd.DataFrame, trades: pd.DataFrame) -> tuple[list, list]:
+    """P&L et rendement d'une vente, repris de trades.parquet.
+
+    APPARIEMENT POSITIONNEL, et non par jointure sur (symbole, date) : une
+    même position peut être réduite deux fois le même jour, ce qu'aucune clé
+    disponible ne distingue. options_engine._reduce_position écrit ses deux
+    lignes -- le fill puis le trade -- dans la foulée, sans autre chemin de
+    code alimentant `trades` : la n-ième vente du journal est donc le n-ième
+    trade. L'hypothèse est VÉRIFIÉE (nombre de lignes et symboles) avant
+    d'être utilisée ; à défaut, les colonnes restent vides plutôt que
+    fausses."""
+    n = len(ex)
+    pnl: list = [None] * n
+    return_pct: list = [None] * n
+    sell_positions = ex.index[ex["side"] == "sell"].tolist()
+    if trades is None or trades.empty or len(sell_positions) != len(trades):
+        return pnl, return_pct
+
+    tr = trades.reset_index(drop=True)
+    if not (ex.loc[sell_positions, "symbol"].to_numpy() == tr["symbol"].to_numpy()).all():
+        return pnl, return_pct
+    if "contracts" in tr.columns:
+        ecart = np.abs(ex.loc[sell_positions, "contracts"].to_numpy() - tr["contracts"].to_numpy())
+        if ecart.max() > 1e-6:
+            return pnl, return_pct
+
+    for k, i in enumerate(sell_positions):
+        pnl[i] = tr.at[k, "pnl"] if "pnl" in tr.columns else None
+        return_pct[i] = tr.at[k, "return_pct"] if "return_pct" in tr.columns else None
+    return pnl, return_pct
+
+
+def _trade_log_from_positions(
+    positions_history: pd.DataFrame, trades: pd.DataFrame, signals_history: pd.DataFrame,
+) -> pd.DataFrame:
+    """Reconstruction de repli (cf. build_trade_log) : sans journal de fills,
+    les achats se déduisent des hausses de quantité détenue."""
     rows: list[dict] = []
 
     if trades is not None and not trades.empty:
-        has_option_cols = "option_type" in trades.columns
+        # MÊME UNITÉ DES DEUX CÔTÉS. Un trade options porte `contracts` ET
+        # `shares` = contracts x multiplicateur (100) ; les achats
+        # reconstruits plus bas sont, eux, en contrats. Lire `shares` ici
+        # affichait donc des ventes 100 fois plus grosses que les achats
+        # correspondants.
+        qty_col = "contracts" if "contracts" in trades.columns else "shares"
         for _, t in trades.iterrows():
-            detail = f" ({t['option_type']} {t.get('strike', '')})" if has_option_cols and pd.notna(t.get("option_type")) else ""
+            motif = t.get("exit_reason", "?")
             rows.append({
-                "date": t["exit_date"], "symbol": t["symbol"], "action": "Vente",
-                "quantite": t.get("shares", t.get("contracts")), "prix": t.get("exit_price"),
-                "raison": f"{t.get('exit_reason', '?')}{detail}",
+                "date": t["exit_date"], "symbol": t["symbol"], "contrat": _contract_label(t),
+                "action": "Vente",
+                "quantite": t.get(qty_col), "prix": t.get("exit_price"),
+                "raison": EXECUTION_REASON_LABELS.get(motif, motif),
                 "pnl": t.get("pnl"), "return_pct": t.get("return_pct"),
             })
 
@@ -499,37 +708,34 @@ def build_trade_log(positions_history: pd.DataFrame, trades: pd.DataFrame, signa
         ph = positions_history.sort_values(["symbol", "date"]).copy()
         qty_col = _first_present(ph, ("shares", "contracts"))
         price_col = _first_present(ph, ("price", "premium"))
-        has_option_cols = "option_type" in ph.columns
 
         ph["prev_qty"] = ph.groupby("symbol")[qty_col].shift(1).fillna(0.0)
         buys = ph[ph[qty_col] > ph["prev_qty"] + 1e-9].copy()
         buys["qty_bought"] = buys[qty_col] - buys["prev_qty"]
         buys["is_new_entry"] = buys["prev_qty"] <= 1e-9
 
-        sig = signals_history.sort_values(["symbol", "date"]) if signals_history is not None and not signals_history.empty else pd.DataFrame()
+        sig = _sorted_signals(signals_history)
 
         for _, b in buys.iterrows():
-            detail = f" ({b['option_type']} {b.get('strike', '')})" if has_option_cols and pd.notna(b.get("option_type")) else ""
             if b["is_new_entry"]:
-                reason = f"Nouvelle position (rebalancement){detail}"
-                if not sig.empty:
-                    candidates = sig[(sig["symbol"] == b["symbol"]) & (sig["date"] <= b["date"])]
-                    if not candidates.empty:
-                        gap = candidates.iloc[-1].get("gap_pct")
-                        if pd.notna(gap):
-                            sens = "sous-évaluation" if gap > 0 else "survalorisation"
-                            reason = f"Signal {sens} (écart {gap:.1f}%){detail}"
+                reason = "Nouvelle position (rebalancement)"
+                gap = _last_known_gap(sig, b["symbol"], pd.Timestamp(b["date"]))
+                if gap is not None:
+                    sens = "sous-évaluation" if gap > 0 else "survalorisation"
+                    reason = f"Signal {sens} (écart {gap:.1f}%)"
             else:
-                reason = f"Renforcement (rebalancement){detail}"
+                reason = "Renforcement (rebalancement)"
             rows.append({
-                "date": b["date"], "symbol": b["symbol"], "action": "Achat",
+                "date": b["date"], "symbol": b["symbol"], "contrat": _contract_label(b),
+                "action": "Achat",
                 "quantite": b["qty_bought"], "prix": b.get(price_col),
                 "raison": reason, "pnl": None, "return_pct": None,
             })
 
     if not rows:
-        return pd.DataFrame(columns=["date", "symbol", "action", "quantite", "prix", "raison", "pnl", "return_pct"])
+        return pd.DataFrame(columns=TRADE_LOG_COLUMNS)
 
     log = pd.DataFrame(rows)
     log["date"] = pd.to_datetime(log["date"])
-    return log.sort_values("date", ascending=False).reset_index(drop=True)
+    log = log.sort_values("date", ascending=False).reset_index(drop=True)
+    return _drop_empty_contract_column(log)
