@@ -21,6 +21,15 @@ Un ticker introuvable sur LES DEUX sources est loggé comme trou de
 couverture (jamais silencieusement ignoré) : le rapport de couverture
 (report/) et le data_loader du backtest doivent pouvoir s'appuyer dessus.
 
+L'INDICE DE RÉFÉRENCE (config.BENCHMARK_SYMBOL, SPY par défaut) est récupéré
+EN PLUS de l'univers, alors qu'il n'appartient à aucun CSV d'univers -- SPY est
+un ETF, pas un membre du S&P 500. Il ne devient candidat nulle part : l'univers
+investissable du backtest vient de config.UNIVERSE_HISTORY_FILE, ce fichier-ci
+ne porte que des cours. Sans lui, backtest/data_loader.build_benchmark_series
+se rabat sur un indice ÉQUIPONDÉRÉ reconstruit à partir de l'univers, ce qui
+change la question posée : « la sélection apporte-t-elle quelque chose ? »
+plutôt que « bat-on le S&P 500 ? ». --no-benchmark pour s'en passer.
+
 Incrémental, comme 03 : le fichier existant (config.DAILY_PRICES_FILE) est
 chargé en début de run, seuls les jours manquants sont (re)téléchargés.
 
@@ -63,6 +72,36 @@ STOOQ_REQUEST_PAUSE_SEC = 1.0
 
 STOOQ_URL = "https://stooq.com/q/d/l/?s={symbol}&d1={d1}&d2={d2}&i=d"
 STOOQ_HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: voir SEC_CONTACT_EMAIL dans 04_recuperation_10k.py)"}
+
+# Indices de référence à récupérer EN PLUS de l'univers investissable.
+#
+# Le benchmark n'est pas une candidate : il ne figure dans aucun CSV d'univers
+# (SPY est un ETF, pas un membre du S&P 500), et il ne doit surtout pas y
+# entrer. L'univers investissable du backtest vient d'ailleurs
+# (config.UNIVERSE_HISTORY_FILE, lu par backtest/data_loader.py) ; ce fichier-ci
+# ne porte que des COURS. Y ajouter SPY le rend donc visible à
+# data_loader.build_benchmark_series sans le rendre achetable nulle part.
+#
+# Sans cette ligne, build_benchmark_series ne trouve pas le symbole et se
+# rabat sur un indice ÉQUIPONDÉRÉ reconstruit à partir de l'univers lui-même.
+# Ce repli est délibéré (mieux vaut un comparateur que pas de comparateur),
+# mais il ne mesure plus la même chose : comparer une stratégie à son propre
+# univers équipondéré répond à « la sélection apporte-t-elle quelque chose ? »,
+# pas à « bat-on le S&P 500 ? ».
+#
+# Le libellé sert au journal et au rapport de couverture. L'échange déclaré
+# ("NYSE Arca") est le lieu de cotation réel de ces ETF ; config.EXCHANGE_MAP
+# le traduit en "ARCA", et resolve_stock_contract essaie alors Stock(SPY,
+# ARCA, USD) puis Stock(SPY, SMART, USD, primaryExchange=ARCA) -- les deux
+# formes qu'IBKR accepte pour un ETF. Côté Stooq, to_stooq_symbol donne
+# "spy.us", qui est le bon identifiant.
+BENCHMARK_INSTRUMENTS = {
+    "SPY": "SPDR S&P 500 ETF Trust",
+    "IVV": "iShares Core S&P 500 ETF",
+    "VOO": "Vanguard S&P 500 ETF",
+    "QQQ": "Invesco QQQ Trust",
+    "IWM": "iShares Russell 2000 ETF",
+}
 
 REQUIRED_COLUMNS = {"RIC", "Instrument_Name", "Country", "Currency", "Exchange"}
 OUTPUT_COLUMNS = [
@@ -108,6 +147,52 @@ def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:
 
     logger.info("Univers chargé : %d tickers.", len(df))
     return df
+
+
+def append_benchmark(universe: pd.DataFrame, symbol: Optional[str] = None) -> pd.DataFrame:
+    """Ajoute l'indice de référence à la liste des tickers à récupérer, s'il
+    n'y est pas déjà.
+
+    Appelé APRÈS load_universe, donc après --limit : un run d'essai à dix
+    tickers récupère quand même le benchmark, ce qui est le comportement utile
+    (sans lui, le backtest qui suit se rabattrait silencieusement sur l'indice
+    équipondéré).
+
+    La déduplication porte sur le symbole IBKR, pas sur le RIC : c'est la clé
+    du fichier de cours (colonne "symbol"), et donc celle qui compte pour ne
+    pas récupérer deux fois la même série.
+
+    `symbol=None` reprend config.BENCHMARK_SYMBOL (idiome habituel du dépôt) ;
+    une chaîne vide n'ajoute rien du tout. Les deux sont distincts à dessein,
+    voir le commentaire dans le corps."""
+    # None et "" ne veulent PAS dire la même chose : None demande le défaut du
+    # dépôt, une chaîne vide demande explicitement de n'ajouter aucun indice.
+    # Les confondre ferait récupérer SPY à qui vient de dire qu'il n'en veut pas.
+    symbol = config.BENCHMARK_SYMBOL if symbol is None else symbol
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return universe
+
+    ib_symbol = config.to_ib_symbol(symbol)
+    if not universe.empty and ib_symbol in set(universe["ib_symbol"]):
+        logger.info("%s est déjà dans l'univers : pas de ligne de benchmark ajoutée.", symbol)
+        return universe
+
+    ligne = {
+        "RIC": symbol,
+        "Instrument_Name": BENCHMARK_INSTRUMENTS.get(symbol, f"Indice de référence {symbol}"),
+        "Country": "United States",
+        "Currency": "USD",
+        "Exchange": "NYSE Arca",
+        "ib_symbol": ib_symbol,
+        "ib_exchange": config.EXCHANGE_MAP.get("NYSE Arca", config.DEFAULT_EXCHANGE),
+    }
+    logger.info(
+        "Indice de référence %s ajouté aux tickers à récupérer (%s). Il n'entre PAS dans "
+        "l'univers investissable, qui vient de %s.",
+        symbol, ligne["Instrument_Name"], config.UNIVERSE_HISTORY_FILE.name,
+    )
+    return pd.concat([universe, pd.DataFrame([ligne])], ignore_index=True)
 
 
 def to_stooq_symbol(ric: str) -> str:
@@ -273,6 +358,15 @@ def main() -> None:
     parser.add_argument("--refresh-days", type=int, default=1, help="Rafraîchit un symbole si son dernier point en cache a plus de N jours (défaut: %(default)s).")
     parser.add_argument("--force-refresh", action="store_true", help="Ignore le cache et retélécharge tout l'historique pour tous les tickers.")
     parser.add_argument("--skip-ibkr", action="store_true", help="Ne pas se connecter à IBKR, utiliser uniquement Stooq (pas besoin de TWS/Gateway).")
+    parser.add_argument(
+        "--benchmark-symbol", default=config.BENCHMARK_SYMBOL,
+        help="Indice de référence récupéré en plus de l'univers (défaut: %(default)s). "
+             "Sans lui, le backtest se rabat sur un indice équipondéré de l'univers.",
+    )
+    parser.add_argument(
+        "--no-benchmark", dest="benchmark_symbol", action="store_const", const=None,
+        help="Ne récupère que l'univers investissable, sans indice de référence.",
+    )
     args = parser.parse_args()
 
     today = datetime.now().date()
@@ -281,6 +375,8 @@ def main() -> None:
 
     tickers_path = args.tickers or default_tickers_file()
     universe = load_universe(tickers_path, limit=args.limit)
+    if args.benchmark_symbol:
+        universe = append_benchmark(universe, args.benchmark_symbol)
 
     output_file = args.output_dir / config.DAILY_PRICES_FILE.name
     existing = pd.read_parquet(output_file) if output_file.exists() else pd.DataFrame(columns=OUTPUT_COLUMNS)
