@@ -823,3 +823,50 @@ def test_C6_les_diagnostics_du_dimensionnement_sont_publies():
     # Le delta de dimensionnement est celui d'une entrée ATM à 2 ans : bien
     # au-dessus du plancher, sinon le run n'aurait rien acheté.
     assert d["min_delta_at_sizing"] >= config.OPTIONS_MIN_DELTA_FOR_SIZING
+
+
+# --------------------------------------------------------------------------- #
+# C7 -- le moteur ACTIONS annulait le plafond par renormalisation
+# --------------------------------------------------------------------------- #
+
+def test_C7_le_moteur_actions_ne_remonte_jamais_les_poids_vers_1():
+    """base.capped_weights renvoie délibérément une somme < 1 quand le plafond
+    mord (B6). Le moteur actions la renormalisait à 1, ce qui plaçait 100% du
+    NAV sur un seul titre les jours à candidate unique -- pour un plafond
+    demandé à 20%. Le moteur options, lui, ne renormalise pas : les deux
+    appliquaient deux règles de concentration différentes."""
+    from backtest.engine import BacktestEngine
+    from backtest.strategies.valuation_gap import ValuationGapDCFStrategy
+
+    n = 400
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    # UNE seule entreprise éligible : le plafond doit laisser 80% en cash.
+    close = pd.DataFrame({"AAA": np.linspace(100.0, 130.0, n),
+                          "BBB": np.linspace(100.0, 130.0, n)}, index=dates)
+    from backtest.data_loader import PricePanel
+    panel = PricePanel(close, close.copy(), close.apply(lambda c: c.last_valid_index()))
+
+    signaux_df = pd.DataFrame([{
+        "symbol": "AAA", "published_date": dates[2], "fiscal_year": 2019,
+        "sector": "Technologie", "close_at_filing": 100.0,
+        "valuation_dcf_per_share": 300.0, "gap_pct": 200.0, "period_type": "FY",
+    }])
+
+    engine = BacktestEngine(
+        price_panel=panel, signal_events=signaux_df, universe_history=None,
+        fallback_universe_symbols={"AAA", "BBB"},
+        strategy=ValuationGapDCFStrategy(), initial_capital=1_000_000.0,
+        cost_bps=10.0, stop_loss_pct=-99.0, take_profit_pct=1e9,
+        signal_max_age_days=100_000, momentum_min_pct=None,
+    )
+    equity, positions, _, _ = engine.run()
+
+    nav = equity.set_index("date")["nav"]
+    poids = positions["market_value"] / positions["date"].map(nav) * 100
+    plafond = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
+    # Marge : la position dérive avec le cours entre deux rebalancements, mais
+    # elle ne doit jamais partir de 100% du NAV.
+    assert poids.max() < plafond * 2, (
+        f"poids max {poids.max():.0f}% du NAV pour un plafond de {plafond:.0f}% "
+        "-- la renormalisation annule le plafond"
+    )

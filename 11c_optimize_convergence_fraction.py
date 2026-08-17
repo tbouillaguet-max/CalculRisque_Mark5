@@ -83,10 +83,23 @@ DEFAULT_FRACTION_GRID = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0]
 
 DEFAULT_STRATEGY = "valuation_gap_expected_value_options"
 
-# Rempli une fois par process AVANT de forker le pool (voir main()) : les
-# workers héritent de ces objets par copy-on-write, sans repasser par le
-# chargement disque ni par une sérialisation coûteuse d'un DataFrame par tâche.
+# Rempli une fois par process. Sur Linux, les workers du pool en héritent par
+# copy-on-write (fork) sans repasser par le chargement disque. Sur Windows
+# (et sur macOS depuis Python 3.8), ProcessPoolExecutor n'utilise PAS fork :
+# chaque worker est un interpréteur NEUF qui réimporte ce module de zéro, et
+# repart donc avec _DATA = {} -- voir _pool_initializer, qui répare cet écart
+# en repeuplant _DATA UNE FOIS par worker via initializer/initargs (cf.
+# 11_optimize_options_stops.py, qui a exactement le même besoin).
 _DATA: dict = {}
+
+
+def _pool_initializer(data: dict) -> None:
+    """Exécuté une fois par worker à la création du pool. Sur fork, c'est un
+    no-op (_DATA déjà hérité) ; sur spawn, c'est le SEUL moyen par lequel un
+    worker reçoit jamais ces données -- sans lui, _run_one échoue avec
+    `KeyError: 'price_panel'` sur 100% des points de la grille."""
+    global _DATA
+    _DATA = data
 
 
 def _load_data(benchmark_symbol: str) -> dict:
@@ -113,22 +126,6 @@ def _load_data(benchmark_symbol: str) -> dict:
         "benchmark_prices": benchmark_prices,
         "benchmark_label": benchmark_label,
     }
-
-
-def _init_worker(benchmark_symbol: str) -> None:
-    """Garantit que _DATA est rempli DANS le worker, quelle que soit la façon
-    dont le pool a démarré le process.
-
-    Sous fork (défaut Linux), le worker hérite du _DATA déjà rempli par le
-    parent : il n'y a rien à charger, et le test ci-dessous court-circuite.
-    Sous spawn (défaut Windows, et macOS depuis 3.8), le worker ré-importe le
-    module à neuf -- _DATA y vaut {} et CHAQUE tâche échouerait en
-    KeyError: 'price_panel'. C'est exactement ce qui se produisait tant que ce
-    module supposait le fork."""
-    global _DATA
-    if _DATA:
-        return
-    _DATA = _load_data(benchmark_symbol)
 
 
 def _run_one(
@@ -315,13 +312,10 @@ def main() -> None:
                 start_date, end_date,
             ))
     else:
-        # initializer plutôt que fork implicite : sous fork le worker hérite
-        # de _DATA et _init_worker ne fait rien, sous spawn il le charge. Sans
-        # cela, tout le pool échoue sur les plateformes qui ne forkent pas.
+        # initializer/initargs : cf. le commentaire sur _pool_initializer.
+        # Sans coût mesurable sur fork, indispensable sur spawn.
         with ProcessPoolExecutor(
-            max_workers=args.workers,
-            initializer=_init_worker,
-            initargs=(args.benchmark_symbol,),
+            max_workers=args.workers, initializer=_pool_initializer, initargs=(_DATA,),
         ) as pool:
             futures = {
                 pool.submit(

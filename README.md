@@ -497,8 +497,21 @@ python 11_optimize_options_stops.py --start-date 2015-01-01 --objective calmar_r
 python 11_optimize_options_stops.py \
     --stop-loss-grid -10 -15 -20 -25 -30 -35 -40 -50 \
     --take-profit-grid 20 30 40 60 80 100 150 200
-python 11_optimize_options_stops.py --workers 4   # parallélise sur des process (fork)
+python 11_optimize_options_stops.py --workers 4   # parallélise sur des process
 ```
+
+**`--workers` fonctionne aussi sous Windows.** `ProcessPoolExecutor` n'y
+utilise pas `fork()` (inexistant hors POSIX) : chaque worker y est un
+interpréteur neuf, qui réimporte le module et ne voit donc jamais le `_DATA`
+chargé par le process parent -- sans le correctif, **100 % des combinaisons**
+échouaient avec `KeyError: 'price_panel'`, quel que soit `--workers`. Les
+données sont désormais repassées explicitement une fois par worker
+(`initializer=_pool_initializer, initargs=(_DATA,)`), ce qui fonctionne à
+l'identique sur Linux (où `fork()` continue de faire le travail, gratuitement)
+comme sur Windows. Même correctif dans `11b_optimize_rebalance_threshold.py`.
+`rank_results` ne plante plus non plus quand *toutes* les combinaisons
+échouent (ex: la même cause) : le message d'erreur prévu s'affiche, au lieu
+d'un `KeyError: 'sharpe_ratio'` levé avant de l'atteindre.
 
 Tous les autres réglages moteur (échéance, base des stops, roulement...)
 restent ceux résolus par `10_backtest_options.resolve_engine_settings` --

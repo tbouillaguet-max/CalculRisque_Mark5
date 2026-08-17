@@ -76,10 +76,27 @@ OBJECTIVE_CHOICES = [
     "profit_factor", "win_rate_pct", "max_drawdown_pct",
 ]
 
-# Rempli une fois par process AVANT de forker le pool (voir main()) : les
-# workers héritent de ces objets par copy-on-write, sans repasser par le
-# chargement disque ni par une sérialisation coûteuse d'un DataFrame par tâche.
+# Rempli une fois par process. Sur Linux, les workers du pool en héritent par
+# copy-on-write (fork) sans repasser par le chargement disque. Sur Windows
+# (et sur macOS depuis Python 3.8), ProcessPoolExecutor n'utilise PAS fork :
+# chaque worker est un interpréteur NEUF qui réimporte ce module de zéro, et
+# repart donc avec _DATA = {} -- voir _pool_initializer, qui répare cet écart
+# en repeuplant _DATA UNE FOIS par worker via initializer/initargs, plutôt
+# qu'en repassant ces données à chaque tâche (ce qui repayerait leur
+# sérialisation à chaque combinaison de la grille, pas juste une fois par
+# worker).
 _DATA: dict = {}
+
+
+def _pool_initializer(data: dict) -> None:
+    """Exécuté une fois par worker à la création du pool (paramètre
+    `initializer` de ProcessPoolExecutor). Sur fork (Linux), _DATA est déjà
+    hérité et cette réaffectation est un no-op sans coût mesurable. Sur spawn
+    (Windows, macOS), c'est le SEUL moyen par lequel un worker reçoit
+    jamais ces données -- sans lui, chaque appel à _run_combo échoue avec
+    `KeyError: 'price_panel'`, systématiquement, sur 100% des combinaisons."""
+    global _DATA
+    _DATA = data
 
 
 def _load_data(args: argparse.Namespace) -> dict:
@@ -106,22 +123,6 @@ def _load_data(args: argparse.Namespace) -> dict:
         "benchmark_prices": benchmark_prices,
         "benchmark_label": benchmark_label,
     }
-
-
-def _init_worker(args: argparse.Namespace) -> None:
-    """Garantit que _DATA est rempli DANS le worker, quelle que soit la façon
-    dont le pool a démarré le process.
-
-    Sous fork (défaut Linux), le worker hérite du _DATA déjà rempli par le
-    parent : il n'y a rien à charger, et le test ci-dessous court-circuite.
-    Sous spawn (défaut Windows, et macOS depuis 3.8), le worker ré-importe le
-    module à neuf -- _DATA y vaut {} et CHAQUE tâche échouerait en
-    KeyError: 'price_panel'. C'est exactement ce qui se produisait tant que ce
-    module supposait le fork."""
-    global _DATA
-    if _DATA:
-        return
-    _DATA = _load_data(args)
 
 
 def _run_combo(
@@ -219,6 +220,15 @@ def rank_results(results: pd.DataFrame, objective: str, min_trades: int) -> pd.D
     de la grille à s'y ajuster. La colonne `test_<objectif>` reste affichée à
     côté, et c'est elle qu'il faut regarder."""
     usable = results[results["error"].isna()].copy()
+    # Toutes les combinaisons ont échoué (ex: bug d'infrastructure -- un pool
+    # de process mal configuré sur Windows en est la cause typique) : leurs
+    # dict de résultat s'arrêtent à {stop_loss_pct, take_profit, error}, la
+    # boucle qui ajoute les métriques n'ayant jamais été atteinte. AUCUNE
+    # colonne de métrique n'existe alors dans `results`, pas même `objective`
+    # -- trier dessus lèverait un KeyError avant que l'appelant n'ait la
+    # chance de voir `ranked.empty` et d'afficher un message utile.
+    if usable.empty or objective not in usable.columns:
+        return usable
     if "num_trades" in usable.columns:
         too_few = usable[usable["num_trades"].fillna(0) < min_trades]
         if not too_few.empty:
@@ -228,15 +238,11 @@ def rank_results(results: pd.DataFrame, objective: str, min_trades: int) -> pd.D
                 len(too_few), len(usable), min_trades,
             )
         usable = usable[usable["num_trades"].fillna(0) >= min_trades]
+    if usable.empty:
+        return usable
     ranking_key = f"train_{objective}"
     if ranking_key not in usable.columns or usable[ranking_key].isna().all():
         ranking_key = objective
-    # Quand TOUTES les combinaisons ont échoué, aucune colonne de métrique n'a
-    # jamais été écrite : trier sur l'objectif lèverait un KeyError obscur, là
-    # où l'appelant sait déjà dire « aucune combinaison exploitable ». Rendre
-    # le tableau vide tel quel le laisse produire ce message.
-    if usable.empty or ranking_key not in usable.columns:
-        return usable
     return usable.sort_values(ranking_key, ascending=False, na_position="last")
 
 
@@ -402,13 +408,16 @@ def main() -> None:
                 start_date, end_date, take_profit_is_convergence, args.train_fraction,
             ))
     else:
-        # initializer plutôt que fork implicite : sous fork le worker hérite
-        # de _DATA et _init_worker ne fait rien, sous spawn il le charge. Sans
-        # cela, tout le pool échoue sur les plateformes qui ne forkent pas.
+        # initializer=_pool_initializer, initargs=(_DATA,) : sur fork (Linux)
+        # ceci ne coûte rien de plus que l'héritage par copy-on-write déjà en
+        # place ; sur spawn (Windows/macOS) c'est ce qui rend le pool
+        # fonctionnel du tout. Le coût de sérialisation est payé UNE FOIS par
+        # worker (args.workers fois), pas une fois par combinaison de la
+        # grille -- passer _DATA en argument de chaque pool.submit() aurait
+        # aussi marché sur Windows, mais aurait re-sérialisé price_panel et
+        # les snapshots d'options à chaque tâche.
         with ProcessPoolExecutor(
-            max_workers=args.workers,
-            initializer=_init_worker,
-            initargs=(args,),
+            max_workers=args.workers, initializer=_pool_initializer, initargs=(_DATA,),
         ) as pool:
             futures = {
                 pool.submit(
