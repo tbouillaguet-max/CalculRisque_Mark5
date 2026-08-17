@@ -96,10 +96,23 @@ DEFAULT_ENTRY_THRESHOLD_GRID = sorted({
     40.55,   # ecart 50 %
 })
 
-# Rempli une fois par process AVANT de forker le pool (voir main()) : les
-# workers héritent de ces objets par copy-on-write, sans repasser par le
-# chargement disque ni par une sérialisation coûteuse d'un DataFrame par tâche.
+# Rempli une fois par process. Sur Linux, les workers du pool en héritent par
+# copy-on-write (fork) sans repasser par le chargement disque. Sur Windows
+# (et sur macOS depuis Python 3.8), ProcessPoolExecutor n'utilise PAS fork :
+# chaque worker est un interpréteur NEUF qui réimporte ce module de zéro, et
+# repart donc avec _DATA = {} -- voir _pool_initializer, qui répare cet écart
+# en repeuplant _DATA UNE FOIS par worker via initializer/initargs (cf.
+# 11_optimize_options_stops.py, qui a exactement le même besoin).
 _DATA: dict = {}
+
+
+def _pool_initializer(data: dict) -> None:
+    """Exécuté une fois par worker à la création du pool. Sur fork, c'est un
+    no-op (_DATA déjà hérité) ; sur spawn, c'est le SEUL moyen par lequel un
+    worker reçoit jamais ces données -- sans lui, _run_one échoue avec
+    `KeyError: 'price_panel'` sur 100% des points de la grille."""
+    global _DATA
+    _DATA = data
 
 
 def _log_points_to_gap_pct(log_points: float) -> float:
@@ -384,10 +397,11 @@ def main() -> None:
                 start_date, end_date, args.train_fraction,
             ))
     else:
-        # ProcessPoolExecutor par défaut utilise fork() sur Linux : les
-        # workers héritent de _DATA (déjà rempli ci-dessus) par
-        # copy-on-write, sans le repasser en argument ni le recharger.
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # initializer/initargs : cf. le commentaire sur _pool_initializer.
+        # Sans coût mesurable sur fork, indispensable sur spawn.
+        with ProcessPoolExecutor(
+            max_workers=args.workers, initializer=_pool_initializer, initargs=(_DATA,),
+        ) as pool:
             futures = {
                 pool.submit(
                     _run_one, seuil, args.strategy, strategy_params,

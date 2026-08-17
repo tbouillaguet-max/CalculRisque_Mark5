@@ -7,11 +7,16 @@ zéro, et un `_DATA` global rempli seulement dans le process parent y est
 donc vide. `initializer=_pool_initializer, initargs=(_DATA,)` répare cet
 écart -- mesuré en conditions réelles : sur Windows, sans ce correctif,
 _run_combo/_run_one échouaient avec `KeyError: 'price_panel'` sur 100% des
-combinaisons d'une grille, systématiquement.
+combinaisons d'une grille.
+
+Le symptôme était trompeur : la grille se terminait « normalement », écrivait
+son CSV, et n'annonçait qu'un « toutes les combinaisons ont échoué ».
 
 Ces tests forcent explicitement le contexte "spawn" pour être discriminants
 même lancés sur Linux (où fork() masquerait le bug : _DATA hérité par
-copy-on-write fonctionnerait même SANS l'initializer)."""
+copy-on-write fonctionnerait même SANS l'initializer). Ils couvrent LES
+QUATRE grid-search : ils partagent le même schéma « charger une fois dans le
+parent, lire _DATA dans le worker », donc le même défaut."""
 
 from __future__ import annotations
 
@@ -21,23 +26,25 @@ from concurrent.futures import ProcessPoolExecutor
 
 import pytest
 
+# Les quatre scripts d'optimisation, par nom de module (les chiffres de tête
+# n'en font pas des identifiants Python valides : import_module les accepte,
+# une clause `import` non).
+SCRIPTS = [
+    "11_optimize_options_stops",
+    "11b_optimize_rebalance_threshold",
+    "11c_optimize_convergence_fraction",
+    "11d_optimize_entry_threshold",
+]
+
 _opt = importlib.import_module("11_optimize_options_stops")
-_opt_b = importlib.import_module("11b_optimize_rebalance_threshold")
 
 
-def _read_from_data(key: str) -> object:
+def _read_from_data(module_name: str, key: str) -> object:
     """Fonction de module (picklable) : lit `_DATA` du process WORKER --
     jamais celui qui a lancé le test. Une valeur lue avec succès prouve que
     l'initializer a bien tourné dans CE process-là."""
     import importlib as _il
-    mod = _il.import_module("11_optimize_options_stops")
-    return mod._DATA.get(key)
-
-
-def _read_from_data_b(key: str) -> object:
-    import importlib as _il
-    mod = _il.import_module("11b_optimize_rebalance_threshold")
-    return mod._DATA.get(key)
+    return _il.import_module(module_name)._DATA.get(key)
 
 
 def _spawn_context_or_skip():
@@ -47,21 +54,18 @@ def _spawn_context_or_skip():
         pytest.skip("contexte 'spawn' indisponible sur cette plateforme")
 
 
-@pytest.mark.parametrize("module, initializer, reader", [
-    (_opt, "_pool_initializer", _read_from_data),
-    (_opt_b, "_pool_initializer", _read_from_data_b),
-])
-def test_pool_initializer_peuple_data_sur_spawn(module, initializer, reader):
+@pytest.mark.parametrize("module_name", SCRIPTS)
+def test_pool_initializer_peuple_data_sur_spawn(module_name):
     """LE test qui aurait détecté le bug avant un run Windows : sans
     l'initializer, un worker spawné ne voit jamais le _DATA du parent."""
     ctx = _spawn_context_or_skip()
-    init_fn = getattr(module, initializer)
+    init_fn = importlib.import_module(module_name)._pool_initializer
 
     payload = {"price_panel": "objet-panel-factice", "signal_events": "objet-signaux-factice"}
     with ProcessPoolExecutor(
         max_workers=1, mp_context=ctx, initializer=init_fn, initargs=(payload,),
     ) as pool:
-        vu = pool.submit(reader, "price_panel").result(timeout=60)
+        vu = pool.submit(_read_from_data, module_name, "price_panel").result(timeout=120)
 
     assert vu == "objet-panel-factice", (
         "le worker spawné n'a pas reçu _DATA -- c'est exactement le "
@@ -69,33 +73,24 @@ def test_pool_initializer_peuple_data_sur_spawn(module, initializer, reader):
     )
 
 
-@pytest.mark.parametrize("module, initializer, reader", [
-    (_opt, "_pool_initializer", _read_from_data),
-    (_opt_b, "_pool_initializer", _read_from_data_b),
-])
-def test_sans_initializer_le_worker_spawne_ne_voit_rien(module, initializer, reader):
+@pytest.mark.parametrize("module_name", SCRIPTS)
+def test_sans_initializer_le_worker_spawne_ne_voit_rien(module_name):
     """Non-régression INVERSE : documente que le bug est réel en son
     absence, pour qu'un futur refactor qui retirerait l'initializer soit
     intercepté par un échec explicite plutôt qu'un succès accidentel."""
     ctx = _spawn_context_or_skip()
     with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool:
-        vu = pool.submit(reader, "price_panel").result(timeout=60)
+        vu = pool.submit(_read_from_data, module_name, "price_panel").result(timeout=120)
     assert vu is None
 
 
-def test_le_pool_de_11_declare_bien_l_initializer():
+@pytest.mark.parametrize("module_name", SCRIPTS)
+def test_le_pool_declare_bien_l_initializer(module_name):
     """Garde-fou statique, léger : si `main()` recrée un jour le pool sans y
     repasser l'initializer (régression de refactor), ce test échoue sans
     avoir besoin de lancer tout le grid-search."""
     import inspect
-    source = inspect.getsource(_opt.main)
-    assert "initializer=_pool_initializer" in source
-    assert "initargs=(_DATA,)" in source
-
-
-def test_le_pool_de_11b_declare_bien_l_initializer():
-    import inspect
-    source = inspect.getsource(_opt_b.main)
+    source = inspect.getsource(importlib.import_module(module_name).main)
     assert "initializer=_pool_initializer" in source
     assert "initargs=(_DATA,)" in source
 
