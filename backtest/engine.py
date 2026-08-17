@@ -426,9 +426,23 @@ class BacktestEngine:
         active_budget = max(nav_now - legacy_value, 0.0)
 
         total_weight = sum(target_weights.values())
-        # Toujours renormalisé à somme=1 (pas seulement si >1) : rien ne
-        # garantit que la stratégie a déjà normalisé ses poids à 100%.
-        if total_weight > 0:
+        # Renormalisé SEULEMENT si la somme dépasse 1 -- jamais vers le haut.
+        #
+        # La version précédente renormalisait toujours, au motif que rien ne
+        # garantissait que la stratégie eût normalisé ses poids à 100%. C'était
+        # vrai, et c'est devenu faux : base.capped_weights renvoie
+        # DÉLIBÉRÉMENT une somme inférieure à 1 quand le plafond par position
+        # mord et qu'il y a trop peu de candidates (une seule candidate ->
+        # 20%, le reste en cash). Remonter cette somme à 1 ANNULAIT le
+        # plafond : mesuré, une journée à candidate unique plaçait 100% du NAV
+        # sur un seul titre, deux candidates 50% chacune, pour un plafond
+        # pourtant demandé à BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20%.
+        #
+        # Le moteur options ne renormalise pas (cf. _queue_isolated_order) :
+        # les deux moteurs appliquaient donc deux règles de concentration
+        # différentes à partir de la même fonction de pondération, ce qui
+        # rendait leurs performances non comparables.
+        if total_weight > 1:
             target_weights = {s: w / total_weight for s, w in target_weights.items()}
 
         for symbol, weight in target_weights.items():
