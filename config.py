@@ -685,7 +685,7 @@ OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 # c'est la même hypothèse implicite que valuation_gap_multiples_options, qui
 # place son strike à mi-chemin entre cours et valeur théorique, rendue ici
 # EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
-OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.5
+OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
 
 # Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
 # de S0·exp(-N·sigma·racine(T)) à S0·exp(+N·sigma·racine(T)), par pas de
