@@ -114,6 +114,27 @@ MATERIAL_EVENTS_8K_FILE = DIR_FINANCIALS / "material_events_8k.parquet"
 UNIVERSE_HISTORY_FILE = DIR_UNIVERSE / "sp500_universe_history.parquet"  # sortie de 01b : spans d'appartenance
 UNIVERSE_FULL_FILE = DIR_UNIVERSE / "sp500_universe_full.csv"            # sortie de 01b : superset actuels+radiés, entrée de 03b/04
 
+
+def default_universe_file():
+    """Univers par défaut de TOUS les collecteurs (03b, 04, 04b, 04c) :
+    l'univers point-in-time de 01b s'il existe, sinon l'univers actuel de 01.
+
+    POURQUOI C'EST PARTAGÉ. 03b appliquait déjà cette règle, mais 04/04b/04c
+    retombaient en dur sur UNIVERSE_FILE -- l'univers ACTUEL. Le pipeline
+    produisait donc, sans rien signaler, un jeu de données asymétrique : les
+    COURS des entreprises radiées étaient là (donc dans l'indice de référence
+    équipondéré du backtest), mais pas leurs FONDAMENTAUX, donc pas leurs
+    signaux. La stratégie ne pouvait choisir que parmi des survivantes pendant
+    que son repère portait l'indice entier, et l'alpha mesuré était surestimé
+    sans qu'aucun avertissement ne le dise. L'univers point-in-time du moteur
+    n'y changeait rien : il RESTREINT les candidates, il ne crée pas les
+    fondamentaux manquants.
+
+    Le surcoût est borné : 04/04b/04c ignorent tout ticker déjà en cache
+    (should_skip), donc seules les radiées réellement absentes sont
+    interrogées."""
+    return UNIVERSE_FULL_FILE if UNIVERSE_FULL_FILE.exists() else UNIVERSE_FILE
+
 # Cours quotidiens (contrairement à PRICES_FILE qui ne garde que la clôture
 # de fin d'année) : nécessaires pour un backtest à granularité journalière.
 DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b
@@ -232,13 +253,53 @@ RISK_FREE_RATE_BY_YEAR: dict[int, float] = {
 
 
 def risk_free_rate_for(year: Optional[int] = None) -> float:
-    """Taux sans risque de l'année demandée, avec repli sur la constante
+    """Taux sans risque MOYEN de l'année demandée, avec repli sur la constante
     RISK_FREE_RATE (années hors table, ou appelant qui n'a pas de date sous
     la main -- le pricing de 08_recuperation_options.py, par exemple, ne
-    valorise que des contrats du jour)."""
+    valorise que des contrats du jour).
+
+    RÉSERVÉ AUX MESURES EX-POST (Sharpe, Sortino, intérêts effectivement
+    perçus sur le cash) : la moyenne d'une année n'est connue qu'une fois
+    l'année terminée. Pour une DÉCISION prise en cours d'année -- actualiser
+    un DCF, pricer une option -- c'est risk_free_rate_known_at qu'il faut,
+    sans quoi on actualise avec un chiffre qui n'existe pas encore."""
     if year is None:
         return RISK_FREE_RATE
     return RISK_FREE_RATE_BY_YEAR.get(int(year), RISK_FREE_RATE)
+
+
+def risk_free_rate_known_at(date_or_year=None) -> float:
+    """Taux sans risque CONNU à cette date, donc la moyenne de l'année civile
+    PRÉCÉDENTE -- même discipline que inflation_known_at, et pour la même
+    raison.
+
+    POURQUOI CE N'EST PAS UN DÉTAIL. RISK_FREE_RATE_BY_YEAR porte des
+    MOYENNES annuelles (3-Month T-Bill). Actualiser un 10-K déposé en février
+    2020 au taux "2020" revient à utiliser 0,37% -- une moyenne écrasée par
+    l'effondrement de mars 2020, que personne ne connaissait en février, où le
+    T-Bill cotait encore ~1,55%. Et le biais n'est pas centré : les années où
+    la moyenne s'écarte le plus du taux du début d'année sont les années de
+    crise, où elle s'effondre en cours de route. Un WACC trop bas gonfle la
+    valeur théorique, donc l'écart, donc le nombre de signaux d'achat -- juste
+    avant un krach. Le backtest s'en trouvait flatté exactement là où il
+    fallait qu'il ne le soit pas.
+
+    Le décalage d'un an sous-estime le taux dans un cycle de hausse et le
+    surestime dans un cycle de baisse ; c'est le prix d'une table annuelle. La
+    seule façon de faire mieux serait une courbe quotidienne (FRED DTB3), que
+    le pipeline ne collecte pas."""
+    if date_or_year is None:
+        return RISK_FREE_RATE
+    if isinstance(date_or_year, (int, float)) and not isinstance(date_or_year, bool):
+        annee = int(date_or_year)
+    else:
+        import pandas as pd  # local : garde config.py importable sans pandas
+
+        timestamp = pd.Timestamp(date_or_year)
+        if pd.isna(timestamp):
+            return RISK_FREE_RATE
+        annee = timestamp.year
+    return RISK_FREE_RATE_BY_YEAR.get(annee - 1, RISK_FREE_RATE)
 
 
 # Rendement du dividende par SECTEUR, utilisé par le pricing Black-Scholes du
@@ -313,6 +374,20 @@ BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 3
 # Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
 # concentration du portefeuille. 0 ou None le désactive.
 BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
+
+# Plafond de poids CUMULÉ par secteur (stratégie valuation_gap_sector_neutral).
+# Le plafond par position ne borne rien à ce niveau : vingt technos à 4%
+# chacune font 80% du portefeuille sur un seul secteur sans qu'aucune ligne ne
+# dépasse son plafond individuel. 0 ou None le désactive.
+BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT = 30.0
+
+# Seuils de valuation_gap_sector_neutral. Ils NE SE LISENT PAS comme
+# BACKTEST_ENTRY_THRESHOLD_PCT : le premier porte sur l'écart À LA MÉDIANE DU
+# SECTEUR (10 points d'excès sur ses pairs est bien plus sélectif que 10%
+# d'écart au cours), le second est le garde-fou absolu qui empêche d'acheter
+# la "moins pire" d'un secteur entièrement survalorisé.
+BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 10.0
+BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 
 # Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
 # 12 derniers mois (dernier mois exclu, cf. PricePanel.momentum_12_1) n'est
@@ -1000,13 +1075,19 @@ DCF_WACC_FOLLOWS_RATE_CURVE = True
 DCF_MIN_WACC_MINUS_TERMINAL_GROWTH = 0.03
 
 
-def sector_dcf_params(sector, year: Optional[int] = None) -> dict:
+def sector_dcf_params(sector, year: Optional[int] = None, point_in_time: bool = True) -> dict:
     """Hypothèses DCF du secteur, WACC indexé sur la courbe de taux de
     `year` quand DCF_WACC_FOLLOWS_RATE_CURVE est actif (voir ci-dessus).
 
     `year=None` (appelant sans date) -> WACC calibré tel quel, comportement
     historique. Le résultat est un dict neuf : les tables de config ne sont
-    jamais mutées."""
+    jamais mutées.
+
+    `point_in_time=True` (défaut) retient le taux CONNU à cette date, soit la
+    moyenne de l'année précédente : actualiser un dépôt de février 2020 avec
+    la moyenne 2020, écrasée par le krach de mars, est un look-ahead (voir
+    risk_free_rate_known_at). False rétablit le taux contemporain, pour
+    reproduire un run antérieur ou pour un usage ex-post."""
     params = SECTOR_DCF_PARAMS.get(
         sector if isinstance(sector, str) else "", SECTOR_DCF_PARAMS["_default"],
     )
@@ -1014,7 +1095,8 @@ def sector_dcf_params(sector, year: Optional[int] = None) -> dict:
         return dict(params)
 
     risk_premium = params["wacc"] - WACC_CALIBRATION_RISK_FREE_RATE
-    wacc = risk_free_rate_for(year) + risk_premium
+    taux = risk_free_rate_known_at(year) if point_in_time else risk_free_rate_for(year)
+    wacc = taux + risk_premium
     # Le plancher porte sur l'ÉCART au taux terminal, pas sur le WACC lui-même :
     # c'est cet écart qui pilote la valeur terminale.
     wacc = max(wacc, params["terminal_growth"] + DCF_MIN_WACC_MINUS_TERMINAL_GROWTH)
@@ -1041,7 +1123,68 @@ def sector_dcf_params(sector, year: Optional[int] = None) -> dict:
 # besoin de l'EBIT.
 #
 # Libellés de 02_categoriser_secteurs.py (français), comme SECTOR_DCF_PARAMS.
-SECTORS_SANS_DCF: tuple = ("Banques", "Assurance", "Services financiers", "Immobilier")
+# "Services financiers" N'Y FIGURE PLUS, et c'est le point du découpage fin
+# de GICS_SUB_INDUSTRY_TO_SECTEUR : tant que ce libellé désignait l'intégralité
+# de GICS "Financials", l'exclure retirait du DCF 76 entreprises d'un coup, dont
+# une vingtaine auxquelles la critique du FCFF ne s'applique pas du tout --
+# Visa et Mastercard (péages à 65% de marge, capex négligeable), S&P Global,
+# Moody's, MSCI, FactSet, les opérateurs de marchés (CME, ICE, Nasdaq, Cboe) et
+# les COURTIERS d'assurance (Aon, Marsh, Gallagher, Brown & Brown), qui
+# encaissent des commissions sans porter le moindre risque au bilan. Le libellé
+# ne désigne plus que ces métiers-là ; les prêteurs partent en "Banques" et les
+# porteurs de risque en "Assurance".
+SECTORS_SANS_DCF: tuple = ("Banques", "Assurance", "Immobilier")
+
+# ----------------------------------------------------------------------------
+# Découpage FIN de GICS "Financials" (02_categoriser_secteurs.py)
+# ----------------------------------------------------------------------------
+# GICS_TO_SECTEUR (02) mappe les 11 secteurs GICS un pour un, si bien que tout
+# "Financials" atterrissait dans "Services financiers" -- un seul bucket pour
+# JPMorgan, Visa et Aon. Les clés "Banques" et "Assurance" de
+# SECTOR_DCF_PARAMS n'étaient donc JAMAIS produites (8 des 19 clés de la table
+# étaient mortes), et SECTORS_SANS_DCF excluait les trois métiers d'un bloc.
+#
+# LE CRITÈRE EST ÉCONOMIQUE, PAS TAXONOMIQUE : le FCFF décrit-il l'entreprise ?
+#
+#   - Prêteur (banque, financement à la consommation, crédit hypothécaire,
+#     courtage/banque d'affaires, gestion d'actifs et banque dépositaire) : le
+#     bilan est l'outil de production, les intérêts SONT le chiffre d'affaires
+#     et la dette n'est pas un financement à retrancher. FCFF invalide.
+#   - Porteur de risque (vie, dommages, réassurance, multiligne) : provisions
+#     techniques et float dominent les flux. FCFF invalide.
+#   - Encaisseur de commissions (paiements, opérateurs de marchés et données,
+#     courtiers d'assurance) : marges élevées, capex faible, aucun risque porté
+#     au bilan. FCFF parfaitement valide -- c'est même le cas d'école.
+#
+# Les holdings multi-secteurs (Berkshire) partent en "Assurance" : leur coeur
+# est un assureur, et leur bilan consolidé rend l'EBIT inexploitable.
+#
+# La sous-industrie vient de Wikipedia via 01_build_universe.py. Elle n'est PAS
+# disponible pour les entreprises radiées (absentes de la table des membres
+# actuels) : celles-là retombent sur le mapping par secteur, donc sur
+# "Services financiers". C'est une couverture imparfaite, journalisée par 02.
+GICS_SUB_INDUSTRY_TO_SECTEUR: dict[str, str] = {
+    # --- Prêteurs et intermédiaires de bilan -> Banques -------------------
+    "Diversified Banks": "Banques",
+    "Regional Banks": "Banques",
+    "Commercial & Residential Mortgage Finance": "Banques",
+    "Consumer Finance": "Banques",
+    "Investment Banking & Brokerage": "Banques",
+    "Asset Management & Custody Banks": "Banques",
+    "Diversified Capital Markets": "Banques",
+    "Diversified Financial Services": "Banques",
+    # --- Porteurs de risque -> Assurance ---------------------------------
+    "Life & Health Insurance": "Assurance",
+    "Property & Casualty Insurance": "Assurance",
+    "Multi-line Insurance": "Assurance",
+    "Reinsurance": "Assurance",
+    "Multi-Sector Holdings": "Assurance",
+    # --- Commissions, sans risque de bilan -> Services financiers ---------
+    "Transaction & Payment Processing Services": "Services financiers",
+    "Data Processing & Outsourced Services": "Services financiers",
+    "Financial Exchanges & Data": "Services financiers",
+    "Insurance Brokers": "Services financiers",
+}
 
 # ----------------------------------------------------------------------------
 # Multiples pertinents par SECTEUR (06b_calcul_valorisation_combinee.py)

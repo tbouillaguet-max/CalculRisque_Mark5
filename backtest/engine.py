@@ -45,10 +45,24 @@ logger = logging.getLogger("backtest.engine")
 
 MIN_TRADE_DOLLAR = 1.0  # en dessous, un ordre de rebalancement est ignoré (évite le "churn" sur des écarts négligeables)
 
-# Au-delà de cette part d'ordres d'achat rognés faute de cash, le
-# sous-investissement n'est plus un accident isolé mais le régime normal du
-# run : il est signalé en fin de backtest (cf. execution_diagnostics).
-TRUNCATED_ORDERS_WARNING_PCT = 10.0
+# Au-delà de cette part du montant D'ACHAT DEMANDÉ qui n'a pas pu être
+# investie faute de cash, le sous-investissement n'est plus un arrondi mais le
+# régime normal du run : il est signalé en fin de backtest (cf.
+# execution_diagnostics).
+#
+# Le seuil porte sur des DOLLARS et non sur un nombre d'ordres, contrairement
+# à la version précédente. Une part élevée d'ordres "tronqués" ne dit rien
+# tant qu'on ne sait pas de combien : mesuré sur un run de référence, 53% des
+# ordres étaient réduits... pour 0,12% du montant demandé, soit un portefeuille
+# investi à 99,88% de ce que la stratégie demandait. L'ancien seuil déclenchait
+# un avertissement alarmant sur un moteur qui faisait exactement son travail.
+UNFILLED_DOLLAR_WARNING_PCT = 1.0
+
+# En dessous de cette part de l'univers point-in-time réellement couverte par
+# des signaux, la stratégie ne choisit plus dans l'indice mais dans les seuls
+# survivants -- et son alpha se mesure contre un indice de référence qui, lui,
+# porte les radiées (cf. _record_signal_coverage).
+SIGNAL_COVERAGE_WARNING_RATIO = 0.95
 
 
 @dataclass
@@ -99,14 +113,24 @@ class BacktestEngine:
     ):
         self.prices = price_panel
         self.last_valid_date = price_panel.last_valid_date
-        # Les événements sont regroupés par date de publication une fois pour
-        # toutes : les rechercher par masque booléen sur la table complète à
-        # chacun des ~2500 jours de bourse d'un run coûtait plus cher que le
-        # reste de la journée simulée.
-        self.events_by_date = {
-            published_date: group.to_dict("records")
-            for published_date, group in signal_events.groupby("published_date", sort=False)
-        }
+        # Les événements sont triés par date de publication une fois pour
+        # toutes, puis consommés au fil de la boucle (cf. _events_up_to) : les
+        # rechercher par masque booléen sur la table complète à chacun des
+        # ~2500 jours de bourse d'un run coûtait plus cher que le reste de la
+        # journée simulée.
+        #
+        # PAS un dict indexé par date, et l'index exact était un piège : une
+        # `filed_date` qui ne tombe pas EXACTEMENT sur un jour du calendrier de
+        # bourse n'était jamais retrouvée, donc jamais connue du moteur -- le
+        # signal était perdu en silence. Le cas se produit pour de bon : la SEC
+        # accepte les dépôts le Vendredi saint, où le NYSE est fermé, et le
+        # calendrier vient des cours (03b), pas d'EDGAR. Un signal publié un
+        # jour non coté doit être connu à la PREMIÈRE séance suivante, ce que
+        # fait la consommation par curseur.
+        events = signal_events.sort_values("published_date", kind="stable")
+        self._events = events.to_dict("records")
+        self._event_dates = pd.DatetimeIndex(events["published_date"]) if len(events) else pd.DatetimeIndex([])
+        self._next_event = 0
         self.universe = data_loader.UniverseResolver(universe_history, fallback_universe_symbols)
         self.strategy = strategy
         self.initial_capital = initial_capital
@@ -129,13 +153,17 @@ class BacktestEngine:
 
         # Diagnostics d'exécution (voir execution_diagnostics). _rebalance
         # alloue un budget égal au NAV diminué des positions GELÉES, mais ces
-        # positions ne sont pas vendues : le cash réellement disponible est
-        # souvent inférieur au budget alloué, et _execute_trade tronquait
-        # l'achat en silence. Combiné à la règle "on ne sort jamais sur perte
-        # de signal", le portefeuille dérive alors vers un buy-and-hold de
-        # positions périmées sans que rien ne le signale.
+        # positions ne sont pas vendues : le cash réellement disponible peut
+        # être inférieur au budget alloué. Combiné à la règle "on ne sort
+        # jamais sur perte de signal", le portefeuille dériverait vers un
+        # buy-and-hold de positions périmées sans que rien ne le signale.
         self.buy_orders_count = 0
         self.truncated_orders_count = 0
+        # Le sous-investissement en DOLLARS, seule mesure économiquement
+        # lisible : un ordre "tronqué" de 0,1% et un ordre non exécuté du tout
+        # comptent pareil dans truncated_orders_count, pas ici.
+        self.demanded_dollar = 0.0
+        self.unfilled_dollar = 0.0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -145,6 +173,16 @@ class BacktestEngine:
         if len(calendar) == 0:
             raise ValueError("Aucun jour de bourse dans la plage demandée : vérifie start_date/end_date et les données de prix.")
         self.calendar = calendar
+
+        # Couverture annuelle de l'univers par les signaux (cf.
+        # _record_signal_coverage) : la mesure du biais de survivance
+        # RÉSIDUEL, celui que l'univers point-in-time ne corrige pas. Relevée
+        # au DERNIER jour de bourse de chaque année -- un relevé au premier
+        # tomberait avant le moindre dépôt et afficherait 0% de couverture sur
+        # la première année de n'importe quel run.
+        self.signal_coverage_rows: list[dict] = []
+        dates = pd.DatetimeIndex(calendar)
+        self._coverage_dates = set(pd.Series(dates, index=dates.year).groupby(level=0).last())
 
         if universe_history is None:
             logger.warning(
@@ -162,13 +200,14 @@ class BacktestEngine:
             exited_today = self._handle_stale_symbols(today)
             exited_today |= self._check_stop_loss_take_profit(today)
 
-            todays_events = self.events_by_date.get(today)
+            todays_events = self._events_up_to(today)
             if todays_events:
                 self._update_known_signals(todays_events, today)
                 self._rebalance(today, exclude=exited_today)
 
             self._mark_to_market(today)
             self._record_positions(today)
+            self._record_signal_coverage(today)
 
         equity_curve = pd.DataFrame(self.equity_curve_rows)
         positions_history = pd.DataFrame(self.positions_history_rows)
@@ -184,12 +223,18 @@ class BacktestEngine:
             return
 
         still_pending: dict[str, _PendingOrder] = {}
-        # Ventes d'abord, achats ensuite : le produit d'une sortie finance les
-        # achats du même jour (cf. _rebalance, qui raisonne en NAV). Sans cet
-        # ordre, la garde de cash de _execute_trade tronquerait des achats
-        # pourtant couverts, selon le seul ordre d'insertion du dictionnaire.
-        ordered = sorted(self.pending_orders.items(), key=lambda kv: kv[1].target_dollar > 0)
-        for symbol, order in ordered:
+        sells: list[tuple[str, float, float, str]] = []
+        buys: list[tuple[str, float, float, str]] = []
+
+        # Le SENS d'un ordre n'est pas le signe de sa cible : une cible de
+        # 5 000 $ sur une ligne qui en vaut 8 000 est une VENTE. L'ancien tri
+        # (`target_dollar > 0`) ne faisait donc passer devant que les
+        # liquidations totales (cible = 0) ; tout rebalancement à la baisse
+        # partait dans le même paquet que les achats, dans le seul ordre
+        # d'insertion du dictionnaire. Des achats étaient tronqués faute de
+        # cash alors que les ventes du même jour les couvraient, et le
+        # résultat du run dépendait de l'ordre d'itération d'un dict.
+        for symbol, order in self.pending_orders.items():
             price = self.prices.open_at(symbol, today)
             if price is None:
                 if (today - order.queued_on).days > data_loader.FORWARD_FILL_MAX_DAYS:
@@ -201,18 +246,69 @@ class BacktestEngine:
                     continue
                 still_pending[symbol] = order
                 continue
-            self._fill_order(symbol, order.target_dollar, price, today, order.reason)
+
+            pos = self.positions.get(symbol)
+            delta_dollar = order.target_dollar - (pos.shares if pos else 0.0) * price
+            if abs(delta_dollar) < MIN_TRADE_DOLLAR:
+                continue
+            side = buys if delta_dollar > 0 else sells
+            side.append((symbol, delta_dollar / price, price, order.reason))
+
         self.pending_orders = still_pending
 
-    def _fill_order(self, symbol: str, target_dollar: float, price: float, today: pd.Timestamp, reason: str) -> None:
-        pos = self.positions.get(symbol)
-        current_shares = pos.shares if pos else 0.0
-        current_value = current_shares * price
-        delta_dollar = target_dollar - current_value
-        if abs(delta_dollar) < MIN_TRADE_DOLLAR:
+        # Ventes d'abord : leur produit finance les achats du même jour
+        # (_rebalance raisonne en NAV, pas en cash).
+        for symbol, shares_delta, price, reason in sells:
+            self._execute_trade(symbol, shares_delta, price, today, reason)
+        self._execute_buys(buys, today)
+
+    def _execute_buys(self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp) -> None:
+        """Achats du jour, tous servis dans la MÊME proportion quand le cash
+        ne suffit pas.
+
+        Le cash restant peut être inférieur au total demandé sans qu'aucun
+        bug ne soit en cause : _rebalance dimensionne sur le NAV de la CLÔTURE
+        de J-1, et le portefeuille a rouvert ailleurs. Servir les ordres l'un
+        après l'autre jusqu'à épuisement du cash finançait alors intégralement
+        les premiers et pas du tout les derniers -- une règle de priorité
+        involontaire, calquée sur l'ordre d'apparition des symboles dans le
+        flux de dépôts, qu'aucune exécution réelle ne reproduirait. La
+        stratégie a demandé des POIDS RELATIFS : un manque de cash doit les
+        réduire tous du même facteur, pas en sacrifier une partie."""
+        if not buys:
             return
-        shares_delta = delta_dollar / price
-        self._execute_trade(symbol, shares_delta, price, today, reason)
+
+        cost_rate = self.cost_bps / 10_000
+        notional = sum(shares * price for _, shares, price, _ in buys)
+        demanded = notional * (1 + cost_rate)
+        self.buy_orders_count += len(buys)
+
+        scale = 1.0
+        if demanded > self.cash:
+            # Backtest NON margé : on n'achète jamais à crédit.
+            manque = demanded - self.cash
+            # Un manque à hauteur des FRAIS du lot n'est pas un défaut, c'est
+            # l'arithmétique : _rebalance alloue une VALEUR DE POSITION égale
+            # au NAV (positions gelées déduites), alors qu'acquérir cette
+            # valeur consomme en plus la commission et le slippage. Un
+            # portefeuille pleinement investi est donc court d'exactement
+            # cost_bps à chaque rebalancement -- 0,1% ici -- et ne peut pas ne
+            # pas l'être : on n'achète pas 100% du NAV en titres ET les frais
+            # avec. Le compter comme une troncature faisait afficher "100% des
+            # ordres tronqués" à un moteur qui fonctionnait, et surtout
+            # noyait les vraies pénuries de cash dans ce bruit.
+            if manque > notional * cost_rate + MIN_TRADE_DOLLAR:
+                self.truncated_orders_count += len(buys)
+            self.unfilled_dollar += manque
+            if self.cash <= 0:
+                return
+            scale = self.cash / demanded
+        self.demanded_dollar += demanded
+
+        for symbol, shares_delta, price, reason in buys:
+            if shares_delta * price * scale < MIN_TRADE_DOLLAR:
+                continue
+            self._execute_trade(symbol, shares_delta * scale, price, today, reason)
 
     def _execute_trade(self, symbol: str, shares_delta: float, price: float, today: pd.Timestamp, reason: str) -> None:
         cost_rate = self.cost_bps / 10_000
@@ -220,16 +316,13 @@ class BacktestEngine:
 
         if shares_delta > 0:  # achat (nouvelle position ou renforcement)
             effective_price = price * (1 + cost_rate)
-            # Backtest NON margé : on n'achète jamais à crédit. Le budget vient
-            # du NAV (_rebalance), dont une partie est immobilisée dans les
-            # positions conservées -- sans cette borne, le cash passait
-            # négatif et l'exposition dépassait 100% du portefeuille.
+            # Filet d'arrondi seulement : le dimensionnement au cash et son
+            # décompte sont faits en amont, sur le LOT d'achats du jour
+            # (_execute_buys). Cette borne ne doit plus mordre que sur des
+            # écarts de virgule flottante -- si elle mordait vraiment, du cash
+            # partirait en négatif.
             cost = shares_delta * effective_price
-            self.buy_orders_count += 1
             if cost > self.cash:
-                # Troncature COMPTÉE, plus silencieuse : c'est le symptôme
-                # observable du sous-investissement décrit dans __init__.
-                self.truncated_orders_count += 1
                 if self.cash <= 0:
                     return
                 shares_delta, cost = shares_delta * (self.cash / cost), self.cash
@@ -320,20 +413,87 @@ class BacktestEngine:
         self.pending_orders[symbol] = _PendingOrder(target_dollar, reason, today)
 
     # ------------------------------------------------------------------ #
+    # Couverture de l'univers par les signaux (biais de survivance résiduel)
+    # ------------------------------------------------------------------ #
+    def _record_signal_coverage(self, today: pd.Timestamp) -> None:
+        """Un relevé par an : combien de membres RÉELS de l'indice à cette
+        date le moteur pouvait-il seulement acheter ?
+
+        Un univers point-in-time (01b) empêche d'acheter une entreprise avant
+        son entrée dans l'indice, mais il ne CRÉE pas les signaux des
+        entreprises radiées. Or 03b se rabat sur l'univers complet quand il
+        existe, alors que 04/04b s'en tiennent par défaut à l'univers ACTUEL
+        (config.UNIVERSE_FILE) : les cours des radiées sont là -- donc dans
+        l'indice de référence équipondéré -- mais pas leurs fondamentaux, donc
+        pas leurs signaux. La stratégie ne choisit alors QUE parmi des
+        entreprises encore membres aujourd'hui, pendant que le benchmark, lui,
+        porte l'indice entier. L'alpha se lit contre un repère que la
+        stratégie n'avait pas le droit de perdre, et un signal "value" est
+        précisément celui que ce biais flatte le plus : les entreprises les
+        moins chères sont aussi celles qui sortent le plus souvent de
+        l'indice."""
+        if today not in self._coverage_dates:
+            return
+        members = self.universe.asof(today)
+        if not members:
+            return
+        with_signal = members & self.known_signals.keys()
+        self.signal_coverage_rows.append({
+            "date": today, "members": len(members), "with_signal": len(with_signal),
+            "coverage_ratio": len(with_signal) / len(members),
+        })
+
+    def signal_coverage(self) -> pd.DataFrame:
+        """Relevé annuel de _record_signal_coverage, à des fins d'inspection."""
+        return pd.DataFrame(self.signal_coverage_rows)
+
+    def _signal_coverage_diagnostics(self) -> dict:
+        rows = self.signal_coverage_rows
+        if not rows:
+            return {}
+        ratios = [row["coverage_ratio"] for row in rows]
+        moyenne = sum(ratios) / len(ratios)
+        pire = min(rows, key=lambda row: row["coverage_ratio"])
+
+        if moyenne < SIGNAL_COVERAGE_WARNING_RATIO:
+            logger.warning(
+                "Couverture moyenne de l'univers point-in-time par les signaux : %.1f%% "
+                "(pire année %d : %.1f%%, %d membres, %d avec signal). La stratégie n'a pu "
+                "choisir que parmi cette fraction de l'indice, alors que l'indice de "
+                "référence en porte la totalité : l'alpha affiché est surestimé d'autant. "
+                "Cause habituelle : 04/04b n'ont été lancés que sur l'univers ACTUEL. "
+                "Corrige avec 04_recuperation_10k.py --tickers %s (idem 04b), puis 07.",
+                moyenne * 100, pire["date"].year, pire["coverage_ratio"] * 100,
+                pire["members"], pire["with_signal"], config.UNIVERSE_FULL_FILE,
+            )
+
+        return {
+            "signal_coverage_avg_ratio": float(moyenne),
+            "signal_coverage_min_ratio": float(pire["coverage_ratio"]),
+            "signal_coverage_min_year": int(pire["date"].year),
+        }
+
+    # ------------------------------------------------------------------ #
     def execution_diagnostics(self) -> dict:
         """Écart entre ce que le rebalancement a DEMANDÉ et ce que le cash a
-        permis d'exécuter, à fusionner dans metrics.json.
+        permis d'exécuter, plus la couverture de l'univers par les signaux
+        (_signal_coverage_diagnostics), à fusionner dans metrics.json.
 
         La règle des positions gelées est un choix utilisateur assumé et n'est
         pas remise en cause ici -- mais elle a une conséquence qui, elle, doit
         être visible : _rebalance alloue un budget calculé sur le NAV
         (positions gelées déduites) alors que ces positions restent détenues,
-        si bien que le cash disponible est souvent inférieur au budget. Les
-        achats étaient alors rognés sans que rien ne l'indique, et le
-        portefeuille glissait vers un buy-and-hold de lignes périmées.
+        si bien que le cash disponible peut être inférieur au budget.
 
-        avg_cash_pct mesure l'autre face du même phénomène : la part du
-        portefeuille restée en cash faute d'avoir pu exécuter les ordres."""
+        DEUX MESURES, ET UNE SEULE EST LISIBLE. truncated_orders_count compte
+        des ORDRES réduits au prorata : un ordre rogné de 0,1% y pèse autant
+        qu'un ordre jamais passé, et une part résiduelle est de toute façon
+        normale (le budget vient du NAV de la clôture de J-1, l'exécution a
+        lieu à l'ouverture de J). unfilled_dollar_pct compte des DOLLARS : la
+        part du montant demandé qui n'a pas pu être investie. C'est lui qui
+        déclenche l'avertissement, et c'est lui qui répond à la question
+        "de combien le portefeuille est-il moins investi que la stratégie ne
+        le demande ?"."""
         truncated_pct = (
             self.truncated_orders_count / self.buy_orders_count * 100
             if self.buy_orders_count else 0.0
@@ -344,15 +504,20 @@ class BacktestEngine:
         ]
         avg_cash_pct = sum(cash_pct) / len(cash_pct) if cash_pct else None
 
-        if truncated_pct > TRUNCATED_ORDERS_WARNING_PCT:
+        unfilled_pct = (
+            self.unfilled_dollar / self.demanded_dollar * 100 if self.demanded_dollar else 0.0
+        )
+
+        if unfilled_pct > UNFILLED_DOLLAR_WARNING_PCT:
             logger.warning(
-                "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
-                "alloué par le rebalancement dépasse régulièrement le cash disponible, parce que "
-                "les positions gelées immobilisent du capital sans être vendues. Le portefeuille "
-                "est donc moins investi que la stratégie ne le demande (cash moyen %.1f%%). "
-                "Accepter ce sous-investissement comme faisant partie de la règle des "
-                "positions gelées, ou réduire le nombre de candidates retenues par la stratégie.",
-                truncated_pct, self.truncated_orders_count, self.buy_orders_count,
+                "%.2f%% du montant d'achat demandé n'a pas pu être investi faute de cash "
+                "(%d ordres sur %d réduits au prorata, au-delà de ce que les frais expliquent ; "
+                "cash moyen %.1f%%). Le budget alloué par le rebalancement est calculé sur le NAV "
+                "de la clôture de la veille alors que les positions gelées immobilisent du "
+                "capital sans être vendues. Accepter ce sous-investissement comme faisant partie "
+                "de la règle des positions gelées, ou réduire le nombre de candidates retenues "
+                "par la stratégie.",
+                unfilled_pct, self.truncated_orders_count, self.buy_orders_count,
                 avg_cash_pct if avg_cash_pct is not None else float("nan"),
             )
 
@@ -360,12 +525,36 @@ class BacktestEngine:
             "buy_orders_count": self.buy_orders_count,
             "truncated_orders_count": self.truncated_orders_count,
             "truncated_orders_pct": float(truncated_pct),
+            # Le vrai chiffre à lire : la part du montant DEMANDÉ qui n'a pas
+            # pu être investie. truncated_orders_pct compte des ordres, celui-ci
+            # des dollars -- un ordre rogné de 0,1% et un ordre jamais passé
+            # pèsent identiquement dans le premier, pas dans le second.
+            "unfilled_dollar_pct": float(unfilled_pct),
             "avg_cash_pct": float(avg_cash_pct) if avg_cash_pct is not None else None,
+            **self._signal_coverage_diagnostics(),
         }
 
     # ------------------------------------------------------------------ #
     # Signaux et rebalancement
     # ------------------------------------------------------------------ #
+    def _events_up_to(self, today: pd.Timestamp) -> list[dict]:
+        """Signaux devenus publics depuis la dernière séance, consommés une
+        seule fois chacun.
+
+        Le premier appel absorbe aussi tout ce qui a été publié AVANT le début
+        du run (--start-date) : ces signaux sont réellement connus ce jour-là.
+        Ils ne déclenchent pas d'achat pour autant -- leur âge les fait écarter
+        par _signal_is_actionable -- mais ils cessent d'être invisibles, ce qui
+        évite qu'un run démarré tardivement se croie sans historique."""
+        if self._next_event >= len(self._events):
+            return []
+        fin = int(self._event_dates.searchsorted(today, side="right"))
+        if fin <= self._next_event:
+            return []
+        consommes = self._events[self._next_event:fin]
+        self._next_event = fin
+        return consommes
+
     def _update_known_signals(self, todays_events: list[dict], today: pd.Timestamp) -> None:
         for row in todays_events:
             self.known_signals[row["symbol"]] = row
@@ -385,28 +574,50 @@ class BacktestEngine:
         momentum = self.prices.momentum_12_1(symbol, today)
         return momentum is None or momentum * 100 >= self.momentum_min_pct
 
+    def _signal_is_actionable(self, symbol: str, signal: dict, today: pd.Timestamp) -> bool:
+        """Ce signal peut-il justifier de METTRE DU CAPITAL sur ce symbole
+        aujourd'hui -- première entrée comme renforcement ?
+
+        Deux familles de filtres, qui ne portent pas sur le même objet :
+
+        - PÉREMPTION du signal (âge, 8-K matériel depuis le dépôt) : elle dit
+          que l'information elle-même n'est plus une base valable. Elle
+          s'applique donc AUSSI aux positions déjà ouvertes -- on n'achète pas
+          davantage sur une thèse qu'on vient de déclarer invalide.
+        - MOMENTUM : garde-fou "value trap" documenté comme filtre de NOUVELLE
+          entrée (cf. _momentum_ok et config.BACKTEST_MOMENTUM_MIN_PCT). Il ne
+          s'applique pas à une ligne déjà détenue, sans quoi il deviendrait un
+          signal de sortie déguisé, alors que la règle utilisateur est que
+          seuls stop-loss/take-profit ferment une position.
+
+        CORRIGÉ. La version précédente laissait TOUTE position détenue court-
+        circuiter les trois filtres, en affirmant en commentaire qu'elle était
+        "de toute façon gelée, pas rebalancée sur la base de ce vieux signal".
+        Elle l'était en réalité : le symbole entrait dans eligible_signals,
+        recevait un poids, et sa cible était recalculée à chaque rebalancement
+        -- donc RENFORCÉE dès que le NAV montait. Une entreprise qui cesse de
+        produire des signaux (FCF passé négatif, EBIT négatif : 07 n'émet plus
+        rien pour elle) gardait ainsi indéfiniment son dernier écart, large par
+        construction, et le moteur continuait d'acheter dessus. C'est
+        exactement le générateur de value trap que les filtres devaient
+        empêcher. Un tel symbole devient maintenant une position GELÉE au sens
+        de la docstring du module : conservée, jamais renforcée, fermée par
+        stop-loss/take-profit uniquement."""
+        if symbol not in self.universe.asof(today):
+            return False
+        max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
+        if (today - signal["published_date"]).days > max_age:
+            return False
+        # Un 8-K matériel déposé depuis la publication du signal (04c) rend
+        # celui-ci périmé : les fondamentaux sur lesquels il repose ont bougé.
+        if self.material_events.has_event_between(symbol, signal["published_date"], today):
+            return False
+        return symbol in self.positions or self._momentum_ok(symbol, today)
+
     def _rebalance(self, today: pd.Timestamp, exclude: set[str]) -> None:
-        universe_today = self.universe.asof(today)
-        # Un signal périmé (pas de 10-K plus récent que signal_max_age_days)
-        # n'est éligible à une NOUVELLE entrée que s'il concerne une position
-        # déjà détenue (dans ce cas elle est de toute façon gelée, pas
-        # rebalancée sur la base de ce vieux signal -- cf. docstring module) :
-        # seules les positions PAS encore ouvertes sont réellement filtrées ici.
         eligible_signals = pd.DataFrame([
             s for sym, s in self.known_signals.items()
-            if sym in universe_today
-            and (
-                sym in self.positions
-                or (
-                    (today - s["published_date"]).days
-                    <= data_loader.signal_max_age_for(s, self.signal_max_age_days)
-                    and self._momentum_ok(sym, today)
-                    # Un 8-K matériel déposé depuis la publication du signal
-                    # (04c) rend celui-ci périmé : les fondamentaux sur
-                    # lesquels il repose ont bougé depuis.
-                    and not self.material_events.has_event_between(sym, s["published_date"], today)
-                )
-            )
+            if self._signal_is_actionable(sym, s, today)
         ])
         if eligible_signals.empty:
             return

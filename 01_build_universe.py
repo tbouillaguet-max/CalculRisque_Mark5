@@ -57,6 +57,16 @@ def build_universe() -> pd.DataFrame:
         # récupère ici pour que 02_categoriser_secteurs.py puisse s'en servir
         # et n'appeler l'API Mistral que pour les cas ambigus (économie d'appels).
         "GICS_Sector": raw["GICS Sector"].str.strip() if "GICS Sector" in raw.columns else None,
+        # La SOUS-INDUSTRIE, elle, était jetée alors qu'elle est dans la même
+        # table. C'est pourtant le seul niveau où "Financials" se laisse
+        # découper selon ce qui compte pour une valorisation : un prêteur (bilan
+        # = outil de production), un porteur de risque, ou un encaisseur de
+        # commissions. Sans elle, JPMorgan, Visa et Aon partageaient un seul
+        # secteur, donc un seul WACC -- et la même exclusion du DCF (cf.
+        # config.GICS_SUB_INDUSTRY_TO_SECTEUR et SECTORS_SANS_DCF).
+        "GICS_Sub_Industry": (
+            raw["GICS Sub-Industry"].str.strip() if "GICS Sub-Industry" in raw.columns else None
+        ),
     })
 
     # Certains tickers Wikipedia utilisent un point pour les classes d'actions

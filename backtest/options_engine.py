@@ -171,6 +171,19 @@ logger = logging.getLogger("backtest.options_engine")
 
 MIN_TRADE_DOLLAR = 1.0
 
+# Part d'ordres d'achat rognés faute de cash au-delà de laquelle le
+# sous-investissement est signalé en fin de run.
+#
+# Constante PROPRE à ce moteur : elle vivait dans backtest/engine.py, mais les
+# deux moteurs ne comptent plus la même chose. Le moteur ACTIONS déclenche
+# désormais son avertissement sur la part du montant DEMANDÉ restée investie
+# (engine.UNFILLED_DOLLAR_WARNING_PCT), après avoir constaté qu'un décompte par
+# ordre était dominé par le coût de transaction et affichait des taux de
+# troncature à deux chiffres sur un moteur qui fonctionnait. Le moteur options
+# dimensionne par contrats entiers et garde son propre décompte par ordre ; la
+# valeur reste celle d'avant.
+TRUNCATED_ORDERS_WARNING_PCT = 10.0
+
 # Plancher de prime pour un DIMENSIONNEMENT par division (montant $ visé /
 # prime) -- distinct du garde-fou `premium <= 0` déjà en place ailleurs.
 # math.erfc (utilisé par options_pricing._norm_cdf) traverse une bande de
@@ -665,7 +678,14 @@ class OptionsBacktestEngine:
         cached = self._pricing_context_cache.get(key)
         if cached is None:
             cached = (
-                config.risk_free_rate_for(today.year),
+                # Taux CONNU à cette date (moyenne de l'année précédente), pas
+                # la moyenne de l'année en cours : celle-ci n'existe qu'une
+                # fois l'année finie. Pricer une option de février 2020 au taux
+                # moyen 2020, écrasé par le krach de mars, était un look-ahead
+                # -- et un look-ahead au signe systématique, puisque les années
+                # où la moyenne s'écarte le plus du taux réel du moment sont
+                # les années de retournement.
+                config.risk_free_rate_known_at(today),
                 config.dividend_yield_for(self._sector_of.get(symbol)),
             )
             self._pricing_context_cache[key] = cached
@@ -697,6 +717,10 @@ class OptionsBacktestEngine:
         elapsed_days = (today - previous_day).days
         if elapsed_days <= 0:
             return
+        # risk_free_rate_for et non risk_free_rate_known_at : ce sont des
+        # intérêts EFFECTIVEMENT perçus sur la période, pas une décision prise
+        # à l'avance. Le taux contemporain est le bon ici, exactement comme
+        # pour le Sharpe (cf. metrics._risk_free_daily).
         interest = self.cash * config.risk_free_rate_for(today.year) * elapsed_days / 365.0
         self.cash += interest
         self.total_cash_interest += interest
@@ -2487,7 +2511,7 @@ class OptionsBacktestEngine:
         cash_pct = [row["cash"] / row["nav"] * 100 for row in rows]
         delta_pct = [row["delta_notional"] / row["nav"] * 100 for row in rows]
 
-        if truncated_pct > engine_mod.TRUNCATED_ORDERS_WARNING_PCT:
+        if truncated_pct > TRUNCATED_ORDERS_WARNING_PCT:
             logger.warning(
                 "%.1f%% des ordres d'achat (%d/%d) ont été tronqués faute de cash : le budget "
                 "alloué dépasse régulièrement le cash disponible, les positions gelées "

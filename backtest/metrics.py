@@ -48,6 +48,39 @@ def _risk_free_daily(dates: pd.Series, fallback_annual_rate: float) -> pd.Series
     return pd.Series(np.asarray(annual, dtype=float) / TRADING_DAYS_PER_YEAR, index=dates.index)
 
 
+def _position_level_metrics(trades: pd.DataFrame) -> dict:
+    """Mêmes trades, regroupés par THÈSE (une entrée, ses renforts, ses
+    allègements, sa sortie) au lieu d'une ligne par exécution.
+
+    POURQUOI. `trades.parquet` logue une ligne par VENTE, y compris les ventes
+    partielles de rebalancement. `num_trades`, `win_rate_pct` et
+    `profit_factor` comptent donc des exécutions, pas des paris -- et le biais
+    n'est pas neutre : une position qui monte est rognée à chaque
+    rebalancement, ce qui inscrit une longue série de petits gains, puis sort
+    d'un coup au stop, ce qui n'en inscrit qu'UNE perte. Mesuré sur une thèse
+    unique perdante de -226 k$, la version par exécution affichait 32 trades et
+    91% de réussite.
+
+    La clé de regroupement est (symbol, entry_date) : engine.Position ne
+    remet jamais entry_date à jour lors d'un renfort, et une position
+    entièrement soldée est supprimée du portefeuille -- une réouverture
+    ultérieure du même symbole porte donc une entry_date différente et compte
+    bien comme une thèse distincte."""
+    if trades is None or trades.empty or "entry_date" not in trades.columns:
+        return {}
+    par_these = trades.groupby(["symbol", "entry_date"], sort=False).agg(
+        pnl=("pnl", "sum"), holding_days=("holding_days", "max"),
+    )
+    gains = par_these.loc[par_these["pnl"] > 0, "pnl"].sum()
+    pertes = -par_these.loc[par_these["pnl"] < 0, "pnl"].sum()
+    return {
+        "num_positions_closed": int(len(par_these)),
+        "win_rate_positions_pct": float((par_these["pnl"] > 0).mean() * 100),
+        "profit_factor_positions": float(gains / pertes) if pertes > 0 else None,
+        "avg_holding_days_positions": float(par_these["holding_days"].mean()),
+    }
+
+
 def _benchmark_metrics(equity_curve: pd.DataFrame, benchmark_prices: pd.Series, n_years: float) -> dict:
     """Comparaison à un indice de référence, sur EXACTEMENT le même
     calendrier que la courbe de NAV : la série de l'indice est réalignée sur
@@ -88,8 +121,8 @@ def _benchmark_metrics(equity_curve: pd.DataFrame, benchmark_prices: pd.Series, 
     # que les jours où les DEUX sont définis (premier jour, trous de
     # couverture de l'indice).
     paired = pd.DataFrame({
-        "strategy": equity_curve["nav"].pct_change().to_numpy(),
-        "benchmark": aligned.pct_change().to_numpy(),
+        "strategy": equity_curve["nav"].pct_change(fill_method=None).to_numpy(),
+        "benchmark": aligned.pct_change(fill_method=None).to_numpy(),
     }).replace([np.inf, -np.inf], np.nan).dropna()
 
     metrics = {
@@ -143,7 +176,7 @@ def compute_metrics(
     if equity_curve.empty:
         return {}
     equity_curve = equity_curve.sort_values("date").reset_index(drop=True)
-    daily_returns = equity_curve["nav"].pct_change().dropna()
+    daily_returns = equity_curve["nav"].pct_change(fill_method=None).dropna()
 
     nav_start, nav_end = equity_curve["nav"].iloc[0], equity_curve["nav"].iloc[-1]
     n_days = (equity_curve["date"].iloc[-1] - equity_curve["date"].iloc[0]).days
@@ -247,6 +280,10 @@ def compute_metrics(
             "exits_by_reason": trades["exit_reason"].value_counts().to_dict(),
             "annualized_turnover_pct": float(turnover_dollar / equity_curve["nav"].mean() / n_years * 100) if n_years and n_years > 0 else None,
         })
+        # num_trades/win_rate_pct/profit_factor comptent des EXÉCUTIONS ; les
+        # champs *_positions comptent des THÈSES. Voir _position_level_metrics
+        # : ce sont ces derniers qu'il faut lire pour juger la stratégie.
+        metrics.update(_position_level_metrics(trades))
     else:
         metrics.update({"num_trades": 0})
 

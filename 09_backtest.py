@@ -73,7 +73,16 @@ def main() -> None:
     parser.add_argument("--slippage-bps", type=float, default=config.BACKTEST_SLIPPAGE_BPS)
     parser.add_argument("--stop-loss-pct", type=float, default=config.BACKTEST_STOP_LOSS_PCT, help="Négatif, ex: -15.")
     parser.add_argument("--take-profit-pct", type=float, default=config.BACKTEST_TAKE_PROFIT_PCT)
-    parser.add_argument("--entry-threshold-pct", type=float, default=config.BACKTEST_ENTRY_THRESHOLD_PCT, help="Passé à la stratégie si elle accepte ce paramètre.")
+    parser.add_argument(
+        "--entry-threshold-pct", type=float, default=None,
+        help="Seuil d'entrée passé à la stratégie. Non précisé, CHAQUE stratégie garde son "
+             "propre défaut -- ils ne se lisent pas pareil : valuation_gap_dcf attend un écart "
+             "au cours (%.0f%%), valuation_gap_sector_neutral un écart à la médiane de son "
+             "secteur (%.0f%%)." % (
+                 config.BACKTEST_ENTRY_THRESHOLD_PCT,
+                 config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT,
+             ),
+    )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE", help="Paramètre supplémentaire spécifique à la stratégie (répétable).")
     parser.add_argument(
         "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
@@ -114,7 +123,14 @@ def main() -> None:
     material_events = data_loader.load_material_events_8k()
 
     strategy_cls = STRATEGY_REGISTRY[args.strategy]
-    strategy_params = {"entry_threshold_pct": args.entry_threshold_pct}
+    # `entry_threshold_pct` n'est transmis QUE s'il a été demandé. Le passer
+    # systématiquement écrasait le défaut propre à chaque stratégie par celui
+    # de valuation_gap_dcf (20%) : valuation_gap_sector_neutral, dont le seuil
+    # porte sur l'écart à la MÉDIANE DU SECTEUR et vaut 10%, tournait en
+    # silence à 20 -- deux fois trop sélectif, sans que rien ne l'indique.
+    strategy_params: dict = {}
+    if args.entry_threshold_pct is not None:
+        strategy_params["entry_threshold_pct"] = args.entry_threshold_pct
     strategy_params.update(parse_strategy_params(args.strategy_param))
     strategy = strategy_cls(**strategy_params)
 
@@ -163,7 +179,11 @@ def main() -> None:
     signals_history.to_parquet(out_dir / "signals_history.parquet", index=False, engine="pyarrow")
     (out_dir / "metrics.json").write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     (out_dir / "run_config.json").write_text(json.dumps({
-        "strategy": args.strategy, "strategy_params": strategy_params,
+        # strategy.params et non strategy_params : ce sont les valeurs
+        # EFFECTIVES, défauts de la stratégie compris. Ne consigner que ce que
+        # la ligne de commande portait laissait un run irreproductible dès
+        # qu'un défaut bougeait.
+        "strategy": args.strategy, "strategy_params": strategy.params,
         "initial_capital": args.initial_capital, "commission_bps": args.commission_bps,
         "slippage_bps": args.slippage_bps, "stop_loss_pct": args.stop_loss_pct,
         "take_profit_pct": args.take_profit_pct,
@@ -176,12 +196,25 @@ def main() -> None:
     logger.info("--- Résumé ---")
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
-        "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
+        "max_drawdown_pct", "calmar_ratio", "annualized_turnover_pct", "avg_exposure_pct",
+        # num_trades/win_rate_pct/profit_factor comptent des EXÉCUTIONS (ventes
+        # partielles de rebalancement comprises) ; les variantes *_positions
+        # comptent des THÈSES. Les deux sont affichées côte à côte parce que
+        # l'écart entre elles est en soi une information (voir
+        # metrics._position_level_metrics) -- ce sont les secondes qui disent
+        # si la stratégie a raison, les premières combien elle exécute.
+        "num_trades", "win_rate_pct", "profit_factor",
+        "num_positions_closed", "win_rate_positions_pct", "profit_factor_positions",
         "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "signal_coverage_avg_ratio", "signal_coverage_min_ratio", "signal_coverage_min_year",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])
     logger.info("%s", metrics_mod.format_benchmark_summary(run_metrics, benchmark_label))
+    logger.info(
+        "Relis ce run en détail (couverture de l'univers, alpha par sous-période, "
+        "sensibilité aux coûts) : python 14_audit_backtest.py --run-id %s", run_id,
+    )
 
 
 if __name__ == "__main__":

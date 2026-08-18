@@ -51,6 +51,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import sector_history
 
 # Réutilise le chargement combiné FY+TTM et l'association de cours au plus
 # proche de filed_date déjà écrits pour 05_calcul_multiples.py, plutôt que de
@@ -230,7 +231,22 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
     for _, row in df.iterrows():
         symbol = row.get("symbol", "?")
         try:
-            secteur_ligne = row.get("sector")
+            filed = pd.to_datetime(row.get("filed_date"), errors="coerce")
+            # SECTEUR D'ÉPOQUE, pas celui d'aujourd'hui. La colonne `sector`
+            # vient de 02, donc de la classification GICS ACTUELLE, et elle
+            # pilote ici trois choses : le WACC, les taux de croissance, et
+            # l'éligibilité même au DCF (secteurs_sans_dcf). L'appliquer
+            # rétroactivement, c'est décider en 2015 avec une nomenclature de
+            # 2023 -- le look-ahead que 06b corrigeait déjà de son côté avec la
+            # même fonction, mais que 07 subissait encore.
+            #
+            # L'effet le plus visible passe par l'exclusion : Visa et
+            # Mastercard sont aujourd'hui des financières, donc écartées ; en
+            # 2015 elles étaient en technologie, et un DCF y était parfaitement
+            # légitime. Les valoriser sur toute leur histoire au motif d'un
+            # reclassement GICS de mars 2023 revient à utiliser l'avenir.
+            secteur_courant = row.get("sector")
+            secteur_ligne = sector_history.sector_asof(symbol, secteur_courant, filed)
             if isinstance(secteur_ligne, str) and secteur_ligne in secteurs_sans_dcf:
                 # Un DCF FCFF sur une banque ou une foncière n'a pas de sens :
                 # l'EBIT n'y est pas une mesure opérationnelle pertinente et la
@@ -291,18 +307,16 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
                 logger.debug("FCF actuel <= 0 pour %s. DCF non calculé.", symbol)
                 continue
 
-            secteur = row.get("sector")
-            if isinstance(secteur, str) and secteur not in config.SECTOR_DCF_PARAMS:
-                secteurs_inconnus.add(secteur)
+            if isinstance(secteur_ligne, str) and secteur_ligne not in config.SECTOR_DCF_PARAMS:
+                secteurs_inconnus.add(secteur_ligne)
             # WACC indexé sur la courbe de taux de l'exercice valorisé.
             # L'année de DÉPÔT (filed_date) plutôt que l'exercice comptable :
             # c'est au moment où l'information devient publique que le marché
             # actualise, et c'est cette date qui pilote tout le reste du
             # pipeline. Repli sur l'exercice si filed_date manque.
-            filed = pd.to_datetime(row.get("filed_date"), errors="coerce")
             annee_actualisation = filed.year if pd.notna(filed) else row.get("year")
             hyp = hypotheses_pour_secteur(
-                secteur, hypotheses,
+                secteur_ligne, hypotheses,
                 year=int(annee_actualisation) if pd.notna(annee_actualisation) else None,
             )
 
@@ -323,7 +337,11 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
             )
 
             results.append({
-                "Ticker": symbol, "Secteur": row.get("sector"), "Année": row.get("year"),
+                # "Secteur" porte le secteur D'ÉPOQUE (celui qui a réellement
+                # servi au calcul), "Secteur_actuel" celui d'aujourd'hui --
+                # même convention que 06b_calcul_valorisation_combinee.py.
+                "Ticker": symbol, "Secteur": secteur_ligne, "Secteur_actuel": secteur_courant,
+                "Année": row.get("year"),
                 "cik": row.get("cik"), "WACC": hyp["taux_actualisation"],
                 "period_type": row.get("period_type"), "fiscal_year": row.get("fiscal_year"),
                 "fiscal_quarter": row.get("fiscal_quarter"), "filed_date": row.get("filed_date"),
@@ -401,12 +419,17 @@ def main() -> None:
         return
 
     history = df_dcf_full.rename(columns={
-        "Ticker": "symbol", "Secteur": "sector", "Année": "year",
+        "Ticker": "symbol", "Secteur": "sector", "Secteur_actuel": "sector_current",
+        "Année": "year",
         "Valeur_par_action_DCF": "valuation_dcf_per_share", "Cours_actuel": "close",
         "Écart_DCF_vs_Cours_%": "gap_pct",
     })[[
-        "symbol", "cik", "sector", "period_type", "year", "fiscal_year", "fiscal_quarter",
-        "filed_date", "close", "valuation_dcf_per_share", "gap_pct",
+        # `sector` = secteur d'époque (celui qui a servi au calcul), propagé
+        # jusqu'aux stratégies de backtest -- c'est le groupe de pairs qu'une
+        # stratégie neutre au secteur doit utiliser, pas la classification
+        # d'aujourd'hui.
+        "symbol", "cik", "sector", "sector_current", "period_type", "year", "fiscal_year",
+        "fiscal_quarter", "filed_date", "close", "valuation_dcf_per_share", "gap_pct",
     ]]
     config.DCF_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     history.to_parquet(config.DCF_HISTORY_FILE, index=False, engine="pyarrow")

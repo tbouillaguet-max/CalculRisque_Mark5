@@ -114,8 +114,13 @@ interpréter des résultats :
       disparition des données de prix (radiation non couverte par Stooq) la
       clôturent. Elle reste sinon "gelée" à taille inchangée.
     - Un signal DCF vieux de plus de `BACKTEST_SIGNAL_MAX_AGE_DAYS` (config.py,
-      400 jours par défaut) n'est plus considéré comme une base valable pour
-      une NOUVELLE entrée (mais n'affecte pas une position déjà ouverte).
+      400 jours par défaut, ou `BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD` selon
+      le type de période) n'est plus une base valable pour METTRE DU CAPITAL
+      sur ce symbole -- ni première entrée, ni renforcement. Même chose pour un
+      8-K matériel déposé depuis. La position déjà ouverte n'est pas vendue
+      pour autant : elle devient GELÉE, conservée à taille inchangée jusqu'à
+      son stop-loss/take-profit. Le filtre momentum, lui, ne concerne que les
+      nouvelles entrées (voir « Correctifs de l'audit du moteur actions »).
     - Le nombre de positions simultanées n'est **pas** plafonné : toutes les
       entreprises retenues par la stratégie sont ouvertes. La concentration
       reste bornée par le seul plafond de pondération
@@ -125,6 +130,121 @@ interpréter des résultats :
 Résultats sauvegardés intégralement sous `data/backtest/<run_id>/` :
 `equity_curve.parquet`, `positions_history.parquet`, `trades.parquet`,
 `signals_history.parquet`, `metrics.json`, `run_config.json`.
+
+### Relire un run : `14_audit_backtest.py`
+
+`metrics.json` répond à « combien ça a rapporté », pas à « de quoi ce chiffre
+est-il fait ». `14_audit_backtest.py` relit les sorties d'un run **sans le
+relancer** (quelques secondes) et pose les cinq questions qui peuvent
+l'invalider :
+
+```bash
+python 14_audit_backtest.py                          # dernier run
+python 14_audit_backtest.py --run-id 20260816_000429
+```
+
+1. **Couverture des signaux.** Quelle part de l'indice RÉEL de chaque année la
+   stratégie pouvait-elle acheter, et surtout : la même mesure séparément pour
+   les membres actuels et pour les entreprises sorties depuis. C'est le test
+   décisif du biais de survivance résiduel (voir la section dédiée plus bas).
+2. **Trades affichés contre thèses réelles.** `num_trades`, `win_rate_pct` et
+   `profit_factor` comptent des EXÉCUTIONS, ventes partielles de rebalancement
+   comprises. Le script recalcule les mêmes indicateurs par THÈSE.
+3. **Alpha année par année et par sous-période glissante**, pour distinguer un
+   alpha régulier d'un alpha gagné sur une seule fenêtre.
+4. **Sensibilité à la date de départ** : le CAGR obtenu en décalant le début
+   du run de 1, 2, 3, 5 ans.
+5. **Sensibilité aux coûts** : ce que devient le résultat si l'exécution réelle
+   coûte 20, 30 ou 50 bps par aller simple au lieu des 10 bps supposés.
+
+### Correctifs de l'audit du moteur actions
+
+L'audit du run `20260816_000429` (19,00 % de CAGR, +5,49 % d'alpha, **17,9 %
+d'ordres d'achat tronqués**) a montré que la troncature n'était pas la
+conséquence assumée de la règle des positions gelées. Sept défauts distincts,
+tous corrigés, tous couverts par `tests/test_audit_moteur_actions.py` :
+
+| | Défaut | Effet mesuré |
+|---|---|---|
+| A1 | La file d'exécution triait sur le SIGNE DE LA CIBLE, pas sur le sens réel de l'ordre. Une cible de 5 000 $ sur une ligne qui en vaut 8 000 est une vente : elle partait pourtant dans le paquet des achats. | Le résultat du run dépendait de l'ordre d'itération d'un dictionnaire. Scénario identique, seul l'ordre d'énumération changeant : 750 000 $ laissés en cash d'un côté, portefeuille complet de l'autre. |
+| A2 | Une position détenue court-circuitait TOUS les filtres de péremption. Le commentaire du code affirmait qu'elle était « de toute façon gelée, pas rebalancée sur la base de ce vieux signal » : elle ne l'était pas. | Ligne renforcée **x3,88** sur un signal périmé et invalidé par un 8-K matériel. Générateur de value trap exactement là où les filtres devaient protéger. |
+| A3 | `num_trades` / `win_rate_pct` / `profit_factor` comptaient les allègements de rebalancement comme autant de trades. | Une thèse unique perdante de −226 k$ s'affichait comme 32 trades à 91 % de réussite. |
+| A4 | L'indice de référence équipondéré appelait `pct_change()` sans `fill_method=None`, ce qui reportait les valeurs manquantes SANS limite et annulait le forward-fill borné du panel. | Un titre absent 15 jours puis repris 40 % plus bas déversait toute sa baisse sur UNE séance (−20 % mesuré sur un indice à deux composantes). `beta`, `tracking_error_pct` et `information_ratio` étaient calculés sur cette série faussée. |
+| A5 | Les signaux étaient indexés sur la date de dépôt EXACTE et retrouvés par égalité avec le jour de bourse simulé. | Un 10-K déposé un jour où le NYSE est fermé — le Vendredi saint, tous les ans, la SEC étant ouverte — n'était jamais vu. Le signal disparaissait sans trace. Il est maintenant connu à la première séance suivante. |
+| A6 | **La cause du « 17,9 % d'ordres tronqués ».** `_rebalance` alloue une VALEUR DE POSITION égale au NAV, alors qu'acquérir cette valeur consomme en plus la commission et le slippage. | Un portefeuille pleinement investi est court d'exactement `cost_bps` à chaque rebalancement, et ne peut pas ne pas l'être. Ce manque de 0,1 % était compté comme une troncature : **100 % des ordres signalés « tronqués » sur un moteur qui faisait exactement son travail.** |
+| A7 | `03b` prenait l'univers point-in-time par défaut, `04`/`04b`/`04c` l'univers ACTUEL — chacun sa règle, en dur. | Cours des entreprises radiées collectés **sans** leurs fondamentaux : biais de survivance sur les signaux, pas sur l'indice de référence. Les quatre partagent maintenant `config.default_universe_file()` (voir la section dédiée dans « Biais et limites connus »). |
+
+Trois conséquences à retenir avant de comparer un run d'avant à un run
+d'après :
+
+- **Les chiffres changent.** A1, A2 et A5 modifient les positions réellement
+  prises, donc la courbe de NAV. Un run antérieur n'est pas comparable ligne à
+  ligne.
+- **`truncated_orders_pct` ne mesure plus la même chose** et ne déclenche plus
+  l'avertissement. Il compte désormais les lots d'achats réduits au prorata
+  **au-delà de ce que les frais expliquent**.
+- **Le chiffre à lire est `unfilled_dollar_pct`** : la part du montant d'achat
+  DEMANDÉ qui n'a pas pu être investie. C'est lui qui déclenche
+  l'avertissement, au-delà de 1 %. Un compte par ordres ne dit rien tant qu'on
+  ne sait pas de combien : mesuré sur un run de référence, 53 % des ordres
+  étaient réduits… pour 0,12 % du montant demandé, soit un portefeuille investi
+  à 99,88 % de ce que la stratégie voulait.
+
+### Stratégie `valuation_gap_sector_neutral`
+
+```bash
+python 09_backtest.py --strategy valuation_gap_sector_neutral
+```
+
+`config.SECTOR_DCF_PARAMS` fixe un WACC et deux taux de croissance **par
+secteur**, choisis à la main :
+
+| | WACC calibré | croissance FCF | croissance terminale |
+|---|---|---|---|
+| Technologie | 10,0 % | 7 % | 3,0 % |
+| Agro-alimentaire et boissons | 7,0 % | 3 % | 2,0 % |
+
+À flux de trésorerie identique, la techno ressort structurellement mieux
+valorisée — non parce que le marché s'y trompe davantage, mais parce que la
+table le dit. Classer les candidates sur `gap_pct` brut revient donc pour
+partie à **classer la table de configuration**, et à surpondérer en permanence
+les secteurs auxquels on a prêté les hypothèses les plus généreuses. Comme ces
+hypothèses ont été écrites en connaissant l'histoire boursière de 2010-2026,
+c'est un biais de rétrospection qui entre par la porte de service : aucune date
+n'est violée, mais le *choix* des paramètres, lui, connaît la suite.
+
+La stratégie mesure donc l'écart **en excès de la médiane de son propre
+secteur**, à la date courante, sur les seuls signaux déjà publiés :
+
+```
+score = gap_pct - mediane(gap_pct des pairs du secteur connus à cette date)
+```
+
+Une techno n'est retenue que si elle est bon marché *pour une techno*. Mesuré
+sur un univers synthétique où seul le NIVEAU diffère d'un secteur à l'autre :
+
+| | candidates | Technologie | Santé | Agro-alim. | Utilities |
+|---|---|---|---|---|---|
+| `valuation_gap_dcf` | 123 | **48,5 %** | 31,7 % | 9,7 % | 1,5 % |
+| `valuation_gap_sector_neutral` | 66 | 30,0 % | 30,0 % | 20,6 % | 4,5 % |
+
+Trois garde-fous :
+
+- **`min_absolute_gap_pct`** (10 %) : la neutralité sectorielle sert à
+  *classer*, pas à absoudre. Sans lui, un secteur entièrement survalorisé
+  fournirait quand même ses « moins pires ».
+- **`max_weight_per_sector_pct`** (30 %) : le plafond par position ne borne
+  rien au niveau du secteur — vingt technos à 4 % font 80 % du portefeuille
+  sans qu'aucune ligne ne dépasse son plafond. L'excédent n'est **pas**
+  redistribué (ce serait concentrer ailleurs) : la somme des poids descend et
+  le reste va en cash.
+- **`MIN_PEERS_PER_SECTOR`** (5) : en dessous, la médiane sectorielle ne mesure
+  plus une norme mais un ou deux titres ; repli sur la médiane de l'univers.
+
+Attention : `--entry-threshold-pct` **ne se lit pas pareil** d'une stratégie à
+l'autre — écart au cours pour `valuation_gap_dcf` (20 %), écart à la médiane du
+secteur pour celle-ci (10 %). Ne pas le préciser laisse chaque stratégie
+appliquer le sien.
 
 ### Ajouter une nouvelle stratégie
 
@@ -1075,8 +1195,7 @@ figé.
 
 ### Secteur GICS rétroactif (05, 07)
 
-*(Corrigé pour les médianes sectorielles de 06b — voir la section suivante.
-Ce qui suit ne vaut plus que pour 07.)*
+*(Corrigé — 06b d'abord, puis 07 lors de l'audit.)*
 
 La colonne `sector` produite par 02 est la classification GICS
 **d'aujourd'hui**. Elle pilote le WACC et les taux de croissance du DCF
@@ -1085,11 +1204,112 @@ La colonne `sector` produite par 02 est la classification GICS
 (`config.SECTOR_DIVIDEND_YIELD`) et l'exclusion du DCF
 (`config.SECTORS_SANS_DCF`).
 
-`06b_calcul_valorisation_combinee.py` la ramène désormais au secteur d'époque
-avant de composer ses groupes de pairs (`sector_history.sector_asof`), mais
-`07_calcul_dcf.py` applique toujours le secteur actuel à tout l'historique :
-une entreprise reclassée depuis se voit encore appliquer les mauvaises
-hypothèses de DCF sur sa partie ancienne.
+`06b_calcul_valorisation_combinee.py` la ramène au secteur d'époque avant de
+composer ses groupes de pairs (`sector_history.sector_asof`), et
+`07_calcul_dcf.py` fait désormais de même à la `filed_date` de chaque ligne.
+Le parquet de sortie porte les deux : `sector` (le secteur d'alors, celui qui
+a servi au calcul, propagé jusqu'aux stratégies de backtest) et
+`sector_current`.
+
+L'effet le plus visible ne passe pas par le WACC mais par l'**exclusion** :
+Visa et Mastercard sont aujourd'hui des financières, donc écartées du DCF ; en
+2015 elles étaient en technologie, et un DCF y était parfaitement légitime.
+Les priver de valorisation sur toute leur histoire au motif d'un reclassement
+GICS de mars 2023 revient à décider avec l'avenir.
+
+Limite résiduelle : `sector_history.GICS_RECLASSIFICATIONS` ne couvre que les
+**trois remaniements structurels** de la nomenclature (immobilier 2016,
+Communication Services 2018, paiements 2023) et une quarantaine de tickers
+nommés. Les reclassements individuels au fil de l'eau ne le sont pas, faute de
+source historique gratuite : la rigueur point-in-time est réelle mais
+**partielle**.
+
+### Taux sans risque moyen appliqué en cours d'année (07, 10)
+
+*(Corrigé.)*
+
+`RISK_FREE_RATE_BY_YEAR` porte des **moyennes annuelles** (3-Month T-Bill).
+Actualiser un 10-K déposé en février 2020 au taux « 2020 » revient à utiliser
+0,37 % — une moyenne écrasée par l'effondrement de mars, que personne ne
+connaissait en février, où le T-Bill cotait encore ~1,55 %.
+
+Le biais n'était pas centré : les années où la moyenne s'écarte le plus du
+taux réel du moment sont les années de retournement, où elle s'effondre en
+cours de route. Un WACC trop bas gonfle la valeur théorique, donc l'écart, donc
+le nombre de signaux d'achat — **juste avant un krach**.
+
+`config.risk_free_rate_known_at()` retient la moyenne de l'année
+**précédente** (même discipline que `inflation_known_at`), et c'est elle
+qu'utilisent désormais `sector_dcf_params` et le pricing d'options du
+backtest. `sector_dcf_params(..., point_in_time=False)` rétablit le taux
+contemporain pour reproduire un run antérieur.
+
+Restent volontairement au taux **contemporain**, parce que ce sont des
+grandeurs *ex-post* et non des décisions : le Sharpe/Sortino
+(`metrics._risk_free_daily`) et les intérêts effectivement perçus sur le cash
+oisif du backtest options.
+
+### Hypothèses DCF choisies aujourd'hui (07)
+
+**Non corrigé, et non corrigeable en l'état.** Les valeurs de
+`SECTOR_DCF_PARAMS` (WACC, croissance FCF, croissance terminale par secteur)
+ont été écrites à la main, aujourd'hui, en connaissant l'histoire boursière de
+2010-2026. Aucune date n'est violée — mais le *choix* des paramètres, lui,
+connaît la suite, et il n'est pas neutre entre secteurs : la techno reçoit 7 %
+de croissance et 3 % de terminal, l'agro-alimentaire 3 % et 2 %.
+
+Conséquence directe : à flux identique, certains secteurs ressortent
+structurellement « sous-évalués », et une stratégie qui classe sur l'écart
+brut classe pour partie cette table.
+
+La parade n'est pas dans les données mais dans la stratégie :
+`valuation_gap_sector_neutral` mesure l'écart en excès de la médiane du
+secteur, ce qui annule tout décalage de niveau commun à un secteur — quelle
+qu'en soit la cause.
+
+### Financières traitées comme un bloc (02, 07)
+
+*(Corrigé.)*
+
+`GICS_TO_SECTEUR` mappait les 11 secteurs GICS un pour un, si bien que tout
+« Financials » atterrissait dans « Services financiers » — un seul bucket pour
+JPMorgan, Visa et Aon. Les clés `"Banques"` et `"Assurance"` de
+`SECTOR_DCF_PARAMS` n'étaient donc **jamais produites** (8 des 19 clés de la
+table étaient mortes), et `SECTORS_SANS_DCF` excluait les trois métiers d'un
+bloc : **107 entreprises sur 503, soit 21 % de l'indice**, sans aucune
+valorisation DCF.
+
+Or la critique du FCFF ne vaut que pour les métiers de **bilan**. Elle ne
+s'applique ni à Visa et Mastercard (péages à 65 % de marge, capex
+négligeable), ni à S&P Global, Moody's, MSCI, FactSet, ni aux opérateurs de
+marchés (CME, ICE, Nasdaq, Cboe), ni aux **courtiers** d'assurance (Aon,
+Marsh, Gallagher, Brown & Brown), qui encaissent des commissions sans porter
+le moindre risque au bilan.
+
+`01_build_universe.py` récupère désormais la colonne **GICS Sub-Industry**
+(elle était dans la même table Wikipedia, et simplement jetée), et
+`config.GICS_SUB_INDUSTRY_TO_SECTEUR` découpe les financières selon un critère
+économique — le FCFF décrit-il l'entreprise ? :
+
+| Métier | Bucket | DCF |
+|---|---|---|
+| Banques, financement à la consommation, crédit hypothécaire, courtage/banque d'affaires, gestion d'actifs | `Banques` | non |
+| Vie, dommages, réassurance, multiligne, holdings multi-secteurs | `Assurance` | non |
+| Paiements, opérateurs de marchés et données, courtiers d'assurance | `Services financiers` | **oui** |
+
+Deux points de méthode :
+
+- La sous-industrie **prime sur le cache** de `02` : c'est une donnée
+  officielle lue dans une table, le cache n'existe que pour éviter des appels
+  LLM. Sans cette priorité, les « Services financiers » déjà écrits en bloc par
+  les runs précédents auraient figé l'ancien découpage.
+- Une financière dont la sous-industrie est absente ou inconnue est rabattue
+  sur `Banques`, donc **exclue** du DCF. Les deux erreurs n'ont pas le même
+  coût : exclure à tort un encaisseur de commissions fait perdre un signal ;
+  inclure à tort un prêteur fabrique une valorisation qui ne veut rien dire, et
+  sur laquelle la stratégie prendrait position. C'est le cas des entreprises
+  radiées, absentes de la table Wikipedia des membres actuels — `02` les
+  journalise.
 
 ### Composition point-in-time du groupe de pairs (06b)
 
@@ -1182,6 +1402,71 @@ signalent par un avertissement au démarrage. Lance `01b` pour l'éliminer.
 Même avec `01b`, la table des changements de Wikipédia ne remonte qu'à
 ~1996-2000 : une entreprise sortie de l'indice avant le début de ce suivi
 n'apparaît pas.
+
+### Biais de survivance RÉSIDUEL : cours des radiées sans leurs signaux (09)
+
+**C'est le biais le plus coûteux du backtest actions, et le plus facile à
+manquer** — parce que `01b` a tourné, que le run affiche bien « univers
+point-in-time », et que rien ne semble donc clocher.
+
+*(Corrigé pour les runs à venir — les quatre collecteurs partagent désormais
+`config.default_universe_file()`. Ce qui suit décrit ce qui a produit les
+données déjà en cache, et reste vrai tant que `04`/`04b` n'ont pas été
+relancés.)*
+
+Les deux moitiés de la donnée n'avaient pas le même univers par défaut :
+
+| Script | Ancien univers par défaut | Ce qu'il alimente |
+|---|---|---|
+| `03b_recuperation_cours_quotidiens.py` | `UNIVERSE_FULL_FILE` **si elle existe** (actuels + radiés) | les cours — donc l'indice de référence équipondéré |
+| `04_recuperation_10k.py` / `04b` / `04c` | `UNIVERSE_FILE` — l'univers **ACTUEL**, toujours | les fondamentaux — donc les signaux DCF |
+
+Lancer le pipeline sans passer explicitement `--tickers
+data/universe/sp500_universe_full.csv` à `04`/`04b` produisait donc un run où :
+
+- l'**indice de référence** porte l'indice entier, radiées comprises ;
+- la **stratégie** ne peut choisir que parmi les entreprises encore membres
+  aujourd'hui, faute de signal pour les autres.
+
+L'univers point-in-time n'y change rien : il ne fait que RESTREINDRE les
+candidates, il ne crée pas les fondamentaux manquants. La stratégie se mesure
+alors contre un repère qu'elle n'avait pas le droit de perdre — et un signal
+« value » est précisément celui que ce biais flatte le plus, puisque les
+entreprises les moins chères sont aussi celles qui sortent le plus souvent de
+l'indice. **L'alpha affiché est surestimé, et il n'y a pas de moyen de savoir
+de combien sans backfiller.**
+
+Deux façons de le constater sur un run existant, sans rien relancer :
+
+```bash
+python 14_audit_backtest.py --run-id <run_id>   # section 1
+```
+
+et, dans `metrics.json`, `exits_by_reason` : **aucune sortie `data_gap`**
+signifie qu'aucune position détenue n'a jamais cessé d'être cotée sur toute la
+période — ce qui n'arrive pas dans un vrai S&P 500 sur quinze ans.
+
+Depuis l'audit, `09_backtest.py` mesure la couverture lui-même et l'écrit dans
+`metrics.json` (`signal_coverage_avg_ratio`, `signal_coverage_min_ratio`,
+`signal_coverage_min_year`), avec un avertissement en dessous de 95 %.
+
+**Correction** (longue au premier passage : plusieurs milliers de requêtes SEC
+pour les radiées absentes du cache ; `should_skip` ignore ensuite tout ticker
+déjà à jour). `--tickers` n'est plus nécessaire sur `03b`/`04`/`04b`/`04c` —
+ils prennent l'univers point-in-time dès que `01b` a tourné :
+
+```bash
+python 01b_historique_univers_sp500.py
+python 02_categoriser_secteurs.py --universe data/universe/sp500_universe_full.csv
+python 03b_recuperation_cours_quotidiens.py
+python 04_recuperation_10k.py
+python 04b_recuperation_10q.py
+python 05_calcul_multiples.py && python 07_calcul_dcf.py
+python 09_backtest.py
+```
+
+L'étape `02 --universe` reste explicite : elle met à jour le fichier d'univers
+**sur place**, ce n'est pas une simple lecture.
 
 ### Exposition delta : plafonnée en continu, avec un jour de retard (10)
 

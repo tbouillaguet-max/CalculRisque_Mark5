@@ -27,7 +27,7 @@ def ligne(symbol: str, secteur: str, **overrides) -> dict:
     return base
 
 
-@pytest.mark.parametrize("secteur", ["Banques", "Assurance", "Services financiers", "Immobilier"])
+@pytest.mark.parametrize("secteur", ["Banques", "Assurance", "Immobilier"])
 def test_les_secteurs_sans_dcf_sont_ecartes(secteur):
     """Avant, il suffisait qu'OperatingIncomeLoss soit tagué pour qu'un
     chiffre sorte -- alors qu'un FCFF n'a pas de sens sur ces métiers."""
@@ -37,6 +37,19 @@ def test_les_secteurs_sans_dcf_sont_ecartes(secteur):
 
 def test_les_autres_secteurs_restent_valorises():
     df = pd.DataFrame([ligne("AAA", "Technologie")])
+    assert len(module_07.calculer_dcf_par_entreprise(df)) == 1
+
+
+def test_un_encaisseur_de_commissions_est_desormais_valorise():
+    """"Services financiers" ne désigne plus tout GICS Financials mais les
+    seuls métiers de commissions (paiements, opérateurs de marchés et données,
+    courtiers d'assurance) -- cf. config.GICS_SUB_INDUSTRY_TO_SECTEUR.
+
+    Le FCFF y est parfaitement valide : Visa n'a pas de bilan de prêteur, pas
+    de provisions techniques, un capex négligeable. Les écarter revenait à
+    priver la stratégie d'une vingtaine de grandes capitalisations, dont la
+    seule faute était de partager une étiquette GICS avec JPMorgan."""
+    df = pd.DataFrame([ligne("V", "Services financiers")])
     assert len(module_07.calculer_dcf_par_entreprise(df)) == 1
 
 
@@ -52,12 +65,35 @@ def test_comptage_des_lignes_ecartees(caplog):
 
 
 def test_la_liste_couvre_le_minimum_demande():
-    for secteur in ("Banques", "Assurance", "Services financiers", "Immobilier"):
+    """Les métiers de BILAN restent exclus : prêteurs, porteurs de risque,
+    foncières. Le critère est économique -- le FCFF décrit-il l'entreprise ? --
+    et non taxonomique."""
+    for secteur in ("Banques", "Assurance", "Immobilier"):
         assert secteur in config.SECTORS_SANS_DCF
+    assert "Services financiers" not in config.SECTORS_SANS_DCF
     # Cohérence : chacun de ces secteurs doit avoir au moins un multiple
     # pertinent, sinon l'écarter du DCF le priverait de toute valorisation.
     for secteur in config.SECTORS_SANS_DCF:
         assert config.SECTOR_MULTIPLES.get(secteur), secteur
+
+
+def test_chaque_bucket_financier_fin_a_ses_hypotheses_dcf():
+    """Le découpage fin ne sert à rien si les buckets qu'il produit ne sont pas
+    dans SECTOR_DCF_PARAMS : ils y retomberaient sur "_default"."""
+    for bucket in set(config.GICS_SUB_INDUSTRY_TO_SECTEUR.values()):
+        assert bucket in config.SECTOR_DCF_PARAMS, bucket
+
+
+def test_le_decoupage_fin_separe_bien_les_trois_metiers():
+    buckets = config.GICS_SUB_INDUSTRY_TO_SECTEUR
+    assert buckets["Diversified Banks"] == "Banques"
+    assert buckets["Consumer Finance"] == "Banques", "un prêteur, pas un encaisseur de commissions"
+    assert buckets["Property & Casualty Insurance"] == "Assurance"
+    assert buckets["Insurance Brokers"] == "Services financiers", (
+        "un courtier encaisse une commission sans porter le risque au bilan"
+    )
+    assert buckets["Transaction & Payment Processing Services"] == "Services financiers"
+    assert buckets["Financial Exchanges & Data"] == "Services financiers"
 
 
 def test_06b_valorise_une_banque_par_les_multiples_sans_dcf():
