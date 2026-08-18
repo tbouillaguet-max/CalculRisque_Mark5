@@ -190,6 +190,62 @@ d'après :
   étaient réduits… pour 0,12 % du montant demandé, soit un portefeuille investi
   à 99,88 % de ce que la stratégie voulait.
 
+### Stratégie `valuation_gap_sector_neutral`
+
+```bash
+python 09_backtest.py --strategy valuation_gap_sector_neutral
+```
+
+`config.SECTOR_DCF_PARAMS` fixe un WACC et deux taux de croissance **par
+secteur**, choisis à la main :
+
+| | WACC calibré | croissance FCF | croissance terminale |
+|---|---|---|---|
+| Technologie | 10,0 % | 7 % | 3,0 % |
+| Agro-alimentaire et boissons | 7,0 % | 3 % | 2,0 % |
+
+À flux de trésorerie identique, la techno ressort structurellement mieux
+valorisée — non parce que le marché s'y trompe davantage, mais parce que la
+table le dit. Classer les candidates sur `gap_pct` brut revient donc pour
+partie à **classer la table de configuration**, et à surpondérer en permanence
+les secteurs auxquels on a prêté les hypothèses les plus généreuses. Comme ces
+hypothèses ont été écrites en connaissant l'histoire boursière de 2010-2026,
+c'est un biais de rétrospection qui entre par la porte de service : aucune date
+n'est violée, mais le *choix* des paramètres, lui, connaît la suite.
+
+La stratégie mesure donc l'écart **en excès de la médiane de son propre
+secteur**, à la date courante, sur les seuls signaux déjà publiés :
+
+```
+score = gap_pct - mediane(gap_pct des pairs du secteur connus à cette date)
+```
+
+Une techno n'est retenue que si elle est bon marché *pour une techno*. Mesuré
+sur un univers synthétique où seul le NIVEAU diffère d'un secteur à l'autre :
+
+| | candidates | Technologie | Santé | Agro-alim. | Utilities |
+|---|---|---|---|---|---|
+| `valuation_gap_dcf` | 123 | **48,5 %** | 31,7 % | 9,7 % | 1,5 % |
+| `valuation_gap_sector_neutral` | 66 | 30,0 % | 30,0 % | 20,6 % | 4,5 % |
+
+Trois garde-fous :
+
+- **`min_absolute_gap_pct`** (10 %) : la neutralité sectorielle sert à
+  *classer*, pas à absoudre. Sans lui, un secteur entièrement survalorisé
+  fournirait quand même ses « moins pires ».
+- **`max_weight_per_sector_pct`** (30 %) : le plafond par position ne borne
+  rien au niveau du secteur — vingt technos à 4 % font 80 % du portefeuille
+  sans qu'aucune ligne ne dépasse son plafond. L'excédent n'est **pas**
+  redistribué (ce serait concentrer ailleurs) : la somme des poids descend et
+  le reste va en cash.
+- **`MIN_PEERS_PER_SECTOR`** (5) : en dessous, la médiane sectorielle ne mesure
+  plus une norme mais un ou deux titres ; repli sur la médiane de l'univers.
+
+Attention : `--entry-threshold-pct` **ne se lit pas pareil** d'une stratégie à
+l'autre — écart au cours pour `valuation_gap_dcf` (20 %), écart à la médiane du
+secteur pour celle-ci (10 %). Ne pas le préciser laisse chaque stratégie
+appliquer le sien.
+
 ### Ajouter une nouvelle stratégie
 
 Créer un fichier dans `backtest/strategies/`, y définir une classe héritant
@@ -1139,8 +1195,7 @@ figé.
 
 ### Secteur GICS rétroactif (05, 07)
 
-*(Corrigé pour les médianes sectorielles de 06b — voir la section suivante.
-Ce qui suit ne vaut plus que pour 07.)*
+*(Corrigé — 06b d'abord, puis 07 lors de l'audit.)*
 
 La colonne `sector` produite par 02 est la classification GICS
 **d'aujourd'hui**. Elle pilote le WACC et les taux de croissance du DCF
@@ -1149,11 +1204,112 @@ La colonne `sector` produite par 02 est la classification GICS
 (`config.SECTOR_DIVIDEND_YIELD`) et l'exclusion du DCF
 (`config.SECTORS_SANS_DCF`).
 
-`06b_calcul_valorisation_combinee.py` la ramène désormais au secteur d'époque
-avant de composer ses groupes de pairs (`sector_history.sector_asof`), mais
-`07_calcul_dcf.py` applique toujours le secteur actuel à tout l'historique :
-une entreprise reclassée depuis se voit encore appliquer les mauvaises
-hypothèses de DCF sur sa partie ancienne.
+`06b_calcul_valorisation_combinee.py` la ramène au secteur d'époque avant de
+composer ses groupes de pairs (`sector_history.sector_asof`), et
+`07_calcul_dcf.py` fait désormais de même à la `filed_date` de chaque ligne.
+Le parquet de sortie porte les deux : `sector` (le secteur d'alors, celui qui
+a servi au calcul, propagé jusqu'aux stratégies de backtest) et
+`sector_current`.
+
+L'effet le plus visible ne passe pas par le WACC mais par l'**exclusion** :
+Visa et Mastercard sont aujourd'hui des financières, donc écartées du DCF ; en
+2015 elles étaient en technologie, et un DCF y était parfaitement légitime.
+Les priver de valorisation sur toute leur histoire au motif d'un reclassement
+GICS de mars 2023 revient à décider avec l'avenir.
+
+Limite résiduelle : `sector_history.GICS_RECLASSIFICATIONS` ne couvre que les
+**trois remaniements structurels** de la nomenclature (immobilier 2016,
+Communication Services 2018, paiements 2023) et une quarantaine de tickers
+nommés. Les reclassements individuels au fil de l'eau ne le sont pas, faute de
+source historique gratuite : la rigueur point-in-time est réelle mais
+**partielle**.
+
+### Taux sans risque moyen appliqué en cours d'année (07, 10)
+
+*(Corrigé.)*
+
+`RISK_FREE_RATE_BY_YEAR` porte des **moyennes annuelles** (3-Month T-Bill).
+Actualiser un 10-K déposé en février 2020 au taux « 2020 » revient à utiliser
+0,37 % — une moyenne écrasée par l'effondrement de mars, que personne ne
+connaissait en février, où le T-Bill cotait encore ~1,55 %.
+
+Le biais n'était pas centré : les années où la moyenne s'écarte le plus du
+taux réel du moment sont les années de retournement, où elle s'effondre en
+cours de route. Un WACC trop bas gonfle la valeur théorique, donc l'écart, donc
+le nombre de signaux d'achat — **juste avant un krach**.
+
+`config.risk_free_rate_known_at()` retient la moyenne de l'année
+**précédente** (même discipline que `inflation_known_at`), et c'est elle
+qu'utilisent désormais `sector_dcf_params` et le pricing d'options du
+backtest. `sector_dcf_params(..., point_in_time=False)` rétablit le taux
+contemporain pour reproduire un run antérieur.
+
+Restent volontairement au taux **contemporain**, parce que ce sont des
+grandeurs *ex-post* et non des décisions : le Sharpe/Sortino
+(`metrics._risk_free_daily`) et les intérêts effectivement perçus sur le cash
+oisif du backtest options.
+
+### Hypothèses DCF choisies aujourd'hui (07)
+
+**Non corrigé, et non corrigeable en l'état.** Les valeurs de
+`SECTOR_DCF_PARAMS` (WACC, croissance FCF, croissance terminale par secteur)
+ont été écrites à la main, aujourd'hui, en connaissant l'histoire boursière de
+2010-2026. Aucune date n'est violée — mais le *choix* des paramètres, lui,
+connaît la suite, et il n'est pas neutre entre secteurs : la techno reçoit 7 %
+de croissance et 3 % de terminal, l'agro-alimentaire 3 % et 2 %.
+
+Conséquence directe : à flux identique, certains secteurs ressortent
+structurellement « sous-évalués », et une stratégie qui classe sur l'écart
+brut classe pour partie cette table.
+
+La parade n'est pas dans les données mais dans la stratégie :
+`valuation_gap_sector_neutral` mesure l'écart en excès de la médiane du
+secteur, ce qui annule tout décalage de niveau commun à un secteur — quelle
+qu'en soit la cause.
+
+### Financières traitées comme un bloc (02, 07)
+
+*(Corrigé.)*
+
+`GICS_TO_SECTEUR` mappait les 11 secteurs GICS un pour un, si bien que tout
+« Financials » atterrissait dans « Services financiers » — un seul bucket pour
+JPMorgan, Visa et Aon. Les clés `"Banques"` et `"Assurance"` de
+`SECTOR_DCF_PARAMS` n'étaient donc **jamais produites** (8 des 19 clés de la
+table étaient mortes), et `SECTORS_SANS_DCF` excluait les trois métiers d'un
+bloc : **107 entreprises sur 503, soit 21 % de l'indice**, sans aucune
+valorisation DCF.
+
+Or la critique du FCFF ne vaut que pour les métiers de **bilan**. Elle ne
+s'applique ni à Visa et Mastercard (péages à 65 % de marge, capex
+négligeable), ni à S&P Global, Moody's, MSCI, FactSet, ni aux opérateurs de
+marchés (CME, ICE, Nasdaq, Cboe), ni aux **courtiers** d'assurance (Aon,
+Marsh, Gallagher, Brown & Brown), qui encaissent des commissions sans porter
+le moindre risque au bilan.
+
+`01_build_universe.py` récupère désormais la colonne **GICS Sub-Industry**
+(elle était dans la même table Wikipedia, et simplement jetée), et
+`config.GICS_SUB_INDUSTRY_TO_SECTEUR` découpe les financières selon un critère
+économique — le FCFF décrit-il l'entreprise ? :
+
+| Métier | Bucket | DCF |
+|---|---|---|
+| Banques, financement à la consommation, crédit hypothécaire, courtage/banque d'affaires, gestion d'actifs | `Banques` | non |
+| Vie, dommages, réassurance, multiligne, holdings multi-secteurs | `Assurance` | non |
+| Paiements, opérateurs de marchés et données, courtiers d'assurance | `Services financiers` | **oui** |
+
+Deux points de méthode :
+
+- La sous-industrie **prime sur le cache** de `02` : c'est une donnée
+  officielle lue dans une table, le cache n'existe que pour éviter des appels
+  LLM. Sans cette priorité, les « Services financiers » déjà écrits en bloc par
+  les runs précédents auraient figé l'ancien découpage.
+- Une financière dont la sous-industrie est absente ou inconnue est rabattue
+  sur `Banques`, donc **exclue** du DCF. Les deux erreurs n'ont pas le même
+  coût : exclure à tort un encaisseur de commissions fait perdre un signal ;
+  inclure à tort un prêteur fabrique une valorisation qui ne veut rien dire, et
+  sur laquelle la stratégie prendrait position. C'est le cas des entreprises
+  radiées, absentes de la table Wikipedia des membres actuels — `02` les
+  journalise.
 
 ### Composition point-in-time du groupe de pairs (06b)
 

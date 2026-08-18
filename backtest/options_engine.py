@@ -678,7 +678,14 @@ class OptionsBacktestEngine:
         cached = self._pricing_context_cache.get(key)
         if cached is None:
             cached = (
-                config.risk_free_rate_for(today.year),
+                # Taux CONNU à cette date (moyenne de l'année précédente), pas
+                # la moyenne de l'année en cours : celle-ci n'existe qu'une
+                # fois l'année finie. Pricer une option de février 2020 au taux
+                # moyen 2020, écrasé par le krach de mars, était un look-ahead
+                # -- et un look-ahead au signe systématique, puisque les années
+                # où la moyenne s'écarte le plus du taux réel du moment sont
+                # les années de retournement.
+                config.risk_free_rate_known_at(today),
                 config.dividend_yield_for(self._sector_of.get(symbol)),
             )
             self._pricing_context_cache[key] = cached
@@ -710,6 +717,10 @@ class OptionsBacktestEngine:
         elapsed_days = (today - previous_day).days
         if elapsed_days <= 0:
             return
+        # risk_free_rate_for et non risk_free_rate_known_at : ce sont des
+        # intérêts EFFECTIVEMENT perçus sur la période, pas une décision prise
+        # à l'avance. Le taux contemporain est le bon ici, exactement comme
+        # pour le Sharpe (cf. metrics._risk_free_daily).
         interest = self.cash * config.risk_free_rate_for(today.year) * elapsed_days / 365.0
         self.cash += interest
         self.total_cash_interest += interest

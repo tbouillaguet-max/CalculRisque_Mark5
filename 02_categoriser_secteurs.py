@@ -163,6 +163,37 @@ def appeler_mistral(entreprises: List[str]) -> Dict[str, Optional[str]]:
     return {}
 
 
+# Bucket retenu pour une financière dont la sous-industrie est absente ou
+# inconnue de la table. "Banques" et non "Services financiers", ce qui revient
+# à l'EXCLURE du DCF (config.SECTORS_SANS_DCF) : les deux erreurs possibles
+# n'ont pas le même coût. Classer à tort un encaisseur de commissions en
+# prêteur fait perdre un signal ; classer à tort un prêteur en encaisseur de
+# commissions fabrique un DCF sur une banque -- une valorisation qui ne veut
+# rien dire, et sur laquelle la stratégie prendrait position. En cas de doute,
+# on renonce au signal.
+SECTEUR_FINANCIER_PAR_DEFAUT = "Banques"
+
+
+def secteur_fin(gics_sector, gics_sub_industry) -> Optional[str]:
+    """Secteur déduit de la SOUS-INDUSTRIE GICS, ou None si le découpage fin
+    ne s'applique pas (entreprise non financière).
+
+    Restreint à `Financials` À DESSEIN. C'est le seul secteur GICS que le
+    pipeline traite comme un bloc alors qu'il réunit trois métiers dont un
+    seul se valorise par un FCFF (cf. config.GICS_SUB_INDUSTRY_TO_SECTEUR).
+    Le garde-fou sur le secteur n'est pas cosmétique : "Data Processing &
+    Outsourced Services" était une sous-industrie de la TECHNOLOGIE avant le
+    remaniement de 2023, et sans cette restriction une SSII y serait classée
+    en services financiers."""
+    if not isinstance(gics_sector, str) or gics_sector.strip() != "Financials":
+        return None
+    if not isinstance(gics_sub_industry, str) or not gics_sub_industry.strip():
+        return SECTEUR_FINANCIER_PAR_DEFAUT
+    return config.GICS_SUB_INDUSTRY_TO_SECTEUR.get(
+        gics_sub_industry.strip(), SECTEUR_FINANCIER_PAR_DEFAUT,
+    )
+
+
 def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     cache = charger_json(CACHE_FILE)
@@ -171,11 +202,30 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
     secteurs: Dict[str, str] = {}
     a_appeler: List[str] = []
 
+    fines = 0
+    financieres_sans_sous_industrie: List[str] = []
+
     for _, row in df.drop_duplicates(subset=["Instrument_Name"]).iterrows():
         nom = row["Instrument_Name"]
         gics = row.get("GICS_Sector")
+        sous_industrie = row.get("GICS_Sub_Industry")
+        fine = secteur_fin(gics, sous_industrie)
+        if fine is not None and fine == SECTEUR_FINANCIER_PAR_DEFAUT and (
+            not isinstance(sous_industrie, str)
+            or sous_industrie.strip() not in config.GICS_SUB_INDUSTRY_TO_SECTEUR
+        ):
+            financieres_sans_sous_industrie.append(nom)
+
         if nom in secteurs_manuels:
             secteurs[nom] = secteurs_manuels[nom]
+        elif fine is not None:
+            # AVANT le cache, délibérément : la sous-industrie est une donnée
+            # officielle lue dans une table, le cache n'existe que pour éviter
+            # des appels LLM. Laisser le cache gagner aurait figé les
+            # "Services financiers" en bloc déjà écrits par les runs
+            # précédents, et le découpage fin n'aurait jamais pris effet.
+            secteurs[nom] = fine
+            fines += 1
         elif nom in cache:
             secteurs[nom] = cache[nom]
         elif pd.notna(gics) and gics in GICS_TO_SECTEUR:
@@ -184,9 +234,21 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
             a_appeler.append(nom)
 
     logger.info(
-        "%d entreprises résolues via secteurs manuels/cache/GICS, %d via API Mistral (fallback).",
-        len(secteurs), len(a_appeler),
+        "%d entreprises résolues via secteurs manuels/cache/GICS (dont %d financières "
+        "découpées par sous-industrie), %d via API Mistral (fallback).",
+        len(secteurs), fines, len(a_appeler),
     )
+    if financieres_sans_sous_industrie:
+        logger.warning(
+            "%d financières sans sous-industrie GICS exploitable : rabattues sur '%s', donc "
+            "EXCLUES du DCF par prudence (un FCFF sur un prêteur ne veut rien dire, alors "
+            "qu'une exclusion à tort ne coûte qu'un signal). Attendu pour les entreprises "
+            "RADIÉES, absentes de la table Wikipedia des membres actuels ; pour un membre "
+            "actuel, relance 01_build_universe.py afin de récupérer la colonne "
+            "GICS Sub-Industry. Concernées : %s",
+            len(financieres_sans_sous_industrie), SECTEUR_FINANCIER_PAR_DEFAUT,
+            ", ".join(sorted(financieres_sans_sous_industrie)[:20]),
+        )
 
     for i in range(0, len(a_appeler), BATCH_SIZE):
         batch = a_appeler[i:i + BATCH_SIZE]

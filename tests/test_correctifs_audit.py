@@ -401,12 +401,35 @@ def test_V1_les_cibles_et_les_sens_sont_calcules_en_un_seul_passage():
 def test_S3_le_wacc_suit_la_courbe_de_taux():
     """Un WACC figé de 2010 à 2026 est un pari de taux non voulu : trop haut
     quand les taux étaient à zéro, trop bas quand ils étaient à 5%."""
-    zirp = config.sector_dcf_params("Technologie", 2021)      # taux ~0,04%
-    hausse = config.sector_dcf_params("Technologie", 2023)    # taux ~5,15%
+    zirp = config.sector_dcf_params("Technologie", 2021)      # taux connu ~0,04% (moyenne 2020)
+    hausse = config.sector_dcf_params("Technologie", 2024)    # taux connu ~5,15% (moyenne 2023)
     assert zirp["wacc"] < hausse["wacc"]
-    # La PRIME de risque sectorielle, elle, ne bouge pas.
-    ecart_taux = config.risk_free_rate_for(2023) - config.risk_free_rate_for(2021)
+    # La PRIME de risque sectorielle, elle, ne bouge pas. Le taux retenu est
+    # celui CONNU à la date, donc la moyenne de l'année précédente : une
+    # décision prise en cours d'année N ne peut pas s'appuyer sur la moyenne
+    # de N, qui n'existe pas encore (cf. config.risk_free_rate_known_at).
+    ecart_taux = config.risk_free_rate_known_at(2024) - config.risk_free_rate_known_at(2021)
     assert hausse["wacc"] - zirp["wacc"] == pytest.approx(ecart_taux, abs=1e-9)
+
+
+def test_S3_le_wacc_n_utilise_pas_un_taux_annuel_pas_encore_publie():
+    """RISK_FREE_RATE_BY_YEAR porte des MOYENNES annuelles. Actualiser un
+    dépôt de 2020 au taux moyen 2020 (0,37%, écrasé par le krach de mars)
+    suppose connue une moyenne qui ne le sera qu'en décembre."""
+    assert config.risk_free_rate_known_at(2020) == config.risk_free_rate_for(2019)
+    assert config.risk_free_rate_known_at(pd.Timestamp("2020-02-14")) == config.risk_free_rate_for(2019)
+
+    params_2020 = config.sector_dcf_params("Technologie", 2020)
+    prime = config.SECTOR_DCF_PARAMS["Technologie"]["wacc"] - config.WACC_CALIBRATION_RISK_FREE_RATE
+    assert params_2020["wacc"] == pytest.approx(config.risk_free_rate_for(2019) + prime, abs=1e-9)
+
+    # Le comportement ex-post reste accessible pour reproduire un run ancien.
+    ex_post = config.sector_dcf_params("Technologie", 2020, point_in_time=False)
+    assert ex_post["wacc"] == pytest.approx(config.risk_free_rate_for(2020) + prime, abs=1e-9)
+    assert ex_post["wacc"] < params_2020["wacc"], (
+        "2020 est justement l'année où le look-ahead abaissait le WACC, "
+        "donc gonflait la valeur théorique juste avant le krach"
+    )
 
 
 def test_S3_le_wacc_reste_au_dessus_de_la_croissance_terminale():
