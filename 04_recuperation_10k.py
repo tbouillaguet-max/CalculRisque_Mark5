@@ -428,7 +428,11 @@ def should_skip(symbol: str, existing: pd.DataFrame, state: Dict[str, str], refr
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--tickers", type=Path, default=config.UNIVERSE_FILE)
+    parser.add_argument(
+        "--tickers", type=Path, default=None,
+        help="CSV d'univers (défaut : univers point-in-time de 01b s'il existe, "
+             "sinon univers actuel de 01 -- voir config.default_universe_file).",
+    )
     parser.add_argument("--ticker", type=str, default=None, help="Une seule entreprise (ex: AAPL)")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
@@ -452,7 +456,16 @@ def main() -> None:
     if args.ticker:
         symbols = [args.ticker.upper()]
     else:
-        universe = pd.read_csv(args.tickers, encoding="utf-8-sig")
+        tickers_file = args.tickers or config.default_universe_file()
+        if args.tickers is None and tickers_file == config.UNIVERSE_FULL_FILE:
+            logger.info(
+                "Univers point-in-time retenu (%s) : les entreprises RADIÉES sont incluses. "
+                "Sans elles, le backtest ne peut choisir que parmi des survivantes alors que "
+                "son indice de référence porte l'indice entier -- biais de survivance. "
+                "Le premier run est plus long ; les suivants ignorent les tickers en cache.",
+                tickers_file,
+            )
+        universe = pd.read_csv(tickers_file, encoding="utf-8-sig")
         symbols = universe["RIC"].dropna().unique().tolist()
         if args.limit:
             symbols = symbols[: args.limit]

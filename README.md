@@ -161,7 +161,7 @@ python 14_audit_backtest.py --run-id 20260816_000429
 
 L'audit du run `20260816_000429` (19,00 % de CAGR, +5,49 % d'alpha, **17,9 %
 d'ordres d'achat tronqués**) a montré que la troncature n'était pas la
-conséquence assumée de la règle des positions gelées. Six défauts distincts,
+conséquence assumée de la règle des positions gelées. Sept défauts distincts,
 tous corrigés, tous couverts par `tests/test_audit_moteur_actions.py` :
 
 | | Défaut | Effet mesuré |
@@ -172,6 +172,7 @@ tous corrigés, tous couverts par `tests/test_audit_moteur_actions.py` :
 | A4 | L'indice de référence équipondéré appelait `pct_change()` sans `fill_method=None`, ce qui reportait les valeurs manquantes SANS limite et annulait le forward-fill borné du panel. | Un titre absent 15 jours puis repris 40 % plus bas déversait toute sa baisse sur UNE séance (−20 % mesuré sur un indice à deux composantes). `beta`, `tracking_error_pct` et `information_ratio` étaient calculés sur cette série faussée. |
 | A5 | Les signaux étaient indexés sur la date de dépôt EXACTE et retrouvés par égalité avec le jour de bourse simulé. | Un 10-K déposé un jour où le NYSE est fermé — le Vendredi saint, tous les ans, la SEC étant ouverte — n'était jamais vu. Le signal disparaissait sans trace. Il est maintenant connu à la première séance suivante. |
 | A6 | **La cause du « 17,9 % d'ordres tronqués ».** `_rebalance` alloue une VALEUR DE POSITION égale au NAV, alors qu'acquérir cette valeur consomme en plus la commission et le slippage. | Un portefeuille pleinement investi est court d'exactement `cost_bps` à chaque rebalancement, et ne peut pas ne pas l'être. Ce manque de 0,1 % était compté comme une troncature : **100 % des ordres signalés « tronqués » sur un moteur qui faisait exactement son travail.** |
+| A7 | `03b` prenait l'univers point-in-time par défaut, `04`/`04b`/`04c` l'univers ACTUEL — chacun sa règle, en dur. | Cours des entreprises radiées collectés **sans** leurs fondamentaux : biais de survivance sur les signaux, pas sur l'indice de référence. Les quatre partagent maintenant `config.default_universe_file()` (voir la section dédiée dans « Biais et limites connus »). |
 
 Trois conséquences à retenir avant de comparer un run d'avant à un run
 d'après :
@@ -1252,15 +1253,20 @@ n'apparaît pas.
 manquer** — parce que `01b` a tourné, que le run affiche bien « univers
 point-in-time », et que rien ne semble donc clocher.
 
-Les deux moitiés de la donnée n'ont pas le même univers par défaut :
+*(Corrigé pour les runs à venir — les quatre collecteurs partagent désormais
+`config.default_universe_file()`. Ce qui suit décrit ce qui a produit les
+données déjà en cache, et reste vrai tant que `04`/`04b` n'ont pas été
+relancés.)*
 
-| Script | Univers par défaut | Ce qu'il alimente |
+Les deux moitiés de la donnée n'avaient pas le même univers par défaut :
+
+| Script | Ancien univers par défaut | Ce qu'il alimente |
 |---|---|---|
 | `03b_recuperation_cours_quotidiens.py` | `UNIVERSE_FULL_FILE` **si elle existe** (actuels + radiés) | les cours — donc l'indice de référence équipondéré |
-| `04_recuperation_10k.py` / `04b` | `UNIVERSE_FILE` — l'univers **ACTUEL**, toujours | les fondamentaux — donc les signaux DCF |
+| `04_recuperation_10k.py` / `04b` / `04c` | `UNIVERSE_FILE` — l'univers **ACTUEL**, toujours | les fondamentaux — donc les signaux DCF |
 
 Lancer le pipeline sans passer explicitement `--tickers
-data/universe/sp500_universe_full.csv` à `04`/`04b` produit donc un run où :
+data/universe/sp500_universe_full.csv` à `04`/`04b` produisait donc un run où :
 
 - l'**indice de référence** porte l'indice entier, radiées comprises ;
 - la **stratégie** ne peut choisir que parmi les entreprises encore membres
@@ -1288,17 +1294,23 @@ Depuis l'audit, `09_backtest.py` mesure la couverture lui-même et l'écrit dans
 `metrics.json` (`signal_coverage_avg_ratio`, `signal_coverage_min_ratio`,
 `signal_coverage_min_year`), avec un avertissement en dessous de 95 %.
 
-**Correction** (longue : plusieurs milliers de requêtes SEC) :
+**Correction** (longue au premier passage : plusieurs milliers de requêtes SEC
+pour les radiées absentes du cache ; `should_skip` ignore ensuite tout ticker
+déjà à jour). `--tickers` n'est plus nécessaire sur `03b`/`04`/`04b`/`04c` —
+ils prennent l'univers point-in-time dès que `01b` a tourné :
 
 ```bash
 python 01b_historique_univers_sp500.py
 python 02_categoriser_secteurs.py --universe data/universe/sp500_universe_full.csv
-python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
-python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv
-python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv
+python 03b_recuperation_cours_quotidiens.py
+python 04_recuperation_10k.py
+python 04b_recuperation_10q.py
 python 05_calcul_multiples.py && python 07_calcul_dcf.py
 python 09_backtest.py
 ```
+
+L'étape `02 --universe` reste explicite : elle met à jour le fichier d'univers
+**sur place**, ce n'est pas une simple lecture.
 
 ### Exposition delta : plafonnée en continu, avec un jour de retard (10)
 

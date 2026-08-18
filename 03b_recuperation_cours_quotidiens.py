@@ -126,10 +126,13 @@ def setup_logging(output_dir: Path) -> None:
 def default_tickers_file() -> Path:
     """Univers PIT (actuels + radiés, sortie de 01b) si disponible, sinon
     retombe sur l'univers actuel (sortie de 01) -- ce script reste utilisable
-    même si 01b n'a jamais été lancé."""
-    if config.UNIVERSE_FULL_FILE.exists():
-        return config.UNIVERSE_FULL_FILE
-    return config.UNIVERSE_FILE
+    même si 01b n'a jamais été lancé.
+
+    Délègue à config.default_universe_file : cette règle était propre à 03b,
+    et c'est justement ce qui produisait un jeu de données asymétrique (cours
+    des radiées présents, fondamentaux absents). Les quatre collecteurs
+    partagent maintenant la même définition."""
+    return config.default_universe_file()
 
 
 def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:

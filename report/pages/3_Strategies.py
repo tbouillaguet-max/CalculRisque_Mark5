@@ -75,8 +75,21 @@ c1.metric("Rendement total", _fmt_pct(metrics.get("total_return_pct")))
 c2.metric("CAGR", _fmt_pct(metrics.get("cagr_pct")))
 c3.metric("Sharpe", _fmt_num(metrics.get("sharpe_ratio")))
 c4.metric("Max drawdown", _fmt_pct(metrics.get("max_drawdown_pct")))
-c5.metric("Taux de réussite", _fmt_pct(metrics.get("win_rate_pct")))
-c6.metric("Nombre de trades", metrics.get("num_trades", 0))
+# Par THÈSE et non par exécution : trades.parquet logue une ligne par vente,
+# allègements de rebalancement compris, si bien qu'une ligne qui monte inscrit
+# une série de petits gains puis UNE perte au stop. Mesuré, une thèse unique
+# perdante s'affichait à 91% de réussite sur 32 "trades" (cf.
+# metrics._position_level_metrics). Repli sur les anciens champs pour les runs
+# antérieurs à ce calcul, avec un libellé qui dit lequel est affiché.
+_par_these = metrics.get("win_rate_positions_pct") is not None
+c5.metric(
+    "Taux de réussite" + ("" if _par_these else " (par exécution)"),
+    _fmt_pct(metrics.get("win_rate_positions_pct", metrics.get("win_rate_pct"))),
+)
+c6.metric(
+    "Positions closes" if _par_these else "Exécutions",
+    metrics.get("num_positions_closed", metrics.get("num_trades", 0)),
+)
 
 # ============================================================================
 # Évolution du portefeuille : valorisation (NAV) et composition

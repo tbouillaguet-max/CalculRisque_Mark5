@@ -2,9 +2,9 @@
 leurs correctifs.
 
 Ce run affichait 19,00% de CAGR, +5,49% d'alpha... et 17,9% d'ordres d'achat
-tronqués. L'audit a montré que la troncature n'était pas seulement la
-conséquence assumée de la règle des positions gelées, mais tenait pour partie
-à trois défauts distincts :
+tronqués, imputés par l'avertissement à la règle des positions gelées. La
+troncature venait d'ailleurs (A6), et l'audit a mis au jour sept autres
+défauts :
 
     A1  la file d'exécution classait les ordres sur le SIGNE DE LA CIBLE et
         non sur leur sens réel, si bien que le résultat du run dépendait de
@@ -14,7 +14,14 @@ conséquence assumée de la règle des positions gelées, mais tenait pour parti
     A3  num_trades / win_rate_pct / profit_factor comptaient des exécutions et
         non des thèses, ce qui gonflait mécaniquement le taux de réussite ;
     A4  l'indice de référence équipondéré déversait une baisse étalée sur
-        plusieurs semaines en une seule séance.
+        plusieurs semaines en une seule séance ;
+    A5  un dépôt tombant un jour où le NYSE est fermé n'était jamais vu ;
+    A6  le COÛT DE TRANSACTION était compté comme une pénurie de cash, ce qui
+        signalait "tronqué" un moteur qui fonctionnait ;
+    A7  contrôle négatif de A6 : une vraie pénurie doit rester signalée ;
+    A8  03b et 04/04b/04c ne partageaient pas le même univers par défaut,
+        d'où des cours de radiées sans leurs fondamentaux -- le biais de
+        survivance qui gonflait l'alpha.
 """
 
 from __future__ import annotations
@@ -461,3 +468,40 @@ def test_A7_une_vraie_penurie_reste_signalee():
 
     assert engine.truncated_orders_count == 2
     assert engine.execution_diagnostics()["unfilled_dollar_pct"] > 5.0
+
+
+# --------------------------------------------------------------------------- #
+# A8 : les quatre collecteurs partagent le même univers par défaut
+# --------------------------------------------------------------------------- #
+def test_A8_l_univers_par_defaut_prefere_le_point_in_time(tmp_path, monkeypatch):
+    """L'asymétrie qui fabriquait le biais de survivance : 03b se rabattait
+    sur l'univers complet, 04/04b/04c sur l'univers ACTUEL. Les cours des
+    radiées étaient donc collectés (et nourrissaient l'indice de référence)
+    sans leurs fondamentaux (donc sans leurs signaux)."""
+    import config
+
+    complet, actuel = tmp_path / "full.csv", tmp_path / "current.csv"
+    actuel.write_text("RIC\nAAA\n", encoding="utf-8")
+    monkeypatch.setattr(config, "UNIVERSE_FULL_FILE", complet)
+    monkeypatch.setattr(config, "UNIVERSE_FILE", actuel)
+
+    assert config.default_universe_file() == actuel, "01b jamais lancé : repli attendu"
+    complet.write_text("RIC\nAAA\nRADIEE\n", encoding="utf-8")
+    assert config.default_universe_file() == complet
+
+
+def test_A8_les_collecteurs_utilisent_tous_le_meme_defaut():
+    """Aucun collecteur ne doit re-figer UNIVERSE_FILE dans son parser : c'est
+    exactement ce qui avait divergé."""
+    import re
+    from pathlib import Path
+
+    for script in ("03b_recuperation_cours_quotidiens.py", "04_recuperation_10k.py",
+                   "04b_recuperation_10q.py", "04c_recuperation_8k.py"):
+        source = Path(script).read_text(encoding="utf-8")
+        parser_args = re.findall(r'"--tickers".*?\)', source, flags=re.S)
+        assert parser_args, f"{script} n'expose plus --tickers"
+        assert "config.UNIVERSE_FILE" not in parser_args[0], (
+            f"{script} fige l'univers ACTUEL comme défaut au lieu de "
+            "config.default_universe_file()"
+        )

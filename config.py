@@ -114,6 +114,27 @@ MATERIAL_EVENTS_8K_FILE = DIR_FINANCIALS / "material_events_8k.parquet"
 UNIVERSE_HISTORY_FILE = DIR_UNIVERSE / "sp500_universe_history.parquet"  # sortie de 01b : spans d'appartenance
 UNIVERSE_FULL_FILE = DIR_UNIVERSE / "sp500_universe_full.csv"            # sortie de 01b : superset actuels+radiés, entrée de 03b/04
 
+
+def default_universe_file():
+    """Univers par défaut de TOUS les collecteurs (03b, 04, 04b, 04c) :
+    l'univers point-in-time de 01b s'il existe, sinon l'univers actuel de 01.
+
+    POURQUOI C'EST PARTAGÉ. 03b appliquait déjà cette règle, mais 04/04b/04c
+    retombaient en dur sur UNIVERSE_FILE -- l'univers ACTUEL. Le pipeline
+    produisait donc, sans rien signaler, un jeu de données asymétrique : les
+    COURS des entreprises radiées étaient là (donc dans l'indice de référence
+    équipondéré du backtest), mais pas leurs FONDAMENTAUX, donc pas leurs
+    signaux. La stratégie ne pouvait choisir que parmi des survivantes pendant
+    que son repère portait l'indice entier, et l'alpha mesuré était surestimé
+    sans qu'aucun avertissement ne le dise. L'univers point-in-time du moteur
+    n'y changeait rien : il RESTREINT les candidates, il ne crée pas les
+    fondamentaux manquants.
+
+    Le surcoût est borné : 04/04b/04c ignorent tout ticker déjà en cache
+    (should_skip), donc seules les radiées réellement absentes sont
+    interrogées."""
+    return UNIVERSE_FULL_FILE if UNIVERSE_FULL_FILE.exists() else UNIVERSE_FILE
+
 # Cours quotidiens (contrairement à PRICES_FILE qui ne garde que la clôture
 # de fin d'année) : nécessaires pour un backtest à granularité journalière.
 DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b
