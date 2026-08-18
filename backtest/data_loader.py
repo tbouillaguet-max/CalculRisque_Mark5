@@ -501,7 +501,18 @@ def build_benchmark_series(
             "une comparaison au S&P 500 lui-même.", symbol, config.DAILY_PRICES_FILE, symbol,
         )
 
-    returns = close.pct_change()
+    # fill_method=None IMPÉRATIVEMENT. Par défaut, pct_change reporte les
+    # valeurs manquantes ("pad") -- SANS LIMITE, alors que `close` a justement
+    # été forward-fillée avec une borne (FORWARD_FILL_MAX_DAYS) pour qu'une
+    # disparition de cotation cesse d'être comblée. Le pad interne annulait
+    # cette borne : un titre dont les données s'arrêtaient 15 jours puis
+    # reprenaient 40% plus bas voyait la totalité de sa baisse tomber sur UN
+    # seul jour de l'indice (mesuré : -20% en une séance sur un indice à deux
+    # composantes), et un titre radié gardait un rendement de 0% jusqu'à sa
+    # sortie effective de l'indice. Le NIVEAU de l'indice s'en trouvait à peu
+    # près sauf, mais sa série de rendements QUOTIDIENS était fausse -- et
+    # c'est elle qui produit beta, tracking error et information ratio.
+    returns = close.pct_change(fill_method=None)
     columns = np.asarray(close.columns)
     daily_mean = np.full(len(close.index), np.nan)
     returns_values = returns.to_numpy(dtype=float)

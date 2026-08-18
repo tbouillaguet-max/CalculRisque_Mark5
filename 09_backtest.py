@@ -176,12 +176,25 @@ def main() -> None:
     logger.info("--- Résumé ---")
     for key in [
         "total_return_pct", "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
-        "max_drawdown_pct", "calmar_ratio", "num_trades", "win_rate_pct", "profit_factor", "avg_exposure_pct",
+        "max_drawdown_pct", "calmar_ratio", "annualized_turnover_pct", "avg_exposure_pct",
+        # num_trades/win_rate_pct/profit_factor comptent des EXÉCUTIONS (ventes
+        # partielles de rebalancement comprises) ; les variantes *_positions
+        # comptent des THÈSES. Les deux sont affichées côte à côte parce que
+        # l'écart entre elles est en soi une information (voir
+        # metrics._position_level_metrics) -- ce sont les secondes qui disent
+        # si la stratégie a raison, les premières combien elle exécute.
+        "num_trades", "win_rate_pct", "profit_factor",
+        "num_positions_closed", "win_rate_positions_pct", "profit_factor_positions",
         "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "signal_coverage_avg_ratio", "signal_coverage_min_ratio", "signal_coverage_min_year",
     ]:
         if key in run_metrics:
             logger.info("%s: %s", key, run_metrics[key])
     logger.info("%s", metrics_mod.format_benchmark_summary(run_metrics, benchmark_label))
+    logger.info(
+        "Relis ce run en détail (couverture de l'univers, alpha par sous-période, "
+        "sensibilité aux coûts) : python 14_audit_backtest.py --run-id %s", run_id,
+    )
 
 
 if __name__ == "__main__":

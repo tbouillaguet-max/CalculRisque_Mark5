@@ -114,8 +114,13 @@ interpréter des résultats :
       disparition des données de prix (radiation non couverte par Stooq) la
       clôturent. Elle reste sinon "gelée" à taille inchangée.
     - Un signal DCF vieux de plus de `BACKTEST_SIGNAL_MAX_AGE_DAYS` (config.py,
-      400 jours par défaut) n'est plus considéré comme une base valable pour
-      une NOUVELLE entrée (mais n'affecte pas une position déjà ouverte).
+      400 jours par défaut, ou `BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD` selon
+      le type de période) n'est plus une base valable pour METTRE DU CAPITAL
+      sur ce symbole -- ni première entrée, ni renforcement. Même chose pour un
+      8-K matériel déposé depuis. La position déjà ouverte n'est pas vendue
+      pour autant : elle devient GELÉE, conservée à taille inchangée jusqu'à
+      son stop-loss/take-profit. Le filtre momentum, lui, ne concerne que les
+      nouvelles entrées (voir « Correctifs de l'audit du moteur actions »).
     - Le nombre de positions simultanées n'est **pas** plafonné : toutes les
       entreprises retenues par la stratégie sont ouvertes. La concentration
       reste bornée par le seul plafond de pondération
@@ -125,6 +130,64 @@ interpréter des résultats :
 Résultats sauvegardés intégralement sous `data/backtest/<run_id>/` :
 `equity_curve.parquet`, `positions_history.parquet`, `trades.parquet`,
 `signals_history.parquet`, `metrics.json`, `run_config.json`.
+
+### Relire un run : `14_audit_backtest.py`
+
+`metrics.json` répond à « combien ça a rapporté », pas à « de quoi ce chiffre
+est-il fait ». `14_audit_backtest.py` relit les sorties d'un run **sans le
+relancer** (quelques secondes) et pose les cinq questions qui peuvent
+l'invalider :
+
+```bash
+python 14_audit_backtest.py                          # dernier run
+python 14_audit_backtest.py --run-id 20260816_000429
+```
+
+1. **Couverture des signaux.** Quelle part de l'indice RÉEL de chaque année la
+   stratégie pouvait-elle acheter, et surtout : la même mesure séparément pour
+   les membres actuels et pour les entreprises sorties depuis. C'est le test
+   décisif du biais de survivance résiduel (voir la section dédiée plus bas).
+2. **Trades affichés contre thèses réelles.** `num_trades`, `win_rate_pct` et
+   `profit_factor` comptent des EXÉCUTIONS, ventes partielles de rebalancement
+   comprises. Le script recalcule les mêmes indicateurs par THÈSE.
+3. **Alpha année par année et par sous-période glissante**, pour distinguer un
+   alpha régulier d'un alpha gagné sur une seule fenêtre.
+4. **Sensibilité à la date de départ** : le CAGR obtenu en décalant le début
+   du run de 1, 2, 3, 5 ans.
+5. **Sensibilité aux coûts** : ce que devient le résultat si l'exécution réelle
+   coûte 20, 30 ou 50 bps par aller simple au lieu des 10 bps supposés.
+
+### Correctifs de l'audit du moteur actions
+
+L'audit du run `20260816_000429` (19,00 % de CAGR, +5,49 % d'alpha, **17,9 %
+d'ordres d'achat tronqués**) a montré que la troncature n'était pas la
+conséquence assumée de la règle des positions gelées. Six défauts distincts,
+tous corrigés, tous couverts par `tests/test_audit_moteur_actions.py` :
+
+| | Défaut | Effet mesuré |
+|---|---|---|
+| A1 | La file d'exécution triait sur le SIGNE DE LA CIBLE, pas sur le sens réel de l'ordre. Une cible de 5 000 $ sur une ligne qui en vaut 8 000 est une vente : elle partait pourtant dans le paquet des achats. | Le résultat du run dépendait de l'ordre d'itération d'un dictionnaire. Scénario identique, seul l'ordre d'énumération changeant : 750 000 $ laissés en cash d'un côté, portefeuille complet de l'autre. |
+| A2 | Une position détenue court-circuitait TOUS les filtres de péremption. Le commentaire du code affirmait qu'elle était « de toute façon gelée, pas rebalancée sur la base de ce vieux signal » : elle ne l'était pas. | Ligne renforcée **x3,88** sur un signal périmé et invalidé par un 8-K matériel. Générateur de value trap exactement là où les filtres devaient protéger. |
+| A3 | `num_trades` / `win_rate_pct` / `profit_factor` comptaient les allègements de rebalancement comme autant de trades. | Une thèse unique perdante de −226 k$ s'affichait comme 32 trades à 91 % de réussite. |
+| A4 | L'indice de référence équipondéré appelait `pct_change()` sans `fill_method=None`, ce qui reportait les valeurs manquantes SANS limite et annulait le forward-fill borné du panel. | Un titre absent 15 jours puis repris 40 % plus bas déversait toute sa baisse sur UNE séance (−20 % mesuré sur un indice à deux composantes). `beta`, `tracking_error_pct` et `information_ratio` étaient calculés sur cette série faussée. |
+| A5 | Les signaux étaient indexés sur la date de dépôt EXACTE et retrouvés par égalité avec le jour de bourse simulé. | Un 10-K déposé un jour où le NYSE est fermé — le Vendredi saint, tous les ans, la SEC étant ouverte — n'était jamais vu. Le signal disparaissait sans trace. Il est maintenant connu à la première séance suivante. |
+| A6 | **La cause du « 17,9 % d'ordres tronqués ».** `_rebalance` alloue une VALEUR DE POSITION égale au NAV, alors qu'acquérir cette valeur consomme en plus la commission et le slippage. | Un portefeuille pleinement investi est court d'exactement `cost_bps` à chaque rebalancement, et ne peut pas ne pas l'être. Ce manque de 0,1 % était compté comme une troncature : **100 % des ordres signalés « tronqués » sur un moteur qui faisait exactement son travail.** |
+
+Trois conséquences à retenir avant de comparer un run d'avant à un run
+d'après :
+
+- **Les chiffres changent.** A1, A2 et A5 modifient les positions réellement
+  prises, donc la courbe de NAV. Un run antérieur n'est pas comparable ligne à
+  ligne.
+- **`truncated_orders_pct` ne mesure plus la même chose** et ne déclenche plus
+  l'avertissement. Il compte désormais les lots d'achats réduits au prorata
+  **au-delà de ce que les frais expliquent**.
+- **Le chiffre à lire est `unfilled_dollar_pct`** : la part du montant d'achat
+  DEMANDÉ qui n'a pas pu être investie. C'est lui qui déclenche
+  l'avertissement, au-delà de 1 %. Un compte par ordres ne dit rien tant qu'on
+  ne sait pas de combien : mesuré sur un run de référence, 53 % des ordres
+  étaient réduits… pour 0,12 % du montant demandé, soit un portefeuille investi
+  à 99,88 % de ce que la stratégie voulait.
 
 ### Ajouter une nouvelle stratégie
 
@@ -1182,6 +1245,60 @@ signalent par un avertissement au démarrage. Lance `01b` pour l'éliminer.
 Même avec `01b`, la table des changements de Wikipédia ne remonte qu'à
 ~1996-2000 : une entreprise sortie de l'indice avant le début de ce suivi
 n'apparaît pas.
+
+### Biais de survivance RÉSIDUEL : cours des radiées sans leurs signaux (09)
+
+**C'est le biais le plus coûteux du backtest actions, et le plus facile à
+manquer** — parce que `01b` a tourné, que le run affiche bien « univers
+point-in-time », et que rien ne semble donc clocher.
+
+Les deux moitiés de la donnée n'ont pas le même univers par défaut :
+
+| Script | Univers par défaut | Ce qu'il alimente |
+|---|---|---|
+| `03b_recuperation_cours_quotidiens.py` | `UNIVERSE_FULL_FILE` **si elle existe** (actuels + radiés) | les cours — donc l'indice de référence équipondéré |
+| `04_recuperation_10k.py` / `04b` | `UNIVERSE_FILE` — l'univers **ACTUEL**, toujours | les fondamentaux — donc les signaux DCF |
+
+Lancer le pipeline sans passer explicitement `--tickers
+data/universe/sp500_universe_full.csv` à `04`/`04b` produit donc un run où :
+
+- l'**indice de référence** porte l'indice entier, radiées comprises ;
+- la **stratégie** ne peut choisir que parmi les entreprises encore membres
+  aujourd'hui, faute de signal pour les autres.
+
+L'univers point-in-time n'y change rien : il ne fait que RESTREINDRE les
+candidates, il ne crée pas les fondamentaux manquants. La stratégie se mesure
+alors contre un repère qu'elle n'avait pas le droit de perdre — et un signal
+« value » est précisément celui que ce biais flatte le plus, puisque les
+entreprises les moins chères sont aussi celles qui sortent le plus souvent de
+l'indice. **L'alpha affiché est surestimé, et il n'y a pas de moyen de savoir
+de combien sans backfiller.**
+
+Deux façons de le constater sur un run existant, sans rien relancer :
+
+```bash
+python 14_audit_backtest.py --run-id <run_id>   # section 1
+```
+
+et, dans `metrics.json`, `exits_by_reason` : **aucune sortie `data_gap`**
+signifie qu'aucune position détenue n'a jamais cessé d'être cotée sur toute la
+période — ce qui n'arrive pas dans un vrai S&P 500 sur quinze ans.
+
+Depuis l'audit, `09_backtest.py` mesure la couverture lui-même et l'écrit dans
+`metrics.json` (`signal_coverage_avg_ratio`, `signal_coverage_min_ratio`,
+`signal_coverage_min_year`), avec un avertissement en dessous de 95 %.
+
+**Correction** (longue : plusieurs milliers de requêtes SEC) :
+
+```bash
+python 01b_historique_univers_sp500.py
+python 02_categoriser_secteurs.py --universe data/universe/sp500_universe_full.csv
+python 03b_recuperation_cours_quotidiens.py --tickers data/universe/sp500_universe_full.csv
+python 04_recuperation_10k.py  --tickers data/universe/sp500_universe_full.csv
+python 04b_recuperation_10q.py --tickers data/universe/sp500_universe_full.csv
+python 05_calcul_multiples.py && python 07_calcul_dcf.py
+python 09_backtest.py
+```
 
 ### Exposition delta : plafonnée en continu, avec un jour de retard (10)
 

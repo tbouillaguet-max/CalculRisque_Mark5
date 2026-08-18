@@ -163,9 +163,12 @@ def _annual_prices_asof() -> "pd.DataFrame | None":
             "datées au 31/12 par défaut. Relance 03_recuperation_cours.py pour une date réelle.",
             config.PRICES_FILE,
         )
-        annual["price_date"] = pd.to_datetime(
-            annual["year"].astype("Int64").map(lambda y: f"{y}-12-31" if pd.notna(y) else None),
-            errors="coerce",
+        # config.to_naive_day et non pd.to_datetime : merge_asof refuse deux
+        # clés de résolutions différentes, et pd.to_datetime sur des chaînes
+        # produit du datetime64[us] là où filed_date, passé par to_naive_day,
+        # est en [ns] -- MergeError sur ce seul chemin de repli.
+        annual["price_date"] = config.to_naive_day(
+            annual["year"].astype("Int64").map(lambda y: f"{y}-12-31" if pd.notna(y) else None)
         )
     else:
         return None

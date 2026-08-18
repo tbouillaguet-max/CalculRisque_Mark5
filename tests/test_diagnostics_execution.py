@@ -114,7 +114,9 @@ def test_les_diagnostics_sont_produits():
     diagnostics = engine.execution_diagnostics()
 
     assert set(diagnostics) == {
-        "buy_orders_count", "truncated_orders_count", "truncated_orders_pct", "avg_cash_pct",
+        "buy_orders_count", "truncated_orders_count", "truncated_orders_pct",
+        "unfilled_dollar_pct", "avg_cash_pct",
+        "signal_coverage_avg_ratio", "signal_coverage_min_ratio", "signal_coverage_min_year",
     }
     assert diagnostics["buy_orders_count"] > 0
     assert 0.0 <= diagnostics["avg_cash_pct"] <= 100.0
@@ -137,8 +139,8 @@ def test_avertissement_au_dela_du_seuil(caplog):
     engine.run()
     with caplog.at_level("WARNING"):
         diagnostics = engine.execution_diagnostics()
-    if diagnostics["truncated_orders_pct"] > 10.0:
-        assert any("tronqués faute de cash" in m for m in caplog.messages)
+    if diagnostics["unfilled_dollar_pct"] > 1.0:
+        assert any("faute de cash" in m for m in caplog.messages)
 
 
 def test_diagnostics_options_exposent_aussi_le_levier():
