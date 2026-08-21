@@ -356,6 +356,16 @@ def main() -> None:
                 f"      Correction : 04_recuperation_10k.py --tickers {config.UNIVERSE_FULL_FILE}\n"
                 "      (idem 04b), puis 07_calcul_dcf.py, puis relancer 09."
             )
+        elif pd.isna(anciens):
+            print(
+                "  /!\\ TEST DÉCISIF NON DÉCLENCHÉ. 'couverture_anciens_membres' est NaN sur\n"
+                "      TOUTES les années : sp500_universe_history.parquet ne contient aucune\n"
+                "      entreprise radiée qui recouvre la période auditée -- le biais de\n"
+                "      survivance n'a donc pas pu être mesuré, ce qui n'est PAS la même chose\n"
+                "      que 'pas de biais'. Vérifie que 01b_historique_univers_sp500.py a bien\n"
+                "      trouvé des radiations (regarde son log : 'X tickers ... radiés') avant\n"
+                "      de faire confiance à l'alpha affiché."
+            )
 
     # 2 ------------------------------------------------------------------ #
     print("\n--- 2. Trades affichés (exécutions) vs thèses réelles ---")

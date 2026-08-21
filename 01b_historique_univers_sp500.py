@@ -38,6 +38,7 @@ from __future__ import annotations
 import io
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -50,6 +51,22 @@ logger = logging.getLogger(__name__)
 
 WIKI_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: variable d'environnement SEC_CONTACT_EMAIL)"}
+
+# Filet de sécurité : instantané statique des spans d'appartenance (ticker,
+# start_date, end_date), embarqué dans le dépôt (donc PAS dans data/, qui est
+# gitignored -- cf. .gitignore). Sert quand load_changes_log() échoue ou est
+# incomplet -- ce qui, sans lui, revient à construire un "historique" qui ne
+# contient QUE les membres actuels : la stratégie ne voit alors plus aucune
+# entreprise radiée, et le biais de survivance que ce script existe pour
+# éliminer revient en entier, silencieusement (14_audit_backtest.py --section
+# 1-- ne peut alors pas le détecter : sa comparaison membres-actuels/anciens-
+# membres n'a plus rien à comparer).
+# Source : https://github.com/fja05680/sp500 (fichier sp500_ticker_start_end.csv,
+# dépôt communautaire tenu à jour, licence MIT), instantané du 2026-07-13
+# récupéré le 2026-08-21. Même convention de ticker que Wikipedia (point pour
+# les classes d'actions, ex. BRK.B) : aucune conversion nécessaire.
+STATIC_FALLBACK_PATH = Path(__file__).resolve().parent / "static_data" / "sp500_ticker_start_end.csv"
+STATIC_FALLBACK_SOURCE = "https://github.com/fja05680/sp500 (instantané du 2026-07-13)"
 
 
 _tables_cache: Optional[List[pd.DataFrame]] = None
@@ -146,6 +163,38 @@ def load_changes_log() -> pd.DataFrame:
     return df
 
 
+def load_static_fallback_spans() -> Dict[str, List[Tuple[Optional[date], Optional[date]]]]:
+    """{ticker: [(start, end), ...]} lu depuis STATIC_FALLBACK_PATH, trié par
+    date de début. Fichier absent ou illisible -> {} (le script retombe alors
+    sur le seul scrape Wikipedia, comme avant l'ajout de ce filet)."""
+    if not STATIC_FALLBACK_PATH.exists():
+        logger.warning(
+            "Fallback statique introuvable (%s) : historique limité à ce que le scrape "
+            "Wikipedia des changements renvoie.", STATIC_FALLBACK_PATH,
+        )
+        return {}
+    try:
+        df = pd.read_csv(STATIC_FALLBACK_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Fallback statique illisible (%s) : %s", STATIC_FALLBACK_PATH, exc)
+        return {}
+
+    df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce").dt.date
+    df["end_date"] = pd.to_datetime(df["end_date"], errors="coerce").dt.date
+    spans: Dict[str, List[Tuple[Optional[date], Optional[date]]]] = {}
+    for ticker, groupe in df.groupby("ticker"):
+        ordered = groupe.sort_values("start_date", na_position="first")
+        # pd.to_datetime(...).dt.date renvoie pd.NaT (pas None) pour une date
+        # manquante, et "NaT is not None" vaut True : sans cette normalisation,
+        # un span déjà ouvert serait quand même complété par un span
+        # supplémentaire plus bas (doublon silencieux).
+        spans[ticker] = [
+            (start if pd.notna(start) else None, end if pd.notna(end) else None)
+            for start, end in zip(ordered["start_date"], ordered["end_date"])
+        ]
+    return spans
+
+
 def _build_events_by_ticker(changes: pd.DataFrame) -> Dict[str, List[Tuple[date, str]]]:
     """{ticker: [(date, 'added'|'removed'), ...]} trié par date croissante."""
     events: Dict[str, List[Tuple[date, str]]] = {}
@@ -205,15 +254,31 @@ def _build_spans_for_ticker(
 def build_universe_history() -> pd.DataFrame:
     current = load_current_constituents()
     changes = load_changes_log()
+    static_spans = load_static_fallback_spans()
 
     current_by_ticker = current.set_index("ric")[["company_name", "date_added"]].to_dict("index")
     events_by_ticker = _build_events_by_ticker(changes)
 
-    all_tickers = set(current_by_ticker) | set(events_by_ticker)
+    all_tickers = set(current_by_ticker) | set(events_by_ticker) | set(static_spans)
+    n_wiki_only = len(set(events_by_ticker) - set(current_by_ticker))
+    n_static_only = len(all_tickers - set(current_by_ticker) - set(events_by_ticker))
     logger.info(
-        "%d membres actuels, %d tickers supplémentaires vus dans l'historique des changements (%d au total).",
-        len(current_by_ticker), len(all_tickers - set(current_by_ticker)), len(all_tickers),
+        "%d membres actuels, %d tickers supplémentaires vus dans l'historique Wikipedia des "
+        "changements, %d tickers supplémentaires vus uniquement dans le fallback statique "
+        "(%s), %d au total.",
+        len(current_by_ticker), n_wiki_only, n_static_only, STATIC_FALLBACK_SOURCE, len(all_tickers),
     )
+    if not events_by_ticker and static_spans:
+        logger.warning(
+            "Aucun changement exploitable dans la table Wikipedia (scrape cassé ou page "
+            "modifiée) : l'historique des radiations vient entièrement du fallback statique."
+        )
+    elif not events_by_ticker and not static_spans:
+        logger.error(
+            "Ni le scrape Wikipedia ni le fallback statique ne fournissent de radiations : "
+            "l'univers construit ne contiendra QUE les membres actuels (biais de survivance "
+            "intégral). Vérifie %s.", STATIC_FALLBACK_PATH,
+        )
 
     rows = []
     for ticker in sorted(all_tickers):
@@ -234,11 +299,25 @@ def build_universe_history() -> pd.DataFrame:
             ]
             company_name = names[0] if names else ticker
 
-        spans = _build_spans_for_ticker(ticker_events, is_current, current_added)
-        if not spans:
-            # Membre actuel sans aucun événement loggé ET sans "Date added"
-            # exploitable : span entièrement ouvert (début inconnu).
+        if ticker_events:
+            # Wikipedia a au moins un événement pour ce ticker : source vivante,
+            # prioritaire sur le fallback statique (qui peut avoir quelques
+            # semaines de retard, cf. STATIC_FALLBACK_SOURCE).
+            spans = _build_spans_for_ticker(ticker_events, is_current, current_added)
+        elif ticker in static_spans:
+            spans = list(static_spans[ticker])
+            if is_current and (not spans or spans[-1][1] is not None):
+                # Membre actuel mais le dernier span statique est fermé : le
+                # snapshot est antérieur à un ajout/retour récent, on rouvre
+                # un span avec la date connue de Wikipedia.
+                spans.append((current_added, None))
+        elif is_current:
+            # Membre actuel sans événement Wikipedia ET absent du fallback
+            # statique (ticker trop récent pour les deux) : span entièrement
+            # ouvert, daté par "Date added".
             spans = [(current_added, None)]
+        else:
+            spans = []
 
         for start, end in spans:
             rows.append({
