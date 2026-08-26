@@ -1021,6 +1021,46 @@ la friction totale** sur un run de test. Les coûts et le journal passent
 désormais par un point d'entrée unique (`_record_fill`), ce qui rend cet
 oubli structurellement impossible.
 
+### Soldes négatifs dans le journal du rapport (page Stratégies)
+
+*(Corrigé.)* Le même symptôme est réapparu **côté rapport** : en triant le
+journal achats/ventes par date croissante et en cumulant les volumes, on
+arrivait à des soldes négatifs — plus de ventes à un instant donné que de
+contrats détenus. Le moteur, lui, était juste (l'invariant de conservation
+ci-dessus est testé) : c'est `report/utils.build_trade_log` qui fabriquait le
+solde négatif, pour **deux raisons indépendantes**.
+
+**1. Unités mélangées.** `trades.parquet` porte `contracts` **et** `shares`
+(= `contracts` × 100 pour un contrat standard) côté options. Le journal lisait
+`shares` pour les ventes et `contracts` pour les achats : chaque vente pesait
+**100 fois** son poids réel.
+
+**2. Achats manquants.** Les achats étaient reconstruits en comparant la
+quantité détenue d'une ligne de `positions_history` à la ligne **précédente du
+même symbole**. Or `positions_history` n'enregistre que les positions **encore
+ouvertes en fin de journée** : la comparaison enjambe les périodes sans
+position et rate tout achat qui ne fait pas monter le solde de clôture —
+roulement d'échéance (solder N contrats et en rouvrir M ≤ N le même jour),
+ré-entrée après une sortie complète, vente partielle suivie d'un renfort le
+même jour. Ces achats-là étaient pourtant bien vendus plus tard.
+
+Le rapport lit désormais `executions.parquet` quand le run en a un : les
+achats y sont **exacts, fill par fill**, avec le motif du moteur (`rebalance`,
+`rebalance_daily`, `roll`, `deploy_idle_cash`) au lieu d'un générique
+« renforcement ». Pour les runs sans journal (toute la stratégie actions, et
+les runs options antérieurs), la reconstruction repose maintenant sur la
+conservation des quantités, qui n'enjambe rien puisqu'elle réintègre les
+ventes du jour :
+
+    achats(J) = détenu(J) − détenu(J−1) + ventes(J)
+
+où `détenu(J)` vaut 0 pour toute date sans ligne dans `positions_history`. Le
+journal affiche en plus une colonne **Solde** (quantité détenue après chaque
+exécution) : le backtest étant non margé, elle ne descend jamais sous zéro, et
+son dernier point vaut exactement la position encore détenue en fin de run.
+`tests/test_journal_rapport.py` vérifie les deux sources sur deux bancs (un à
+roulements, un à ré-entrées et dé-levier).
+
 ### Diagnostic de friction (13_diagnostic_friction.py)
 
 Le moteur accumule désormais la friction payée, décomposée, et la publie jour
@@ -1522,6 +1562,15 @@ streamlit run report/Home.py
   de valorisation sur
   l'ensemble du portefeuille suivi, avec projection PCA 2D et recoupement
   avec le secteur GICS déclaré.
+- **🧪 Stratégies & Backtests** — pour un run choisi de `09_backtest.py`
+  (actions) ou `10_backtest_options.py` (options) : KPI, évolution du NAV et
+  de la composition, et **journal des achats/ventes** (quand, pourquoi,
+  combien, et le solde détenu après chaque exécution). Les ventes viennent de
+  `trades.parquet`, les achats de `executions.parquet` quand le run en a un —
+  cf. « Soldes négatifs dans le journal du rapport » plus haut. Cette page ne
+  relance jamais de backtest : elle ne lit que `data/backtest*/<run_id>/`.
+- **⚙️ Pipeline** — journal des runs de `run_pipeline_quarterly.py` (état par
+  étape, logs) et fraîcheur des sorties du pipeline.
 
 ## Historique des nappes de volatilité
 

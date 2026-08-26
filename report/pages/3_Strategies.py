@@ -43,6 +43,7 @@ data = load_backtest_run(kind, run_id)
 equity_curve = data["equity_curve"]
 positions_history = data["positions_history"]
 trades = data["trades"]
+executions = data["executions"]
 signals_history = data["signals_history"]
 metrics = data["metrics"]
 run_config = data["run_config"]
@@ -124,12 +125,16 @@ with tab_composition:
 st.markdown("### Journal des achats / ventes")
 st.caption(
     "Les ventes reprennent la raison d'exécution du moteur (stop-loss, take-profit, "
-    "rebalancement, expiration, disparition des données). Les achats sont reconstruits "
-    "à partir des positions détenues (le moteur ne loggue explicitement que les ventes) "
-    "et rattachés au dernier signal de valorisation connu à cette date."
+    "roulement, perte de signal, expiration, disparition des données). Les achats "
+    "viennent du journal des exécutions du moteur quand le run en a un "
+    "(`executions.parquet`, une ligne par fill), sinon ils sont reconstruits à partir "
+    "des positions détenues et des ventes du jour ; une ouverture est rattachée au "
+    "dernier signal de valorisation connu à cette date. **Solde** = quantité détenue "
+    "après l'exécution (contrats pour la stratégie options, actions pour la stratégie "
+    "actions) : le backtest étant non margé, il ne descend jamais sous zéro."
 )
 
-log = build_trade_log(positions_history, trades, signals_history)
+log = build_trade_log(positions_history, trades, signals_history, executions)
 if log.empty:
     st.info("Aucun achat/vente enregistré sur ce run.")
 else:
@@ -157,6 +162,11 @@ else:
             "quantite": st.column_config.NumberColumn("Quantité", format="%.2f"),
             "prix": st.column_config.NumberColumn("Prix", format="%.2f"),
             "raison": st.column_config.TextColumn("Pourquoi", width="large"),
+            "solde": st.column_config.NumberColumn(
+                "Solde", format="%.2f",
+                help="Quantité détenue sur ce symbole après cette exécution "
+                     "(cumul sur tout le run, indépendant des filtres ci-dessus).",
+            ),
             "pnl": st.column_config.NumberColumn("P&L", format="%.2f"),
             "return_pct": st.column_config.NumberColumn("Rendement %", format="%.1f"),
         },
