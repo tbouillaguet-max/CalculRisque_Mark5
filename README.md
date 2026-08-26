@@ -380,7 +380,7 @@ python 10_backtest_options.py --strategy valuation_gap_multiples_options --start
 | Take-profit | +80% du cours du sous-jacent | 80% du chemin vers la théorique | 80% du chemin vers la théorique |
 | Écart refermé | position gelée jusqu'au **roulement à 9 mois**, où elle est clôturée | vendue au trimestre suivant | vendue au trimestre suivant |
 | Volatilité de repricing | figée à l'entrée | suivie au jour le jour | suivie au jour le jour |
-| Ligne écartée si… | jamais (le seuil décide seul) | jamais | **espérance de gain nette ≤ 0** |
+| Ligne écartée si… | jamais (le seuil décide seul) | jamais | **espérance de gain nette ≤ 0**, ou **mise log-optimale `f*` sous `OPTIONS_EV_MIN_KELLY_FRACTION`** |
 
 Comme la valorisation boursière (nb d'actions × cours) et la valorisation
 théorique (nb d'actions × valeur théorique par action) portent sur le même
@@ -497,6 +497,69 @@ volatilité) ne sont pas une panne : ils disent que l'avantage est trop mince
 pour payer de la convexité, et qu'il vaut mieux du delta. Le Sharpe, lui,
 disait cela **toujours**, y compris à conviction forte.
 
+#### Espérance positive ≠ pari qui vaut la peine (`OPTIONS_EV_MIN_KELLY_FRACTION`)
+
+*(Ajouté après mesure.)* La contrainte « espérance nette > 0 » est un test de
+**signe**, pas de **matérialité**. Mesuré : un contrat d'espérance nette
+**+0,15 % de la prime** la passe sans difficulté, alors que Kelly y dimensionne
+la mise à `f* = 0,0005` — cinq dix-millièmes du capital, pour un `g*` nul à six
+décimales. La stratégie l'ouvrait pourtant au poids de portefeuille ordinaire
+(0,2 dans le cas mesuré), soit **400 fois** la taille que le critère recommande.
+Le critère disait « ce pari ne vaut rien » et rien ne l'écoutait.
+
+`OPTIONS_EV_MIN_KELLY_FRACTION` ferme cet écart : une ligne dont le meilleur
+contrat est dimensionné sous ce plancher **n'est pas ouverte**, et le rejet est
+compté à part (`dropped_kelly_below_floor_count`) — « le pari perd en moyenne »
+et « le pari gagne mais ne vaut pas la peine » sont deux diagnostics distincts.
+
+Le plancher ne mord que sur les sous-jacents **très volatils**. Au gap minimal
+qui passe déjà `OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT` (+20 %), côté CALL, sans
+dividende :
+
+| σ | 0,15 | 0,25 | 0,35 | 0,50 | 0,70 | 1,00 |
+|---|---|---|---|---|---|---|
+| `f*` | 0,985 | 0,636 | 0,409 | 0,224 | 0,105 | **0,035** |
+
+C'est exactement la situation où un écart de valorisation de 20 % est du bruit
+devant la volatilité du titre. Sur un banc à thèses franches (écarts de 40 % à
+170 %), le `f*` retenu ne descend jamais sous 0,465 (médiane 0,805) : le défaut
+de **0,05** est un garde-fou conservateur, calé pour ne retirer que la queue
+manifestement dégénérée. Le monter (0,10 ; 0,20) le fait mordre sur σ ≥ 0,70
+puis σ ≥ 0,50 ; `0.0` le désactive et rétablit exactement le comportement
+antérieur. `min_kelly_fraction_retained` remonte dans `metrics.json` la plus
+petite mise réellement retenue — sans elle, un plancher trop bas est
+indistinguable d'un plancher bien calé, les deux affichant zéro ligne écartée.
+
+Le filtre s'applique au contrat **gagnant**, pas à chaque candidat de la
+grille : les deux sont équivalents, puisque `g* = E[log(1 + f*·R)]` s'annule
+avec `f*` — un contrat que Kelly ne veut pas dimensionner n'a pas non plus le
+meilleur taux de croissance, donc il ne gagne jamais la sélection. Vérifié sur
+336 combinaisons (sens × σ × écart × dividende × plancher) : zéro divergence.
+`backtest/expected_value.py` reste donc un module de maths pur, sans politique
+d'exécution.
+
+**Ce que ce plancher ne fait pas : dimensionner.** Le poids de la ligne reste
+celui de la stratégie multiples (conviction), pas `f*`. Le plancher décide
+seulement si la ligne est ouverte.
+
+**Impact mesuré**, sur un run de 500 jours et 8 titres dont la volatilité
+annualisée s'étage de 13 % à 111 % (`--strategy-param min_kelly_fraction=…`) :
+
+| plancher | lignes écartées | `f*` min retenu | fills | contrats | friction | rendement |
+|---|---|---|---|---|---|---|
+| 0,00 (désactivé) | 0 | 0,0612 | 101 | 1 330 | 34 940 $ | −4,62 % |
+| 0,05 (**défaut**) | 0 | 0,0612 | 101 | 1 330 | 34 940 $ | −4,62 % |
+| 0,10 | 17 | 0,1013 | 101 | 1 330 | 34 940 $ | −4,62 % |
+| 0,20 | 82 | 0,2022 | 99 | 1 326 | 34 158 $ | −4,03 % |
+| 0,40 | 234 | 0,4002 | 94 | 1 321 | 31 844 $ | −4,13 % |
+
+Le défaut **ne mord pas** sur ce banc, et c'est le comportement voulu : c'est un
+garde-fou contre une queue dégénérée, pas un filtre de sélection. `f*` min
+retenu = 0,061 dit qu'on l'a frôlé sans le toucher. À 0,10, 17 décisions
+dégénérées disparaissent **sans changer une seule exécution** ; au-delà, le
+paramètre commence à arbitrer de vraies positions et relève de l'optimisation
+(même démarche que `11c_optimize_convergence_fraction.py`), pas du garde-fou.
+
 `g*` n'a pas de primitive : il est évalué par **quadrature de Gauss-Legendre**
 (`OPTIONS_EV_QUADRATURE_NODES`, 128 nœuds) sur la seule région lucrative,
 l'atome de perte totale étant traité en forme fermée. L'intégrande y est
@@ -547,7 +610,8 @@ replie. Écarter ces lignes serait plus prudent en apparence, mais biaiserait la
 sélection vers les seuls titres à long historique. La part des ouvertures faites
 sur IV réelle est remontée dans `metrics.json`
 (`expected_value_implied_vol_pct`), à côté du nombre de lignes écartées pour
-espérance négative (`dropped_expected_value_negative_count`).
+espérance négative (`dropped_expected_value_negative_count`) et pour mise
+log-optimale insuffisante (`dropped_kelly_below_floor_count`).
 
 **Limite fondamentale.** Tout ce que produit cette stratégie est la traduction
 en dollars de `mu`, et `mu` est **estimé** — à partir d'une valeur théorique

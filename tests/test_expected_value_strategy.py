@@ -235,7 +235,11 @@ def test_la_garde_d_esperance_est_monotone_en_fraction_de_convergence():
     retenues = []
     for fraction in (0.1, 0.25, 0.5, 0.8, 1.0):
         strategie = ValuationGapExpectedValueOptionsStrategy(
-            entry_threshold_pct=0.5, convergence_fraction=fraction,
+            # Plancher de matérialité DÉSACTIVÉ : ce test porte sur la garde
+            # d'espérance et sur elle seule. Les deux garde-fous écartent la
+            # même thèse marginale, et les laisser agir ensemble ferait mesurer
+            # leur composition au lieu de la monotonie recherchée.
+            entry_threshold_pct=0.5, convergence_fraction=fraction, min_kelly_fraction=0.0,
         )
         strategie.bind_market_context(_contexte(sigma=SIGMA))
         retenues.append(bool(strategie.generate_option_targets(_signaux(theoretical=103.0), {})))
@@ -249,6 +253,113 @@ def test_la_garde_d_esperance_est_monotone_en_fraction_de_convergence():
         f"aucune bascule sur cette thèse ({retenues}) : le banc ne teste plus "
         "la monotonie, seulement une constante"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Plancher de matérialité sur la mise log-optimale
+# --------------------------------------------------------------------------- #
+
+def _contrat_retenu(sigma, theoretical, **kwargs):
+    """(cibles, f* du contrat que l'optimisation retiendrait sans plancher)."""
+    strategie = ValuationGapExpectedValueOptionsStrategy(entry_threshold_pct=0.5, **kwargs)
+    strategie.bind_market_context(_contexte(sigma=sigma))
+    cibles = strategie.generate_option_targets(_signaux(theoretical=theoretical), {})
+    return strategie, cibles
+
+
+def _f_star_sans_plancher(sigma, theoretical, fraction):
+    t_years = ValuationGapExpectedValueOptionsStrategy().tenor_days / 365.0
+    mu = expected_value.convergence_drift(SPOT, theoretical, t_years, fraction)
+    resultat = expected_value.optimal_strike(
+        SPOT, mu, sigma, t_years, "CALL",
+        expected_value.strike_grid(SPOT, sigma, t_years), r=0.04, q=0.0,
+    )
+    return None if resultat is None else resultat["kelly_fraction"]
+
+
+def test_une_mise_log_optimale_sous_le_plancher_n_ouvre_rien():
+    """Le défaut corrigé : la contrainte d'espérance positive est un test de
+    SIGNE. Un contrat d'espérance nette +0,15 % de la prime la passait, alors
+    que Kelly y dimensionne 0,05 % du capital -- et la stratégie l'ouvrait au
+    poids de portefeuille ordinaire, 400 fois la taille recommandée."""
+    sigma, theoretical, fraction = 0.80, 100.5, 0.8
+
+    # Sans plancher, cette ligne est bien ouverte, et sur une mise dérisoire :
+    # c'est ce qui rend le test concluant plutôt que tautologique.
+    f_star = _f_star_sans_plancher(sigma, theoretical, fraction)
+    assert f_star is not None and f_star < 0.01, f_star
+    _, sans = _contrat_retenu(sigma, theoretical, convergence_fraction=fraction, min_kelly_fraction=0.0)
+    assert "AAA" in sans
+
+    strategie, avec = _contrat_retenu(
+        sigma, theoretical, convergence_fraction=fraction, min_kelly_fraction=0.05,
+    )
+    assert avec == {}
+    assert strategie.diagnostics()["dropped_kelly_below_floor_count"] == 1
+    # Compté À PART du rejet pour espérance négative : les deux diagnostics ne
+    # disent pas la même chose sur le signal.
+    assert strategie.diagnostics()["dropped_expected_value_negative_count"] == 0
+
+
+def test_une_these_franche_n_est_pas_touchee_par_le_plancher():
+    """Le plancher ne doit pas se transformer en filtre général : sur une thèse
+    franche, la mise log-optimale est largement au-dessus et la ligne passe."""
+    strategie, cibles = _contrat_retenu(SIGMA, 150.0, min_kelly_fraction=0.05)
+    assert "AAA" in cibles
+    diag = strategie.diagnostics()
+    assert diag["dropped_kelly_below_floor_count"] == 0
+    # Et la marge est reportée, pour qu'un plancher trop bas se voie.
+    assert diag["min_kelly_fraction_retained"] > 0.05
+    assert diag["min_kelly_fraction_floor"] == 0.05
+
+
+def test_le_plancher_desactive_retablit_le_comportement_anterieur():
+    strategie, cibles = _contrat_retenu(0.80, 100.5, convergence_fraction=0.8, min_kelly_fraction=0.0)
+    assert "AAA" in cibles
+    assert strategie.diagnostics()["dropped_kelly_below_floor_count"] == 0
+
+
+def test_le_plancher_est_monotone():
+    """Monter le plancher ne peut qu'écarter davantage : la propriété qui rend
+    le paramètre optimisable sans surprise."""
+    ouvertes = []
+    for plancher in (0.0, 0.01, 0.05, 0.20, 0.60, 0.95):
+        _, cibles = _contrat_retenu(
+            0.50, 130.0, convergence_fraction=0.8, min_kelly_fraction=plancher,
+        )
+        ouvertes.append(bool(cibles))
+    assert ouvertes == sorted(ouvertes, reverse=True), ouvertes
+    assert len(set(ouvertes)) == 2, (
+        f"aucune bascule ({ouvertes}) : le banc ne teste plus la monotonie"
+    )
+
+
+def test_le_plancher_est_valide():
+    for invalide in (-0.1, 1.0, 1.5):
+        with pytest.raises(ValueError):
+            ValuationGapExpectedValueOptionsStrategy(min_kelly_fraction=invalide)
+    # 0 (désactivé) et une valeur strictement sous 1 restent admises.
+    ValuationGapExpectedValueOptionsStrategy(min_kelly_fraction=0.0)
+    ValuationGapExpectedValueOptionsStrategy(min_kelly_fraction=0.999)
+
+
+def test_le_plancher_par_defaut_ne_mord_pas_au_seuil_d_entree_usuel():
+    """Garde-fou de CALIBRAGE : le défaut de config est censé ne retirer que la
+    queue dégénérée. Si un futur réglage le faisait mordre sur une thèse qui
+    passe tout juste le seuil d'entrée de production, à une volatilité
+    ordinaire, ce serait un changement de politique -- pas un garde-fou."""
+    t_years = ValuationGapExpectedValueOptionsStrategy().tenor_days / 365.0
+    seuil = math.exp(config.OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT / 100)
+    for sigma in (0.15, 0.25, 0.35, 0.50):
+        f_star = _f_star_sans_plancher(
+            sigma, SPOT * seuil, config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT,
+        )
+        assert f_star is not None, sigma
+        assert f_star >= config.OPTIONS_EV_MIN_KELLY_FRACTION, (
+            f"à sigma={sigma}, f*={f_star:.4f} tombe sous le plancher par défaut "
+            f"{config.OPTIONS_EV_MIN_KELLY_FRACTION} pour une thèse au seuil d'entrée"
+        )
+    assert t_years > 0
 
 
 def test_la_fraction_de_convergence_est_validee():

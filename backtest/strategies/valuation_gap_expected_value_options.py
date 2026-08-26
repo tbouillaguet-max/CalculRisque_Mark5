@@ -110,6 +110,32 @@ en moyenne n'a aucune raison d'être prise ; elle est écartée du portefeuille 
 jour et comptée dans `dropped_expected_value_negative_count`.
 
 
+ET POURQUOI L'ESPÉRANCE POSITIVE NE SUFFIT PAS (config.OPTIONS_EV_MIN_KELLY_FRACTION)
+--------------------------------------------------------------------------------------
+La contrainte ci-dessus est un test de SIGNE, pas de MATÉRIALITÉ. Mesuré : un
+contrat d'espérance nette +0,15 % de la prime la passe sans difficulté, alors
+que Kelly y dimensionne la mise à f* = 0,0005 -- cinq dix-millièmes du capital,
+pour un taux de croissance g* nul à six décimales. La stratégie l'ouvrait
+pourtant au poids de portefeuille ordinaire (0,2 dans le cas mesuré), soit
+QUATRE CENTS FOIS la taille que le critère recommande. Le critère disait « ce
+pari ne vaut rien » et rien ne l'écoutait.
+
+`min_kelly_fraction` ferme cet écart : une ligne dont le meilleur contrat est
+dimensionné sous ce plancher n'est pas ouverte du tout, et le rejet est compté
+à part (`dropped_kelly_below_floor_count`) -- « le pari perd en moyenne » et
+« le pari gagne mais ne vaut pas la peine » sont deux diagnostics différents.
+
+Le plancher ne mord que sur les sous-jacents TRÈS VOLATILS : f* décroît avec
+sigma, et au gap minimal qui passe déjà le seuil d'entrée (+20 %), f* vaut 0,99
+à sigma 15 % mais 0,035 à sigma 100 %. C'est exactement la situation où un
+écart de valorisation de 20 % est du bruit devant la volatilité du titre. Voir
+config.OPTIONS_EV_MIN_KELLY_FRACTION pour les chiffres complets.
+
+CE QUE CE PLANCHER NE FAIT PAS : dimensionner. Le poids de la ligne reste celui
+de la stratégie multiples (conviction), pas f*. Le plancher décide SEULEMENT si
+la ligne est ouverte -- un filtre binaire, pas un Kelly sizing.
+
+
 LIMITE FONDAMENTALE
 -------------------
 Tout ce que produit cette stratégie est la traduction en dollars de `mu`, et
@@ -168,12 +194,14 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         convergence_fraction: float = config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT,
         strike_grid_n_sigma: float = config.OPTIONS_EV_STRIKE_GRID_N_SIGMA,
         strike_grid_step_sigma: float = config.OPTIONS_EV_STRIKE_GRID_STEP_SIGMA,
+        min_kelly_fraction: float = config.OPTIONS_EV_MIN_KELLY_FRACTION,
         **kwargs,
     ):
         super().__init__(
             convergence_fraction=convergence_fraction,
             strike_grid_n_sigma=strike_grid_n_sigma,
             strike_grid_step_sigma=strike_grid_step_sigma,
+            min_kelly_fraction=min_kelly_fraction,
             **kwargs,
         )
         fraction = float(convergence_fraction)
@@ -187,12 +215,30 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         self.strike_grid_n_sigma = float(strike_grid_n_sigma)
         self.strike_grid_step_sigma = float(strike_grid_step_sigma)
 
+        plancher = float(min_kelly_fraction)
+        # Borne haute STRICTE : f* est borné par expected_value._F_MAX (0,999),
+        # donc un plancher à 1 écarterait tout, silencieusement.
+        if not 0.0 <= plancher < 1.0:
+            raise ValueError(
+                f"min_kelly_fraction attend une valeur dans [0, 1[, reçu {min_kelly_fraction!r}. "
+                "0 désactive le plancher ; 1 ou au-delà écarterait toute ligne, la mise "
+                "log-optimale étant bornée strictement sous 1 (une option longue peut perdre "
+                "100 % de la mise)."
+            )
+        self.min_kelly_fraction = plancher
+
         # Compteurs agrégés, remontés dans metrics.json par le moteur (cf.
         # options_engine._strategy_diagnostics). Cumulés sur tout le run : ils
         # comptent des ÉVALUATIONS (une par candidate et par jour de
         # rebalancement), pas des positions.
         self._n_evaluations = 0
         self._n_negative_edge = 0
+        self._n_below_kelly_floor = 0
+        # Plus petite mise log-optimale RÉELLEMENT retenue : dit à quel point le
+        # plancher a été frôlé sans mordre. Sans elle, un plancher trop bas est
+        # indistinguable d'un plancher bien calé -- les deux affichent zéro
+        # ligne écartée.
+        self._min_kelly_retenu = None
         self._n_implied_vol = 0
         self._n_realized_vol = 0
         self._n_fallback_vol = 0
@@ -207,11 +253,23 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         `dropped_expected_value_negative_count` est le chiffre qui dit si le
         critère MORD : à zéro, la contrainte d'espérance positive n'a jamais
         rien écarté et la stratégie se réduit à sa grille ; très élevé, le
-        signal produit surtout des thèses que le marché facture déjà."""
+        signal produit surtout des thèses que le marché facture déjà.
+
+        `dropped_kelly_below_floor_count` compte les lignes écartées pour
+        MATÉRIALITÉ (espérance positive, mais mise log-optimale sous
+        min_kelly_fraction) -- volontairement distinct du compteur précédent :
+        « le pari perd en moyenne » et « le pari gagne mais ne vaut pas la
+        peine » sont deux diagnostics différents, et les confondre empêcherait
+        de savoir lequel des deux garde-fous agit. `min_kelly_fraction_retained`
+        donne la plus petite mise réellement retenue : c'est elle qui dit si le
+        plancher est bien calé ou simplement trop bas pour se voir."""
         vol_total = self._n_implied_vol + self._n_realized_vol
         return {
             "expected_value_evaluations_count": self._n_evaluations,
             "dropped_expected_value_negative_count": self._n_negative_edge,
+            "dropped_kelly_below_floor_count": self._n_below_kelly_floor,
+            "min_kelly_fraction_floor": self.min_kelly_fraction,
+            "min_kelly_fraction_retained": self._min_kelly_retenu,
             "expected_value_implied_vol_count": self._n_implied_vol,
             "expected_value_realized_vol_count": self._n_realized_vol,
             "expected_value_implied_vol_pct": (
@@ -336,6 +394,35 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         if resultat is None:
             self._n_negative_edge += 1
             return None
+
+        # PLANCHER DE MATÉRIALITÉ. La contrainte d'espérance positive est un
+        # test de SIGNE : elle laisse passer un contrat dont Kelly dimensionne
+        # la mise à 0,05 % du capital, que la stratégie ouvrirait ensuite au
+        # poids de portefeuille ordinaire. Quand le critère dit lui-même que le
+        # pari ne vaut presque rien, on ne l'exécute pas.
+        #
+        # APPLIQUÉ AU GAGNANT, et non à chaque candidat de la grille : les deux
+        # sont équivalents ici, parce que g* = E[log(1 + f*·R)] s'annule avec f*
+        # -- un contrat que Kelly ne veut pas dimensionner n'a pas non plus le
+        # meilleur taux de croissance, donc il ne gagne jamais la sélection.
+        # Vérifié sur 336 combinaisons (sens x sigma x écart x dividende x
+        # plancher) : zéro divergence entre « filtrer dans la boucle » et
+        # « filtrer le gagnant ». Le filtre reste donc ici, dans la stratégie,
+        # plutôt que dans backtest/expected_value.py, qui est un module de
+        # maths pur et n'a pas à porter une politique d'exécution.
+        fraction = resultat.get("kelly_fraction")
+        if self.min_kelly_fraction and fraction is not None and fraction < self.min_kelly_fraction:
+            self._n_below_kelly_floor += 1
+            logger.debug(
+                "%s %s : ligne écartée -- mise log-optimale %.4f sous le plancher %.4f "
+                "(espérance nette %+.2f%% de la prime, strike %.2f).",
+                symbol, option_type, fraction, self.min_kelly_fraction,
+                resultat["edge"] / resultat["premium"] * 100, resultat["strike"],
+            )
+            return None
+        if fraction is not None and (self._min_kelly_retenu is None or fraction < self._min_kelly_retenu):
+            self._min_kelly_retenu = float(fraction)
+
         return float(resultat["strike"])
 
     # ------------------------------------------------------------------ #

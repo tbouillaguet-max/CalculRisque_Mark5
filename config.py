@@ -687,6 +687,36 @@ OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 # EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
 OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
 
+# PLANCHER DE MATÉRIALITÉ sur la mise log-optimale f*, en fraction du capital.
+# Une ligne dont Kelly dimensionne le meilleur contrat SOUS ce plancher n'est
+# pas ouverte du tout (comptée dans `dropped_kelly_below_floor_count`).
+#
+# POURQUOI. La contrainte d'espérance positive est un test de SIGNE, pas de
+# matérialité : elle laisse passer un contrat dont l'espérance nette vaut
+# +0,15 % de la prime, et sur lequel Kelly recommande de miser 0,05 % du
+# capital -- pendant que la stratégie, elle, l'ouvre au poids de portefeuille
+# ordinaire (typiquement 20 %), soit 400 fois la taille recommandée. Le
+# critère disait « ce pari ne vaut rien » et rien ne l'écoutait.
+#
+# CE QUE ÇA FILTRE, MESURÉ. f* décroît avec la volatilité du sous-jacent : au
+# GAP MINIMAL qui passe déjà OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT (+20 %),
+# côté CALL, sans dividende --
+#
+#     sigma  0,15  ->  f* = 0,985      sigma  0,50  ->  f* = 0,224
+#     sigma  0,25  ->  f* = 0,636      sigma  0,70  ->  f* = 0,105
+#     sigma  0,35  ->  f* = 0,409      sigma  1,00  ->  f* = 0,035
+#
+# -- le plancher ne mord donc QUE sur les sous-jacents très volatils, là où un
+# écart de valorisation de 20 % est du bruit devant la volatilité. Sur un banc
+# à thèses franches (écarts de 40 % à 170 %), le f* retenu ne descend jamais
+# sous 0,465 (médiane 0,805) : à 0,05, ce plancher n'y écarte rien.
+#
+# 0.05 est donc un garde-fou CONSERVATEUR, calé pour ne retirer que la queue
+# manifestement dégénérée. Le monter (0,10 ; 0,20) fait mordre le filtre sur
+# les sigma >= 0,70 puis >= 0,50 ; 0.0 le désactive et rétablit exactement le
+# comportement antérieur. Optimisable comme les autres seuils.
+OPTIONS_EV_MIN_KELLY_FRACTION = 0.05
+
 # Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
 # de S0·exp(-N·sigma·racine(T)) à S0·exp(+N·sigma·racine(T)), par pas de
 # PAS·sigma·racine(T).
