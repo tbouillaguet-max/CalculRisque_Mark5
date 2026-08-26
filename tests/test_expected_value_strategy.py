@@ -145,7 +145,9 @@ def test_sans_volatilite_on_se_replie_sur_celle_du_moteur():
     # Le strike doit être celui qu'on obtiendrait à la volatilité de repli.
     attendu = expected_value.optimal_strike(
         SPOT,
-        expected_value.convergence_drift(SPOT, 150.0, strategie.tenor_days / 365.0, 0.5),
+        expected_value.convergence_drift(
+            SPOT, 150.0, strategie.tenor_days / 365.0, strategie.convergence_fraction,
+        ),
         config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0, "CALL",
         expected_value.strike_grid(SPOT, config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0),
         r=0.04, q=0.0,
@@ -159,9 +161,17 @@ def test_sans_volatilite_on_se_replie_sur_celle_du_moteur():
 
 def test_la_grille_se_restreint_aux_strikes_cotes():
     """Sans cette contrainte, l'optimisation choisirait un strike que personne
-    ne cotait, et le moteur se rabattrait silencieusement sur un autre."""
+    ne cotait, et le moteur se rabattrait silencieusement sur un autre.
+
+    Fraction POSÉE ICI, alors que le sujet du test n'est pas la convergence :
+    ce test a seulement besoin qu'une thèse viable existe, et au défaut le plus
+    bas admissible la thèse de `_signaux()` n'a plus d'espérance nette positive
+    (dérive 2 %/an contre un taux sans risque à 4 %). Le laisser suivre
+    config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT le ferait tomber sur un
+    `KeyError` en disant « la grille cotée est cassée », alors que la ligne
+    aurait simplement été écartée pour une raison sans rapport."""
     cotes = [90.0, 110.0, 130.0]
-    strategie = ValuationGapExpectedValueOptionsStrategy()
+    strategie = ValuationGapExpectedValueOptionsStrategy(convergence_fraction=0.5)
     strategie.bind_market_context(_contexte(quoted=cotes))
 
     cibles = strategie.generate_option_targets(_signaux(), {})
@@ -190,13 +200,55 @@ def test_des_strikes_cotes_hors_fenetre_font_retomber_sur_la_grille_theorique():
 
 def test_une_these_trop_faible_n_ouvre_rien_et_est_comptee():
     """Une valeur théorique à peine au-dessus du cours ne bat pas la prime :
-    aucune mise log-optimale n'existe, la ligne est écartée et comptée."""
-    strategie = ValuationGapExpectedValueOptionsStrategy(entry_threshold_pct=0.5)
-    strategie.bind_market_context(_contexte(sigma=0.80))
+    aucune mise log-optimale n'existe, la ligne est écartée et comptée.
+
+    `convergence_fraction=1.0` est posée EXPLICITEMENT, et c'est le point du
+    test : c'est l'hypothèse la plus généreuse que la stratégie accepte (le
+    cours atteint exactement sa valeur théorique à l'échéance). Écarter la
+    ligne sous cette hypothèse-là l'écarte sous toutes les autres, puisque
+    l'espérance nette croît avec la fraction (cf. le test de monotonie
+    ci-dessous). Sans cette fixation, le test suivait
+    config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT et rejetait ce contrat avec
+    une marge de 7 MILLIÈMES de dollar sur une prime de 97 $ : le porter de 0,5
+    à 0,8 a suffi à faire changer le signe de l'espérance nette et à faire
+    tomber le test, sans qu'aucun code de production ne soit en cause."""
+    strategie = ValuationGapExpectedValueOptionsStrategy(
+        entry_threshold_pct=0.5, convergence_fraction=1.0,
+    )
+    strategie.bind_market_context(_contexte(sigma=SIGMA))
 
     cibles = strategie.generate_option_targets(_signaux(theoretical=100.5), {})
     assert cibles == {}
     assert strategie.diagnostics()["dropped_expected_value_negative_count"] == 1
+
+
+def test_la_garde_d_esperance_est_monotone_en_fraction_de_convergence():
+    """L'invariant qui rend le test précédent concluant : l'espérance nette
+    d'un contrat CROÎT avec la fraction de convergence (elle ne dépend de la
+    fraction que par la dérive `mu`, et E[payoff] est croissante en `mu`).
+
+    Une thèse écartée à fraction 1,0 est donc écartée à toute fraction plus
+    faible, et une thèse retenue à une fraction donnée l'est à toute fraction
+    plus forte. C'est ce qui permet de tester la garde une seule fois, au cas
+    le plus favorable, plutôt que de la re-calibrer à chaque changement du
+    défaut de config."""
+    retenues = []
+    for fraction in (0.1, 0.25, 0.5, 0.8, 1.0):
+        strategie = ValuationGapExpectedValueOptionsStrategy(
+            entry_threshold_pct=0.5, convergence_fraction=fraction,
+        )
+        strategie.bind_market_context(_contexte(sigma=SIGMA))
+        retenues.append(bool(strategie.generate_option_targets(_signaux(theoretical=103.0), {})))
+
+    # Aucune fraction plus forte ne peut faire écarter ce qu'une plus faible
+    # retenait : la suite des booléens est croissante.
+    assert retenues == sorted(retenues), retenues
+    # Et la thèse est choisie pour que la bascule tombe DANS la plage balayée :
+    # une suite constante satisferait la croissance sans rien démontrer.
+    assert len(set(retenues)) == 2, (
+        f"aucune bascule sur cette thèse ({retenues}) : le banc ne teste plus "
+        "la monotonie, seulement une constante"
+    )
 
 
 def test_la_fraction_de_convergence_est_validee():
@@ -293,7 +345,16 @@ def test_le_strike_ouvert_par_le_moteur_est_proche_du_strike_optimise():
     spot_decision = float(panel.close.loc[dates[1], "AAA"])   # clôture du jour du signal
     spot_execution = float(panel.open.loc[dates[2], "AAA"])   # ouverture du lendemain
 
-    mu = expected_value.convergence_drift(spot_decision, 180.0, t_years, 0.5)
+    # Fraction LUE SUR LA STRATÉGIE, jamais recopiée : ce test refait à la main
+    # le calcul que la stratégie vient de faire, donc il doit partir des mêmes
+    # paramètres qu'elle. Un littéral (0.5, la valeur de
+    # config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT à l'époque) faisait
+    # comparer le strike du moteur à l'optimum d'une AUTRE dérive dès que ce
+    # défaut bougeait -- porté à 0.8, l'écart mesuré passait de 0,22 $ à 53 $
+    # et le test tombait, sans qu'aucun code de production ne soit en cause.
+    mu = expected_value.convergence_drift(
+        spot_decision, 180.0, t_years, strategie.convergence_fraction,
+    )
     r, q = engine._pricing_context("AAA", dates[1])
     optimal = expected_value.optimal_strike(
         spot_decision, mu, sigma, t_years, "CALL",
@@ -301,13 +362,29 @@ def test_le_strike_ouvert_par_le_moteur_est_proche_du_strike_optimise():
     )["strike"]
 
     derive = abs(position.strike - optimal)
-    pas_de_grille = optimal * (math.exp(0.25 * sigma * math.sqrt(t_years)) - 1.0)
+    # Idem pour le pas de grille : config.OPTIONS_EV_STRIKE_GRID_STEP_SIGMA, pas
+    # une copie.
+    pas_de_grille = optimal * (
+        math.exp(config.OPTIONS_EV_STRIKE_GRID_STEP_SIGMA * sigma * math.sqrt(t_years)) - 1.0
+    )
 
-    # La dérive est de l'ordre de la moitié d'un mouvement journalier...
-    assert derive < abs(spot_execution - spot_decision)
-    # ... donc très en dessous du pas de grille : le contrat que le moteur
-    # ouvre est bien celui que l'optimisation a choisi. Mesuré sur ce jeu :
-    # dérive 0,22 $ pour un pas de grille de 5,4 $, soit 4 %.
+    # La dérive a une FORME FERMÉE, et la vérifier vaut mieux que la borner à
+    # vue : le moteur applique la moneyness au spot d'EXÉCUTION
+    # (options_engine._select_contract, `target_strike = strike_moneyness * spot`),
+    # donc le strike ouvert vaut K* x S_exécution / S_décision, et l'écart est
+    # exactement proportionnel au mouvement de nuit.
+    #
+    # L'ancienne borne, `derive < |S_exécution - S_décision|`, revenait par ce
+    # calcul à exiger K* < S_décision, c'est-à-dire un optimum DANS la monnaie
+    # -- une propriété de la thèse testée, pas de la transmission du strike.
+    # Elle tombait dès que l'optimum remontait à la monnaie (mesuré : égalité
+    # stricte à fraction de convergence 1,0, où K* est exactement le point ATM
+    # de la grille).
+    assert derive == pytest.approx(optimal * abs(spot_execution - spot_decision) / spot_decision)
+    # C'est ici la vraie conclusion : cette dérive reste très en dessous du pas
+    # de grille, donc le contrat que le moteur ouvre est bien celui que
+    # l'optimisation a choisi. Mesuré sur ce jeu, à fraction 0,8 : dérive
+    # 0,33 $ pour un pas de grille de 9,1 $, soit 3,7 %.
     assert derive < 0.1 * pas_de_grille
 
 
