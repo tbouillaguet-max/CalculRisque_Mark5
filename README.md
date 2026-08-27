@@ -275,6 +275,9 @@ le delta pour une exposition $ cible ("hedge par les greeks").
     11b_optimize_rebalance_threshold.py -> grid-search sur ε (rebalancement sur dépôt SEC)
     11c_optimize_convergence_fraction.py -> grid-search sur la fraction de convergence
                                           (stratégie « espérance de gain »)
+    11d_optimize_entry_threshold.py   -> grid-search sur le seuil d'entrée
+    11e_optimize_strategy_param.py    -> grid-search sur N'IMPORTE QUEL paramètre
+                                          scalaire d'une stratégie (générique)
     compare_options_strategies.py     -> comparaison côte à côte des trois stratégies
 
 ```bash
@@ -667,6 +670,59 @@ Deux avertissements que le script émet lui-même :
 - Une fraction basse écarte beaucoup de lignes pour espérance négative et peut
   afficher un Sharpe flatteur sur une poignée de trades. Le script refuse de
   recommander une fraction sous `--min-trades` (20 par défaut).
+
+### Optimisation d'un paramètre quelconque (11e_optimize_strategy_param.py)
+
+`11`, `11b`, `11c` et `11d` sont quatre déclinaisons de la même mécanique pour
+quatre paramètres. En ajouter une par nouveau réglage optimisable multiplierait
+400 lignes de structure identique — et surtout, **un paramètre sans script
+reste de facto non optimisable**, ce qui est la vraie perte. `11e` balaye
+n'importe quel paramètre scalaire du constructeur d'une stratégie, présent ou
+futur, sans nouveau fichier :
+
+```bash
+python 11e_optimize_strategy_param.py                      # min_kelly_fraction
+python 11e_optimize_strategy_param.py --param strike_grid_n_sigma
+python 11e_optimize_strategy_param.py --param min_kelly_fraction --grid 0 0.05 0.1 0.2
+python 11e_optimize_strategy_param.py --list-params        # ce que la stratégie accepte
+python 11e_optimize_strategy_param.py --workers 4
+```
+
+Les quatre scripts dédiés restent en place : ils portent des grilles, des
+garde-fous et des commentaires propres à leur paramètre (`11` balaye un
+**couple** stop/take, `11d` partage sa grille avec le seuil de sortie), que
+généraliser aurait dilué.
+
+Grilles par défaut fournies pour `min_kelly_fraction`, `strike_grid_n_sigma`,
+`strike_grid_step_sigma` et `exit_threshold_ratio` ; tout autre paramètre
+accepté par la stratégie marche aussi, avec `--grid`. CSV sous
+`data/backtest_options/optimize_<paramètre>_<stratégie>_<horodatage>.csv`.
+
+**Le piège que ce script ferme.** `Strategy.__init__(**params)` stocke tout ce
+qu'on lui passe **sans rien valider** (`backtest/strategies/base.py`). Une
+faute de frappe est donc avalée en silence :
+
+```python
+ValuationGapExpectedValueOptionsStrategy(min_kely_fraction=0.42)
+# -> params["min_kely_fraction"] = 0.42   (et jusque dans run_config.json)
+# -> self.min_kelly_fraction  = 0.05      (le vrai réglage, inchangé)
+```
+
+Un balayage lancé sur ce nom-là produirait N runs **rigoureusement
+identiques**, puis recommanderait fièrement une valeur. `11e` refuse donc tout
+paramètre absent de la signature du constructeur (héritage compris) et propose
+le nom le plus proche. Il signale en outre une grille dont **toutes les lignes
+sont identiques** — soit un plateau réel, soit un réglage qui n'agit pas là où
+on le croit ; dans les deux cas, recommander une valeur serait du bruit
+présenté comme un choix.
+
+Les compteurs propres à la stratégie (`dropped_kelly_below_floor_count`,
+`dropped_expected_value_negative_count`, …) sont ramassés **dynamiquement** via
+`diagnostics()`, sans liste en dur : un nouveau compteur apparaît dans le CSV
+sans qu'il faille toucher au script.
+
+Mêmes avertissements que `11c` : pas de walk-forward (classement *in-sample*),
+et refus de recommander une valeur sous `--min-trades` (20 par défaut).
 
 ### Optimisation stop-loss / take-profit (11_optimize_options_stops.py)
 

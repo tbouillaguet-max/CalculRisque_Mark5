@@ -714,7 +714,9 @@ OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
 # 0.05 est donc un garde-fou CONSERVATEUR, calé pour ne retirer que la queue
 # manifestement dégénérée. Le monter (0,10 ; 0,20) fait mordre le filtre sur
 # les sigma >= 0,70 puis >= 0,50 ; 0.0 le désactive et rétablit exactement le
-# comportement antérieur. Optimisable comme les autres seuils.
+# comportement antérieur.
+#
+# Optimisable : python 11e_optimize_strategy_param.py --param min_kelly_fraction
 OPTIONS_EV_MIN_KELLY_FRACTION = 0.05
 
 # Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
