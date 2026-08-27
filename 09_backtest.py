@@ -75,13 +75,18 @@ def main() -> None:
     parser.add_argument("--take-profit-pct", type=float, default=config.BACKTEST_TAKE_PROFIT_PCT)
     parser.add_argument(
         "--entry-threshold-pct", type=float, default=None,
+        # Les %% sont DOUBLÉS jusque dans la chaîne finale : argparse applique
+        # lui-même un `help % params` au moment d'afficher --help (cf.
+        # HelpFormatter._expand_help), et un % isolé y lève
+        # `ValueError: unsupported format character ')'`. Interpoler les
+        # valeurs ici (f-string) puis laisser %% à argparse est la seule forme
+        # qui survit aux deux passes -- `"...(%.0f%%)" % (...)` produisait un %
+        # nu et faisait planter `python 09_backtest.py --help`.
         help="Seuil d'entrée passé à la stratégie. Non précisé, CHAQUE stratégie garde son "
              "propre défaut -- ils ne se lisent pas pareil : valuation_gap_dcf attend un écart "
-             "au cours (%.0f%%), valuation_gap_sector_neutral un écart à la médiane de son "
-             "secteur (%.0f%%)." % (
-                 config.BACKTEST_ENTRY_THRESHOLD_PCT,
-                 config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT,
-             ),
+             f"au cours ({config.BACKTEST_ENTRY_THRESHOLD_PCT:.0f}%%), "
+             "valuation_gap_sector_neutral un écart à la médiane de son secteur "
+             f"({config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT:.0f}%%).",
     )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE", help="Paramètre supplémentaire spécifique à la stratégie (répétable).")
     parser.add_argument(

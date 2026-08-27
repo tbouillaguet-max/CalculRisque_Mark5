@@ -4,6 +4,11 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+> **📋 [COMMANDES.md](COMMANDES.md) — toutes les commandes du dépôt**, script par
+> script, avec leurs options et ce que chacune produit. Ce README-ci explique le
+> *pourquoi* des choix de conception ; `COMMANDES.md` est l'aide-mémoire
+> opérationnel.
+
 ## Configuration requise
 
 ```bash
