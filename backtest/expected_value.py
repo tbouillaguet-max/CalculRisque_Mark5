@@ -27,11 +27,21 @@ confondre viderait la démarche de son sens :
       jamais réécrit ici). Le marché ne facture pas la conviction de
       l'acheteur.
 
-L'écart entre les deux -- `E[payoff] - prime` -- est exactement l'espérance de
-gain net revendiquée par la thèse. Si `mu = r`, cet écart est nul à
-l'actualisation près : c'est le test de cohérence le plus important du module
-(voir tests/test_expected_value.py), et il vaut démonstration que la formule
-d'espérance est correcte par construction.
+L'écart entre les deux est l'espérance de gain net revendiquée par la thèse,
+MAIS il ne s'écrit `E[payoff] - prime` qu'à condition de ramener les deux
+termes à la même date : le payoff est reçu en T, la prime payée en 0. L'écart
+correct est donc
+
+    edge = E[payoff] - prime·e^(rT)          (cf. carried_premium)
+
+Si `mu = r`, cet écart est EXACTEMENT nul : c'est le test de cohérence le plus
+important du module (voir tests/test_expected_value.py), et il vaut
+démonstration que la formule d'espérance est correcte par construction. La
+version « à l'actualisation près » de ce test était le symptôme d'un vrai
+défaut : elle accordait à chaque contrat un avantage de e^(rT) - 1 (+8,3 % de
+la mise à r = 4 %, T = 2 ans) qui n'était que la valeur temps du cash non
+investi, et laissait donc entrer des thèses plus faibles que le taux sans
+risque.
 
 
 POURQUOI UN SHARPE DE CONTRAT, ET PAS L'ESPÉRANCE SEULE
@@ -118,6 +128,36 @@ def _degenerate_spot(spot: float, mu: float, t_years: float) -> float:
     """Sous-jacent à l'échéance quand il n'y a plus d'aléa (sigma = 0, ou
     T = 0 auquel cas e^0 = 1 rend le spot lui-même)."""
     return spot * math.exp(mu * max(t_years, 0.0))
+
+
+def carried_premium(premium: float, r: float, t_years: float) -> float:
+    """Prime payée EN 0, portée à l'ÉCHÉANCE au taux sans risque : prime·e^(rT).
+
+    POURQUOI CETTE GRANDEUR EXISTE. Tout le module compare un payoff reçu en T
+    à une prime payée en 0. Les deux ne sont pas dans la même unité, et les
+    soustraire directement fabrique un avantage qui n'existe pas : sous mu = r,
+    E[payoff] - prime vaut prime·(e^(rT) - 1), soit +8,3 % de la mise à r = 4 %
+    et T = 2 ans, sur TOUS les strikes à la fois. Ce n'est pas un edge, c'est la
+    valeur temps du taux -- exactement ce qu'aurait rapporté le cash non investi.
+
+    Ramener les deux à la même date supprime ce terme. On porte la prime à
+    l'échéance plutôt que d'actualiser le payoff parce que c'est la forme dont
+    Kelly a besoin : la richesse finale de « f en option, 1-f en cash » est
+
+        W·[ (1-f)·e^(rT) + f·payoff/prime ]
+          = W·e^(rT)·[ 1 + f·( payoff/(prime·e^(rT)) - 1 ) ]
+
+    donc le rendement pertinent est R = payoff/carried_premium - 1, l'excès sur
+    le cash. Le facteur e^(rT) commun ne dépend pas de f : il ne déplace pas
+    l'optimum, mais l'oublier DANS R fait croire à un excès qui n'existe pas.
+
+    r = 0 rend la prime inchangée -- convention des fonctions de maths pures
+    ci-dessous, qui reçoivent alors une prime déjà exprimée à la date du payoff.
+    C'est `optimal_strike`, seul point d'entrée de production, qui transmet le
+    vrai taux."""
+    if not r or t_years <= 0:
+        return premium
+    return premium * math.exp(r * t_years)
 
 
 def truncated_moments_below(
@@ -389,8 +429,12 @@ def downside_semivariance_put(
 
 def downside_semivariance(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float,
+    premium: float, r: float = 0.0,
 ) -> float:
+    """`r` : taux sans risque servant à porter la prime à l'échéance
+    (cf. carried_premium). Le seuil de rentabilité d'une option longue est la
+    mise AUGMENTÉE de ce qu'aurait rapporté le cash, pas la mise nue."""
+    premium = carried_premium(premium, r, t_years)
     if option_type == CALL:
         return downside_semivariance_call(spot, strike, mu, sigma, t_years, premium)
     if option_type == PUT:
@@ -400,10 +444,10 @@ def downside_semivariance(
 
 def probability_of_profit(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float,
+    premium: float, r: float = 0.0,
 ) -> float:
-    """P(payoff > prime) : probabilité que le contrat soit rentable à
-    l'échéance, sous la mesure physique.
+    """P(payoff > prime·e^(rT)) : probabilité que le contrat batte le CASH à
+    l'échéance, sous la mesure physique (cf. carried_premium pour `r`).
 
     Sert de GARDE-FOU au critère de Sortino, pas de critère de sélection. Un
     ratio de Sortino peut être flatté par une queue de distribution : très hors
@@ -413,6 +457,7 @@ def probability_of_profit(
     lognormale et l'estimation de `mu` sont les moins fiables. Exiger un
     minimum de probabilité de gain interdit d'acheter un ratio qui n'existe que
     dans la queue du modèle."""
+    premium = carried_premium(premium, r, t_years)
     breakeven = strike + premium if option_type == CALL else strike - premium
     if option_type == CALL:
         return 1.0 - truncated_moments_below(spot, breakeven, mu, sigma, t_years)[0]
@@ -479,9 +524,11 @@ def _legendre_nodes(n_nodes: int) -> tuple:
 
 def _return_nodes(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float, n_nodes: int,
+    premium: float, n_nodes: int, r: float = 0.0,
 ) -> Optional[tuple]:
-    """Discrétisation du rendement R = payoff/prime - 1 en deux morceaux :
+    """Discrétisation du rendement R = payoff/(prime·e^(rT)) - 1 en deux
+    morceaux (cf. carried_premium : R est l'excès sur le CASH, pas le rendement
+    brut -- sans quoi tout contrat paraît battre une mise qu'on n'a pas faite) :
 
         (probabilité de perte TOTALE, poids de quadrature, valeurs de R)
 
@@ -499,6 +546,7 @@ def _return_nodes(
     est sur l'atome de perte totale)."""
     if premium <= 0 or spot <= 0 or strike <= 0 or sigma <= 0 or t_years <= 0:
         return None
+    premium = carried_premium(premium, r, t_years)
 
     sigma_sqrt_t = sigma * math.sqrt(t_years)
     # Écart-type standardisé du seuil : S_T <= K  <=>  z <= z_k.
@@ -530,7 +578,7 @@ def _return_nodes(
 
 def kelly_optimum(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES,
+    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES, r: float = 0.0,
 ) -> Optional[tuple]:
     """(fraction de Kelly f*, taux de croissance g*) du contrat.
 
@@ -547,10 +595,15 @@ def kelly_optimum(
     dépendance à un point de départ.
 
     None si le contrat n'a pas d'espérance nette positive : c'est exactement la
-    condition E[R] > 0, c'est-à-dire E[payoff] > prime. La règle « espérance
+    condition E[R] > 0, c'est-à-dire E[payoff] > prime·e^(rT) -- le contrat doit
+    battre le CASH, pas zéro (cf. carried_premium). La règle « espérance
     positive obligatoire » n'est donc pas un filtre ajouté par-dessus Kelly,
-    c'est la condition d'existence d'une mise log-optimale non nulle."""
-    noeuds = _return_nodes(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+    c'est la condition d'existence d'une mise log-optimale non nulle.
+
+    `r` : taux sans risque de l'alternative non risquée. Le laisser à 0 revient
+    à supposer que le cash ne rapporte rien, ce qui offre à CHAQUE contrat un
+    avantage fictif de e^(rT) - 1 (8,3 % à r = 4 %, T = 2 ans)."""
+    noeuds = _return_nodes(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes, r)
     if noeuds is None:
         return None
     prob_perte, poids, rendements = noeuds
@@ -586,10 +639,10 @@ def kelly_optimum(
 
 def log_growth_rate(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES,
+    premium: float, n_nodes: int = config.OPTIONS_EV_QUADRATURE_NODES, r: float = 0.0,
 ) -> Optional[float]:
     """Taux de croissance log-optimal g* seul (voir kelly_optimum)."""
-    optimum = kelly_optimum(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+    optimum = kelly_optimum(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes, r)
     return None if optimum is None else optimum[1]
 
 
@@ -599,13 +652,15 @@ def log_growth_rate(
 
 def sharpe_contract(
     spot: float, strike: float, mu: float, sigma: float, t_years: float, option_type: str,
-    premium: float,
+    premium: float, r: float = 0.0,
 ) -> Optional[float]:
-    """(E[payoff] - prime) / écart-type(payoff).
+    """(E[payoff] - prime·e^(rT)) / écart-type(payoff).
 
     `premium` est le prix de MARCHÉ du contrat (Black-Scholes au taux sans
     risque), pas une valeur recalculée sous `mu` : c'est la mise réellement
-    engagée. Le numérateur est donc l'espérance de gain NET.
+    engagée. Portée à l'échéance par `r` (cf. carried_premium), elle rend le
+    numérateur homogène au payoff -- sans quoi, sous mu = r, ce « gain net »
+    vaudrait prime·(e^(rT) - 1) > 0 sur tous les strikes.
 
     None quand le ratio n'a pas de sens : payoff déterministe (écart-type nul,
     ce qui arrive à T = 0 ou sigma = 0) ou paramètres non finis. Un appelant
@@ -617,7 +672,7 @@ def sharpe_contract(
     esperance = expected_payoff(spot, strike, mu, sigma, t_years, option_type)
     if not math.isfinite(esperance) or not math.isfinite(premium):
         return None
-    return (esperance - premium) / math.sqrt(variance)
+    return (esperance - carried_premium(premium, r, t_years)) / math.sqrt(variance)
 
 
 def strike_grid(
@@ -708,18 +763,25 @@ def optimal_strike(
             continue
 
         esperance = expected_payoff(spot, strike, mu, sigma, t_years, option_type)
-        edge = esperance - premium
+        # Mise portée à l'échéance : le contrat doit battre le CASH, pas zéro
+        # (cf. carried_premium). Comparer E[payoff], reçu en T, à une prime
+        # payée en 0 accordait +e^(rT) - 1 d'avantage fictif à tous les
+        # strikes, et laissait donc passer des thèses plus faibles que le taux
+        # sans risque -- mesuré : une valeur théorique 0,5 % au-dessus du cours
+        # ouvrait encore une position.
+        edge = esperance - carried_premium(premium, r, t_years)
         if edge <= 0:
             n_esperance_negative += 1
             continue
 
         if criterion == "kelly":
-            optimum = kelly_optimum(spot, strike, mu, sigma, t_years, option_type, premium, n_nodes)
+            optimum = kelly_optimum(
+                spot, strike, mu, sigma, t_years, option_type, premium, n_nodes, r)
             if optimum is None:
                 continue
             fraction, score = optimum
         else:
-            score = sharpe_contract(spot, strike, mu, sigma, t_years, option_type, premium)
+            score = sharpe_contract(spot, strike, mu, sigma, t_years, option_type, premium, r)
             if score is None:
                 continue
             fraction = None
@@ -727,7 +789,7 @@ def optimal_strike(
         if meilleur is None or score > meilleur["score"]:
             variance = variance_payoff(spot, strike, mu, sigma, t_years, option_type)
             semi_variance = downside_semivariance(
-                spot, strike, mu, sigma, t_years, option_type, premium)
+                spot, strike, mu, sigma, t_years, option_type, premium, r)
             meilleur = {
                 "strike": strike,
                 "criterion": criterion,
@@ -740,7 +802,7 @@ def optimal_strike(
                 "std_payoff": math.sqrt(variance),
                 "downside_semideviation": math.sqrt(semi_variance),
                 "probability_of_profit": probability_of_profit(
-                    spot, strike, mu, sigma, t_years, option_type, premium),
+                    spot, strike, mu, sigma, t_years, option_type, premium, r),
             }
 
     if meilleur is None:

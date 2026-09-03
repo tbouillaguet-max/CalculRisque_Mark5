@@ -145,7 +145,8 @@ def test_sans_volatilite_on_se_replie_sur_celle_du_moteur():
     # Le strike doit être celui qu'on obtiendrait à la volatilité de repli.
     attendu = expected_value.optimal_strike(
         SPOT,
-        expected_value.convergence_drift(SPOT, 150.0, strategie.tenor_days / 365.0, 0.5),
+        expected_value.convergence_drift(
+            SPOT, 150.0, strategie.tenor_days / 365.0, strategie.convergence_fraction),
         config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0, "CALL",
         expected_value.strike_grid(SPOT, config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0),
         r=0.04, q=0.0,
@@ -293,7 +294,12 @@ def test_le_strike_ouvert_par_le_moteur_est_proche_du_strike_optimise():
     spot_decision = float(panel.close.loc[dates[1], "AAA"])   # clôture du jour du signal
     spot_execution = float(panel.open.loc[dates[2], "AAA"])   # ouverture du lendemain
 
-    mu = expected_value.convergence_drift(spot_decision, 180.0, t_years, 0.5)
+    # Fraction de convergence LUE SUR LA STRATÉGIE, pas recopiée : elle est
+    # réglable (config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT, déjà passée de
+    # 0,5 à 0,8) et la figer ici faisait comparer le strike réellement ouvert à
+    # l'optimum d'une AUTRE thèse que celle jouée par le moteur.
+    mu = expected_value.convergence_drift(
+        spot_decision, 180.0, t_years, strategie.convergence_fraction)
     r, q = engine._pricing_context("AAA", dates[1])
     optimal = expected_value.optimal_strike(
         spot_decision, mu, sigma, t_years, "CALL",

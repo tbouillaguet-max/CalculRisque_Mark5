@@ -266,17 +266,41 @@ def test_le_risque_baissier_refuse_un_type_inconnu():
 
 def test_sans_edge_le_sharpe_est_nul():
     """mu = r : le marché et la thèse disent la même chose, donc l'espérance
-    nette est nulle et aucun strike ne se distingue."""
+    nette est nulle et aucun strike ne se distingue.
+
+    C'est le test de cohérence central du module. Il n'est vrai qu'en portant
+    la mise à l'échéance (`r=R`, cf. carried_premium) : le payoff est reçu en T
+    et la prime payée en 0. Sans cette mise à niveau, l'écart vaut
+    prime·(e^(rT) - 1) > 0 sur TOUS les strikes -- un avantage qui n'est que la
+    valeur temps du cash non investi, et non une thèse."""
     strike = 110.0
     premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
-    sharpe = ev.sharpe_contract(SPOT, strike, R, SIGMA, T, "CALL", premium)
-    # E[payoff] = prime·e^(rT) : l'écart est la seule valeur temps du taux.
-    assert sharpe > 0
-    assert sharpe == pytest.approx(
+
+    sharpe = ev.sharpe_contract(SPOT, strike, R, SIGMA, T, "CALL", premium, r=R)
+    assert sharpe == pytest.approx(0.0, abs=1e-12)
+
+    # `r` omis = prime déjà exprimée à la date du payoff (convention des
+    # fonctions de maths pures) : l'écart redevient la seule valeur temps.
+    sans_taux = ev.sharpe_contract(SPOT, strike, R, SIGMA, T, "CALL", premium)
+    assert sans_taux == pytest.approx(
         (premium * math.exp(R * T) - premium)
         / math.sqrt(ev.variance_payoff_call(SPOT, strike, R, SIGMA, T)),
         rel=1e-9,
     )
+
+
+def test_sans_edge_kelly_refuse_de_miser():
+    """Corollaire du précédent, sur le critère réellement utilisé en
+    production : sous mu = r, aucune mise log-optimale n'existe. C'est ce qui
+    interdit d'ouvrir une position dont la thèse ne bat pas le taux sans
+    risque."""
+    strike = 110.0
+    premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
+    assert ev.kelly_optimum(SPOT, strike, R, SIGMA, T, "CALL", premium, r=R) is None
+
+    # Une thèse strictement meilleure que le cash, elle, doit miser.
+    optimum = ev.kelly_optimum(SPOT, strike, R + 0.15, SIGMA, T, "CALL", premium, r=R)
+    assert optimum is not None and 0 < optimum[0] < 1
 
 
 def test_un_payoff_deterministe_n_a_pas_de_sharpe():
@@ -314,8 +338,10 @@ def test_le_strike_optimal_a_une_esperance_nette_positive():
     assert resultat is not None
     assert resultat["edge"] > 0
     assert resultat["strike"] in grille
+    # `r=R` comme optimal_strike : le score rendu porte la mise à l'échéance.
     assert resultat["score"] == pytest.approx(
-        ev.sharpe_contract(SPOT, resultat["strike"], mu, SIGMA, T, "CALL", resultat["premium"]),
+        ev.sharpe_contract(
+            SPOT, resultat["strike"], mu, SIGMA, T, "CALL", resultat["premium"], r=R),
         rel=1e-12,
     )
 
@@ -327,9 +353,12 @@ def test_le_strike_optimal_maximise_bien_le_sharpe():
 
     for strike in grille:
         premium = options_pricing.bs_price(SPOT, strike, T, SIGMA, "CALL", r=R, q=0.0)
-        if premium <= 0 or ev.expected_payoff_call(SPOT, strike, mu, SIGMA, T) - premium <= 0:
+        # Même filtre d'admission que optimal_strike : le contrat doit battre le
+        # cash, donc la mise est portée à l'échéance (cf. carried_premium).
+        mise = ev.carried_premium(premium, R, T)
+        if premium <= 0 or ev.expected_payoff_call(SPOT, strike, mu, SIGMA, T) - mise <= 0:
             continue
-        sharpe = ev.sharpe_contract(SPOT, strike, mu, SIGMA, T, "CALL", premium)
+        sharpe = ev.sharpe_contract(SPOT, strike, mu, SIGMA, T, "CALL", premium, r=R)
         assert sharpe <= resultat["score"] + 1e-12
 
 
@@ -495,7 +524,7 @@ def test_le_score_rendu_correspond_bien_au_critere_demande():
     grille = ev.strike_grid(SPOT, SIGMA, T)
     resultat = ev.optimal_strike(SPOT, 0.25, SIGMA, T, "CALL", grille, r=R)
     attendu = ev.kelly_optimum(
-        SPOT, resultat["strike"], 0.25, SIGMA, T, "CALL", resultat["premium"])
+        SPOT, resultat["strike"], 0.25, SIGMA, T, "CALL", resultat["premium"], r=R)
     assert resultat["kelly_fraction"] == pytest.approx(attendu[0])
     assert resultat["score"] == pytest.approx(attendu[1])
     assert resultat["log_growth"] == pytest.approx(attendu[1])
@@ -516,7 +545,10 @@ def test_le_resultat_porte_les_diagnostics_du_contrat_retenu():
                 "n_candidates", "n_negative_edge"):
         assert cle in resultat
     assert 0.0 < resultat["probability_of_profit"] < 1.0
-    assert resultat["edge"] == pytest.approx(resultat["expected_payoff"] - resultat["premium"])
+    # L'edge est net du CASH : E[payoff] - prime·e^(rT), pas E[payoff] - prime.
+    assert resultat["edge"] == pytest.approx(
+        resultat["expected_payoff"] - ev.carried_premium(resultat["premium"], R, T))
+    assert resultat["edge"] < resultat["expected_payoff"] - resultat["premium"]
 
 
 # --------------------------------------------------------------------------- #

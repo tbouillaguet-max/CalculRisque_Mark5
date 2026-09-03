@@ -119,11 +119,25 @@ class Step:
                    l'univers/les périodes ; 05/06/06b/07 calculent en une
                    passe sur le cache existant, --limit n'y aurait pas de sens).
     needs_gateway: IB Gateway doit répondre avant de la lancer.
+    degraded_args: arguments à utiliser AU LIEU DE SAUTER l'étape quand IB
+                   Gateway est indisponible, pour une étape qui sait travailler
+                   depuis une autre source (03b se replie sur Stooq via
+                   --skip-ibkr). Vide = comportement inchangé, l'étape est
+                   sautée. La distinction compte pour un run quotidien : sauter
+                   la récupération des cours parce que le Gateway est fermé
+                   laisse le signal du jour figé sur les cours de la veille,
+                   alors que la source de repli, elle, était disponible.
+    extra_args   : arguments TOUJOURS passés à l'étape, quel que soit le mode
+                   (le run quotidien y met --refresh-days pour resserrer la
+                   fenêtre de fraîcheur SEC). Vides pour toutes les étapes du
+                   run trimestriel, qui gardent leurs défauts.
     """
     script: str
     required: bool = True
     accepts_limit: bool = False
     needs_gateway: bool = False
+    degraded_args: tuple = ()
+    extra_args: tuple = ()
 
 
 LIVE_STEPS: List[Step] = [
@@ -346,6 +360,25 @@ def ensure_gateway_available() -> bool:
 # Mode live
 # ----------------------------------------------------------------------------
 
+def resolve_gateway_args(step: Step, report: RunReport) -> Optional[List[str]]:
+    """Arguments supplémentaires imposés par l'état d'IB Gateway, ou None si
+    l'étape doit être sautée.
+
+    Trois cas : l'étape n'a pas besoin du Gateway (aucun argument), le Gateway
+    répond (aucun argument), ou il ne répond pas -- et c'est alors
+    `degraded_args` qui décide entre repli et saut (cf. Step)."""
+    if not step.needs_gateway or ensure_gateway_available():
+        return []
+    if step.degraded_args:
+        logger.warning(
+            "IB Gateway indisponible : %s est lancée en mode dégradé (%s) plutôt que sautée.",
+            step.script, " ".join(step.degraded_args),
+        )
+        return list(step.degraded_args)
+    skip_step(step, report, "IB Gateway indisponible (et non relançable automatiquement)")
+    return None
+
+
 def run_live(report: RunReport, limit: Optional[int], skip_options: bool, retries: int, timeout: int, already_done: set[str]) -> None:
     for step in LIVE_STEPS:
         if step.script in already_done:
@@ -354,12 +387,12 @@ def run_live(report: RunReport, limit: Optional[int], skip_options: bool, retrie
         if skip_options and step.needs_gateway:
             skip_step(step, report, "--skip-options")
             continue
-        if step.needs_gateway and not ensure_gateway_available():
-            skip_step(step, report, "IB Gateway indisponible (et non relançable automatiquement)")
+        gateway_args = resolve_gateway_args(step, report)
+        if gateway_args is None:
             continue
 
         extra_args = ["--limit", str(limit)] if (limit and step.accepts_limit) else []
-        run_step(step, extra_args, report, retries, timeout)
+        run_step(step, [*extra_args, *gateway_args], report, retries, timeout)
 
 
 # ----------------------------------------------------------------------------

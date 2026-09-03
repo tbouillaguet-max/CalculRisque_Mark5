@@ -4,6 +4,62 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+## Raccourcis (`make`)
+
+`make` seul liste les cibles disponibles. Les trois utiles au quotidien :
+
+```bash
+make daily        # mise à jour QUOTIDIENNE complète (la cible du cron)
+make daily-fast   # cours + recalcul du signal seulement, aucun appel SEC ni LLM
+make quarterly    # rafraîchissement trimestriel (10-Q, 8-K, valorisation)
+```
+
+Le `Makefile` n'ajoute aucune logique : il assemble les invocations décrites
+plus bas, et chaque cible reste lançable à la main avec d'autres options
+(`make -n daily` affiche la commande sans l'exécuter).
+
+## Mise à jour quotidienne (`run_pipeline_daily.py`)
+
+**Pourquoi un run quotidien alors que les comptes sont trimestriels.** Le
+signal est un ÉCART entre deux grandeurs : `100 × ln(valeur théorique / cours)`.
+La valeur théorique ne bouge qu'au dépôt d'un 10-Q/10-K, mais le COURS bouge
+tous les jours — et la stratégie multiples est configurée en
+`daily_rebalance=True` exactement pour cela. Une entreprise peut donc franchir
+le seuil d'entrée, ou repasser sous le seuil de sortie, par le seul mouvement
+du titre. Sans run quotidien, ces franchissements ne sont vus qu'au trimestre
+suivant.
+
+```bash
+python run_pipeline_daily.py                  # run complet
+python run_pipeline_daily.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
+python run_pipeline_daily.py --prices-only    # cours + signal, hors ligne SEC/LLM
+python run_pipeline_daily.py --resume         # reprend un run interrompu
+```
+
+Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
+`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `06b` → `07` → `07b` → `08`.
+`03b` et `05/06/06b/07` sont **requises** (sans elles le signal du jour est
+absent ou incohérent avec les cours) ; `04/04b/04c/07b/08` sont des
+enrichissements dont l'échec est journalisé sans arrêter le run, qui se
+termine alors en statut `partial`.
+
+**Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
+relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
+récupération des cours laisserait le signal du jour calculé sur ceux de la
+veille, silencieusement. `08`, qui n'a aucune source alternative, est bien
+sautée.
+
+Toute la mécanique d'exécution (réessais avec backoff, délai par étape,
+journal JSON par run sous `data/pipeline_runs/`, `--resume`, redémarrage
+automatique d'IB Gateway) est celle de `run_pipeline_quarterly.py`, réutilisée
+telle quelle.
+
+Cron (jours de bourse, après la clôture US) :
+
+```
+30 22 * * 1-5  cd /chemin/vers/CalculRisque_Mark5 && python3 run_pipeline_daily.py >> logs/daily.log 2>&1
+```
+
 ## Configuration requise
 
 ```bash
