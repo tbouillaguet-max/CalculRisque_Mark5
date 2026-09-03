@@ -60,6 +60,76 @@ Cron (jours de bourse, après la clôture US) :
 30 22 * * 1-5  cd /chemin/vers/CalculRisque_Mark5 && python3 run_pipeline_daily.py >> logs/daily.log 2>&1
 ```
 
+## Ce que le backtest fait payer, et ce qu'il vaut
+
+Trois correctifs de MESURE (ils ne changent aucune thèse, ils changent ce que
+les chiffres veulent dire). Les trois vont dans le même sens : retirer un
+optimisme qui n'était pas voulu.
+
+### 1. On achète à l'implicite, pas à la réalisée
+
+Faute de surface de volatilité historique, le moteur ouvrait ses positions
+simulées au prix Black-Scholes calculé sur la volatilité **réalisée** du titre.
+On n'achète jamais une option à la réalisée : on l'achète à l'**implicite
+cotée**. `options_pricing.quoted_implied_vol` modélise cette dernière à partir
+de la réalisée, par deux constantes documentées dans `config.py` :
+
+| Réglage | Défaut | Ce qu'il représente |
+|---|---|---|
+| `OPTIONS_IMPLIED_VOL_SPREAD` | `0.02` | Écart implicite − réalisée à la monnaie (prime de risque de variance) |
+| `OPTIONS_VOL_SKEW_SLOPE` | `0.025` | Supplément par écart-type de log-moneyness **sous** la monnaie (skew) |
+
+Le skew n'est appliqué **qu'aux strikes sous la monnaie**, délibérément : un
+skew réel décroît aussi du côté haut, mais le reproduire face à une loi de S_T
+lognormale à volatilité unique fabriquerait un edge de bord de grille sans
+rapport avec la thèse (constaté en test : une thèse à +0,5 % ouvrait une
+position à 22 fois le cours). La correction ne peut ainsi que rendre les
+options **plus** chères, jamais moins.
+
+Ce sont des **hypothèses, pas des mesures** — meilleures que celle qu'elles
+remplacent (écart nul, skew nul), mais à calibrer sur les snapshots réels dès
+qu'il y en a assez : `make slippage` et les archives de `08`. Les mettre à `0`
+reproduit exactement le comportement d'avant.
+
+### 2. Deux volatilités, pas une
+
+La stratégie « espérance de gain » distingue désormais :
+
+- **σ_P** (volatilité réalisée) — la loi de S_T : espérance, variance, Kelly ;
+- **σ_Q** (implicite cotée, ou modélisée) — le prix payé.
+
+Les confondre, comme avant, revenait à supposer que le titre bougera d'autant
+que le marché le facture : acheter de la volatilité devenait gratuit par
+construction, et la prime de risque de variance disparaissait du calcul. Les
+séparer la rend visible dans l'espérance nette, si bien qu'un contrat trop cher
+est écarté par la seule condition d'existence de Kelly (`E[R] > 0`) — sans
+filtre ajouté.
+
+### 3. Le Sharpe déflaté du nombre d'essais
+
+Un grid-search classé sur un unique chemin historique retient la combinaison
+qui colle le mieux à *ce* chemin. Son Sharpe est celui d'un **maximum sur N
+tirages**, et le maximum de N tirages n'est pas nul même quand la vraie
+performance l'est.
+
+| Essais | Sharpe « gratuit » sur 10 ans |
+|---|---|
+| 8 | 0,46 |
+| 16 | 0,57 |
+| 64 (la grille de `11`) | 0,75 |
+| 200 | 0,87 |
+
+`metrics.json` porte maintenant `n_trials`, `sharpe_noise_floor` (le plancher
+ci-dessus, annualisé) et `deflated_sharpe_ratio` (la probabilité que la
+performance soit réelle, corrigée de l'asymétrie et des queues). Les cinq
+optimiseurs transmettent leur taille de grille automatiquement ; pour un run
+isolé qui reprend le meilleur point d'une recherche :
+
+```bash
+python 10_backtest_options.py --strategy ... --n-trials 64
+python 14_audit_backtest.py     # section 3c : Sharpe affiché vs plancher de bruit
+```
+
 ## Configuration requise
 
 ```bash

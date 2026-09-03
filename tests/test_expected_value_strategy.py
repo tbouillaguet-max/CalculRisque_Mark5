@@ -56,6 +56,41 @@ def _strike_transmis(cible: dict, spot: float = SPOT) -> float:
     return cible["strike_moneyness"] * spot
 
 
+def _strike_attendu(
+    strategie, spot: float = SPOT, theoretical: float = 150.0,
+    sigma_p: float = SIGMA, iv_marche: float | None = None,
+    option_type: str = "CALL", r: float = 0.04, q: float = 0.0,
+    strikes=None,
+):
+    """Contrôle indépendant du strike que la stratégie doit retenir, refait à
+    la main avec les DEUX mesures (cf. _physical_volatility) :
+
+        sigma_P  -> loi de S_T : espérance, variance, taux de croissance
+        sigma_Q  -> prime payée : implicite cotée si le snapshot en donne une,
+                    sinon modélisée par options_pricing.quoted_implied_vol
+
+    Recopier une seule volatilité des deux côtés, comme le faisaient ces tests,
+    revient à supposer que l'on paie la volatilité que le titre réalise -- soit
+    exactement l'hypothèse que la séparation des mesures a supprimée."""
+    t_years = strategie.tenor_days / 365.0
+    mu = expected_value.convergence_drift(
+        spot, theoretical, t_years, strategie.convergence_fraction)
+
+    def prime(strike: float) -> float:
+        sigma_q = (
+            iv_marche if iv_marche is not None
+            else options_pricing.quoted_implied_vol(sigma_p, spot, strike, t_years)
+        )
+        return options_pricing.bs_price(spot, strike, t_years, sigma_q, option_type, r=r, q=q)
+
+    resultat = expected_value.optimal_strike(
+        spot, mu, sigma_p, t_years, option_type,
+        expected_value.strike_grid(spot, sigma_p, t_years) if strikes is None else strikes,
+        r=r, q=q, criterion="kelly", premium_fn=prime,
+    )
+    return None if resultat is None else resultat["strike"]
+
+
 def test_le_strike_est_transmis_en_moneyness():
     """La moneyness est relative au spot, donc valide à toute date -- y compris
     au roulement, des mois plus tard."""
@@ -89,8 +124,13 @@ def test_le_strike_retenu_est_bien_celui_qui_maximise_la_croissance():
 
     meilleur, meilleur_score = None, -math.inf
     for strike in expected_value.strike_grid(SPOT, SIGMA, t_years):
-        premium = options_pricing.bs_price(SPOT, strike, t_years, SIGMA, "CALL", r=0.04, q=0.0)
-        optimum = expected_value.kelly_optimum(SPOT, strike, mu, SIGMA, t_years, "CALL", premium)
+        # sigma_Q pour la prime (modélisée, aucune implicite cotée dans ce
+        # contexte), sigma_P pour la loi et pour Kelly. Les confondre ferait
+        # payer la volatilité que le titre réalise, pas celle qu'on cote.
+        sigma_q = options_pricing.quoted_implied_vol(SIGMA, SPOT, strike, t_years)
+        premium = options_pricing.bs_price(SPOT, strike, t_years, sigma_q, "CALL", r=0.04, q=0.0)
+        optimum = expected_value.kelly_optimum(
+            SPOT, strike, mu, SIGMA, t_years, "CALL", premium, r=0.04)
         if optimum is not None and optimum[1] > meilleur_score:
             meilleur, meilleur_score = strike, optimum[1]
 
@@ -113,17 +153,77 @@ def test_un_strike_profondement_dans_la_monnaie_reste_positif():
 # Volatilité de sélection
 # --------------------------------------------------------------------------- #
 
-def test_l_implicite_reelle_prime_sur_la_realisee():
-    """Sélectionner sur la réalisée un contrat que le marché price à une tout
-    autre implicite reviendrait à trouver des bonnes affaires partout où le
-    marché anticipe simplement plus de mouvement."""
+def test_l_implicite_reelle_fixe_le_prix_la_realisee_fixe_la_loi():
+    """LES DEUX MESURES NE S'EXCLUENT PAS -- elles répondent à deux questions
+    différentes, et c'est le cœur de la sélection.
+
+    L'implicite cotée dit ce que le contrat COÛTE ; la réalisée dit comment le
+    titre BOUGE. La version précédente n'en gardait qu'une, en préférant
+    l'implicite : elle supposait donc que le titre bougerait d'autant que le
+    marché le facture, ce qui rend l'achat de volatilité gratuit par
+    construction et efface la prime de risque de variance du calcul."""
     strategie = ValuationGapExpectedValueOptionsStrategy()
     strategie.bind_market_context(_contexte(sigma=0.20, implied=0.60))
     strategie.generate_option_targets(_signaux(), {})
 
-    assert strategie.diagnostics()["expected_value_implied_vol_count"] == 1
-    assert strategie.diagnostics()["expected_value_realized_vol_count"] == 0
-    assert strategie.diagnostics()["expected_value_implied_vol_pct"] == 100.0
+    diagnostics = strategie.diagnostics()
+    assert diagnostics["expected_value_implied_vol_count"] == 1   # prix
+    assert diagnostics["expected_value_realized_vol_count"] == 1  # loi
+    assert diagnostics["expected_value_market_priced_pct"] == 100.0
+    # Résolue UNE fois par évaluation, pas une fois par strike candidat.
+    assert diagnostics["expected_value_evaluations_count"] == 1
+
+
+def test_une_implicite_trop_riche_fait_disparaitre_l_edge():
+    """La conséquence économique de la séparation, et la raison d'être du
+    changement : à thèse identique, un contrat que le marché price bien
+    au-dessus de ce que le titre réalise cesse d'être achetable.
+
+    C'est le prédicteur de rendement d'options de Goyal & Saretto (JFE, 2009),
+    obtenu sans filtre ajouté -- il tombe de la condition d'existence de Kelly,
+    E[R] > 0.
+
+    GRILLE RESTREINTE À LA MONNAIE, et c'est indispensable : sur une grille
+    complète, une implicite délirante ne ferme pas la ligne, elle la POUSSE
+    très dans la monnaie (mesuré : moneyness 0,23), là où le contrat n'a
+    presque plus de vega et où le prix ne dépend donc plus guère de la
+    volatilité. Le comportement est correct -- « si la volatilité est hors de
+    prix, achète celle qui n'en contient pas » -- mais il masque l'effet qu'on
+    veut mesurer ici, qui ne concerne que les contrats réellement porteurs de
+    volatilité. Voir le test suivant pour cette échappatoire, testée pour
+    elle-même."""
+    signaux = _signaux(theoretical=130.0)
+
+    bon_marche = ValuationGapExpectedValueOptionsStrategy()
+    bon_marche.bind_market_context(_contexte(sigma=0.35, implied=0.30, quoted=(100.0,)))
+    assert bon_marche.generate_option_targets(signaux, {}) != {}
+
+    hors_de_prix = ValuationGapExpectedValueOptionsStrategy()
+    hors_de_prix.bind_market_context(_contexte(sigma=0.35, implied=1.50, quoted=(100.0,)))
+    assert hors_de_prix.generate_option_targets(signaux, {}) == {}
+    assert hors_de_prix.diagnostics()["dropped_expected_value_negative_count"] == 1
+
+
+def test_une_implicite_trop_riche_pousse_vers_le_moins_de_vega():
+    """L'échappatoire du test précédent, vérifiée pour elle-même : laissée
+    libre de sa grille, la stratégie répond à une volatilité hors de prix en
+    choisissant un strike bien plus dans la monnaie -- donc bien moins sensible
+    à la volatilité -- plutôt qu'en renonçant.
+
+    C'est économiquement juste, et c'est aussi ce qui explique qu'un filtre de
+    richesse de volatilité ne suffirait pas à lui seul : il faut que le critère
+    voie le PRIX, ce qu'il fait ici."""
+    signaux = _signaux(theoretical=130.0)
+
+    bon_marche = ValuationGapExpectedValueOptionsStrategy()
+    bon_marche.bind_market_context(_contexte(sigma=0.35, implied=0.30))
+    cible_bon_marche = bon_marche.generate_option_targets(signaux, {})["AAA"]
+
+    hors_de_prix = ValuationGapExpectedValueOptionsStrategy()
+    hors_de_prix.bind_market_context(_contexte(sigma=0.35, implied=1.50))
+    cible_hors_de_prix = hors_de_prix.generate_option_targets(signaux, {})["AAA"]
+
+    assert cible_hors_de_prix["strike_moneyness"] < cible_bon_marche["strike_moneyness"]
 
 
 def test_sans_volatilite_on_se_replie_sur_celle_du_moteur():
@@ -142,16 +242,10 @@ def test_sans_volatilite_on_se_replie_sur_celle_du_moteur():
 
     assert "AAA" in cibles
     assert strategie.diagnostics()["expected_value_fallback_vol_count"] == 1
-    # Le strike doit être celui qu'on obtiendrait à la volatilité de repli.
-    attendu = expected_value.optimal_strike(
-        SPOT,
-        expected_value.convergence_drift(
-            SPOT, 150.0, strategie.tenor_days / 365.0, strategie.convergence_fraction),
-        config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0, "CALL",
-        expected_value.strike_grid(SPOT, config.OPTIONS_FALLBACK_VOL, strategie.tenor_days / 365.0),
-        r=0.04, q=0.0,
-    )["strike"]
-    assert _strike_transmis(cibles["AAA"]) == pytest.approx(attendu)
+    # Le repli sert de sigma_P ; la prime reste modélisée par-dessus (aucune
+    # implicite cotée ici), donc plus chère que le repli lui-même.
+    assert _strike_transmis(cibles["AAA"]) == pytest.approx(
+        _strike_attendu(strategie, sigma_p=config.OPTIONS_FALLBACK_VOL))
 
 
 # --------------------------------------------------------------------------- #
@@ -298,13 +392,9 @@ def test_le_strike_ouvert_par_le_moteur_est_proche_du_strike_optimise():
     # réglable (config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT, déjà passée de
     # 0,5 à 0,8) et la figer ici faisait comparer le strike réellement ouvert à
     # l'optimum d'une AUTRE thèse que celle jouée par le moteur.
-    mu = expected_value.convergence_drift(
-        spot_decision, 180.0, t_years, strategie.convergence_fraction)
     r, q = engine._pricing_context("AAA", dates[1])
-    optimal = expected_value.optimal_strike(
-        spot_decision, mu, sigma, t_years, "CALL",
-        expected_value.strike_grid(spot_decision, sigma, t_years), r=r, q=q,
-    )["strike"]
+    optimal = _strike_attendu(
+        strategie, spot=spot_decision, theoretical=180.0, sigma_p=sigma, r=r, q=q)
 
     derive = abs(position.strike - optimal)
     pas_de_grille = optimal * (math.exp(0.25 * sigma * math.sqrt(t_years)) - 1.0)

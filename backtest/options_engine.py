@@ -1225,22 +1225,38 @@ class OptionsBacktestEngine:
                     "multiplier": real["multiplier"], "source": "real",
                 }
 
-        vol = options_pricing.realized_volatility(
+        realized = options_pricing.realized_volatility(
             self.prices.close_history(symbol, today), self.realized_vol_lookback_days,
         )
-        if vol is None:
+        if realized is None:
             # Repli conservateur si même l'historique de cours est trop court.
             # Constante partagée avec les stratégies qui choisissent leur
             # strike en fonction de la volatilité : elles doivent se replier
             # sur la MÊME valeur, sinon elles écarteraient des lignes que le
             # moteur aurait su ouvrir (cf. config.OPTIONS_FALLBACK_VOL).
-            vol = config.OPTIONS_FALLBACK_VOL
-            logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, vol * 100)
+            realized = config.OPTIONS_FALLBACK_VOL
+            logger.debug("%s : historique insuffisant pour estimer la vol réalisée, repli à %.0f%%.", symbol, realized * 100)
 
         # Simulé : strike exact demandé (ou ATM), pas de grille de strikes discrets.
         strike = target_strike if target_strike is not None else spot
         expiry = today + pd.Timedelta(days=tenor)
         t_years = tenor / 365.0
+
+        # ON ACHÈTE À L'IMPLICITE, PAS À LA RÉALISÉE. Le strike est donc résolu
+        # AVANT la volatilité, et non l'inverse : la volatilité cotée dépend du
+        # strike (skew, cf. options_pricing.quoted_implied_vol). Payer la
+        # réalisée revenait à s'offrir la prime de variance et tout le skew --
+        # sur la jambe put, systématiquement du côté cher, l'écart atteignait
+        # plusieurs dizaines de pourcents de la prime.
+        #
+        # La volatilité d'entrée retenue est celle-là, et c'est ce qui la fait
+        # correctement vivre ensuite : `vol_ratio` (cf. OptionPosition) fige le
+        # rapport entrée/réalisée et garantit qu'au jour de l'entrée le
+        # repricing redonne exactement cette valeur, puis la fait suivre la
+        # réalisée. Le mécanisme existait déjà pour les entrées sur snapshot
+        # RÉEL, qui partent d'une IV de marché : la branche simulée était la
+        # seule à ne pas en bénéficier.
+        vol = options_pricing.quoted_implied_vol(realized, spot, strike, t_years)
         premium = options_pricing.bs_price(spot, strike, t_years, vol, option_type, r=r, q=q)
         greeks = options_pricing.bs_greeks(spot, strike, t_years, vol, option_type, r=r, q=q)
         return {

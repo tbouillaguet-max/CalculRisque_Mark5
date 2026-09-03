@@ -136,6 +136,7 @@ def _run_combo(
     end_date: Optional[pd.Timestamp],
     take_profit_is_convergence: bool = False,
     train_fraction: Optional[float] = None,
+    n_trials: int = 1,
 ) -> dict:
     """Une combinaison = un run complet. Isolé en fonction de module (plutôt
     que méthode/closure) pour rester picklable par ProcessPoolExecutor --
@@ -143,7 +144,13 @@ def _run_combo(
     viennent du fork, voir le commentaire sur _DATA plus haut.
 
     `take_profit` porte selon le mode soit un seuil fixe en % (take_profit_pct),
-    soit une fraction de convergence -- voir --take-profit-mode."""
+    soit une fraction de convergence -- voir --take-profit-mode.
+
+    `n_trials` : taille de la grille balayée, transmise à compute_metrics pour
+    que chaque ligne porte son Sharpe DÉFLATÉ. Le Sharpe brut du meilleur point
+    de grille est celui d'un MAXIMUM sur n_trials tirages, et le maximum de n
+    tirages n'est pas nul même quand la vraie performance l'est (cf.
+    backtest/metrics.py, section « Sharpe déflaté »)."""
     row = {"stop_loss_pct": stop_loss_pct, "take_profit": take_profit, "error": None}
     try:
         strategy_cls = OPTIONS_STRATEGY_REGISTRY[strategy_name]
@@ -178,7 +185,7 @@ def _run_combo(
         )
         equity_curve, _positions_history, trades, _signals_history = engine.run()
         run_metrics = metrics_mod.compute_metrics(
-            equity_curve, trades,
+            equity_curve, trades, n_trials=n_trials,
             risk_free_rate=config.RISK_FREE_RATE,
             benchmark_prices=_DATA["benchmark_prices"],
             extra=engine.execution_diagnostics(),
@@ -187,6 +194,10 @@ def _run_combo(
             "num_trades", "win_rate_pct", "avg_trade_return_pct", "profit_factor",
             "total_return_pct", "cagr_pct", "annualized_volatility_pct",
             "sharpe_ratio", "sortino_ratio", "max_drawdown_pct", "calmar_ratio",
+            # Le Sharpe brut de la MEILLEURE ligne est celui d'un maximum sur
+            # toute la grille : ces deux colonnes disent de combien il faut le
+            # rabattre (cf. backtest/metrics.py, « Sharpe déflaté »).
+            "sharpe_noise_floor", "deflated_sharpe_ratio",
             "avg_holding_days", "alpha_pct", "avg_exposure_pct", "truncated_orders_pct",
         ):
             row[key] = run_metrics.get(key)
@@ -405,7 +416,7 @@ def main() -> None:
             logger.info("[%d/%d] stop_loss=%s%% take_profit=%s%s", i, len(grid), sl, tp, unite)
             rows.append(_run_combo(
                 sl, tp, args.strategy, strategy_params, baseline_settings, engine_kwargs,
-                start_date, end_date, take_profit_is_convergence, args.train_fraction,
+                start_date, end_date, take_profit_is_convergence, args.train_fraction, n_trials=len(grid),
             ))
     else:
         # initializer=_pool_initializer, initargs=(_DATA,) : sur fork (Linux)
@@ -423,7 +434,7 @@ def main() -> None:
                 pool.submit(
                     _run_combo, sl, tp, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
-                    take_profit_is_convergence, args.train_fraction,
+                    take_profit_is_convergence, args.train_fraction, n_trials=len(grid),
                 ): (sl, tp)
                 for sl, tp in grid
             }

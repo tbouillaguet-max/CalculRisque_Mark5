@@ -49,6 +49,76 @@ def _norm_pdf(x: float) -> float:
     return _INV_SQRT_2PI * math.exp(-0.5 * x * x)
 
 
+def quoted_implied_vol(
+    realized_vol: float, spot: float, strike: float, t_years: float,
+    spread: float | None = None, skew_slope: float | None = None,
+) -> float:
+    """Volatilité IMPLICITE que le marché coterait pour ce contrat, à partir de
+    la volatilité RÉALISÉE du titre.
+
+        z  = ln(K / S) / (sigma_atm · racine(T))      (log-moneyness normalisée)
+        IV = (réalisée + spread) + pente · max(-z, 0)
+
+    C'est la grandeur à laquelle on ACHÈTE ; la réalisée est celle à laquelle le
+    titre BOUGE. Les confondre revenait à s'offrir la prime de risque de
+    variance et tout le skew (cf. config.OPTIONS_IMPLIED_VOL_SPREAD pour le
+    raisonnement et les références).
+
+    PAS D'ARGUMENT option_type, et c'est un point de correction, pas un oubli :
+    par parité call-put, un call et un put de même strike et même échéance ont
+    la MÊME volatilité implicite. Le skew est une propriété du sous-jacent
+    indexée par le STRIKE. Un put hors de la monnaie coûte cher parce que son
+    strike est bas, pas parce que c'est un put -- et c'est bien ce que cette
+    formule reproduit.
+
+    POURQUOI LE SKEW EST BRIDÉ D'UN SEUL CÔTÉ (le `max(-z, 0)`). Un skew
+    actions réel est décroissant des deux côtés : les strikes hauts se paient
+    MOINS que la monnaie. Le reproduire tel quel ici serait pourtant une faute,
+    parce que le reste du module modélise S_T par une lognormale à volatilité
+    UNIQUE. Une surface Q inclinée face à une loi P plate rend, par pure
+    construction, les calls hors de la monnaie « bon marché » : on fabriquerait
+    un edge au bord haut de la grille qui ne doit rien à la thèse de
+    valorisation -- constaté en test, une thèse à +0,5 % ouvrait une position à
+    22 fois le cours.
+
+    Le vrai skew traduit d'ailleurs pour partie une asymétrie de la loi
+    physique elle-même (risque de décrochage), et non une pure prime de risque.
+    L'attribuer entièrement à la prime, c'est affirmer que les calls lointains
+    sont réellement sous-payés -- affirmation que ce module n'a pas les moyens
+    de soutenir, faute de modéliser une P asymétrique.
+
+    On garde donc la seule moitié qui est un COÛT : au-dessus de la monnaie, la
+    volatilité cotée reste au niveau ATM ; en dessous, elle monte. La correction
+    ne peut ainsi que rendre les options PLUS chères, jamais moins -- ce qui est
+    la bonne direction pour un correctif dont l'objet est de retirer un excès
+    d'optimisme, et cela règle intégralement le problème mesuré, qui était la
+    sous-facturation de la jambe put.
+
+    La volatilité à la monnaie sert de normalisateur à z plutôt que la
+    volatilité finale : la définition serait sinon implicite en elle-même. Sur
+    la plage de strikes réellement traitée, l'écart entre les deux
+    normalisations est du second ordre.
+
+    Repli sur `realized_vol` telle quelle dès qu'un paramètre rend la formule
+    indéfinie (maturité nulle, volatilité ou prix non strictement positifs) :
+    le pricing dégénéré est déjà géré par bs_price, ce n'est pas ici qu'il faut
+    l'intercepter."""
+    if spread is None:
+        spread = config.OPTIONS_IMPLIED_VOL_SPREAD
+    if skew_slope is None:
+        skew_slope = config.OPTIONS_VOL_SKEW_SLOPE
+
+    atm = realized_vol + spread
+    if realized_vol <= 0 or atm <= 0 or t_years <= 0 or spot <= 0 or strike <= 0:
+        return realized_vol
+    if not skew_slope:
+        return min(max(atm, config.OPTIONS_QUOTED_VOL_MIN), config.OPTIONS_QUOTED_VOL_MAX)
+
+    z = math.log(strike / spot) / (atm * math.sqrt(t_years))
+    quoted = atm + skew_slope * max(-z, 0.0)
+    return min(max(quoted, config.OPTIONS_QUOTED_VOL_MIN), config.OPTIONS_QUOTED_VOL_MAX)
+
+
 def bs_price(
     spot: float, strike: float, t_years: float, vol: float, option_type: str,
     r: float = config.RISK_FREE_RATE, q: float = 0.0,

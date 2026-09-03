@@ -726,6 +726,67 @@ OPTIONS_EV_QUADRATURE_NODES = 128
 # parfaitement su ouvrir la position.
 OPTIONS_FALLBACK_VOL = 0.30
 
+# ----------------------------------------------------------------------------
+# Volatilité COTÉE : ce que le marché fait payer, et non ce que le titre a fait
+# ----------------------------------------------------------------------------
+# POURQUOI CES DEUX CONSTANTES EXISTENT. Faute de surface de volatilité
+# historique, le moteur ouvrait ses positions simulées au prix Black-Scholes
+# calculé sur la volatilité RÉALISÉE du titre. Or on n'achète jamais une option
+# à la réalisée : on l'achète à l'IMPLICITE cotée, qui en diffère de deux
+# façons, toutes deux systématiques et toutes deux au détriment de l'acheteur.
+#
+#   1. UN NIVEAU plus haut que la réalisée (prime de risque de variance). Elle
+#      est bien documentée sur l'indice ; sur titres individuels elle est plus
+#      FAIBLE, et c'est un point favorable à une stratégie qui, comme ici, ne
+#      traite que des noms individuels (Driessen, Maenhout & Vilkov, Journal of
+#      Finance, 2009 : la grosse prime de l'indice est essentiellement une
+#      prime de risque de corrélation). D'où un écart volontairement modeste.
+#
+#   2. UNE PENTE en fonction du strike (skew). À maturité égale, les strikes
+#      BAS se paient plus cher que les strikes hauts -- effet d'une pression
+#      d'achat structurelle sur la protection (Bollen & Whaley, Journal of
+#      Finance, 2004). C'est une propriété du SOUS-JACENT, pas du sens du
+#      contrat : par parité call-put, un call et un put de même strike et même
+#      échéance partagent la même implicite. La fonction ne prend donc pas
+#      d'option_type, et c'est voulu.
+#
+# CE QUE ÇA CHANGE POUR LA STRATÉGIE. Le strike visé est à mi-chemin vers la
+# valeur théorique : une thèse baissière (PUT) vise donc un strike SOUS le
+# cours, du côté cher du skew, et une thèse haussière (CALL) un strike au-
+# DESSUS, du côté bon marché. La jambe put était ainsi la plus sous-facturée du
+# backtest, alors que l'écart en log qui la sélectionne est, lui, symétrique.
+#
+# CE SONT DES HYPOTHÈSES, PAS DES MESURES. Elles remplacent une hypothèse bien
+# pire (écart nul, skew nul), mais elles restent à calibrer sur les snapshots
+# réels dès qu'il y en a assez -- `python mesure_slippage_options.py` et les
+# archives de 08_recuperation_options.py sont là pour ça. Les mettre à 0
+# reproduit exactement le comportement d'avant.
+
+# Écart implicite - réalisée à la monnaie, en POINTS de volatilité (0,02 = +2
+# points : une réalisée de 28% se cote 30%). Volontairement modeste, cf. le
+# point 1 ci-dessus.
+OPTIONS_IMPLIED_VOL_SPREAD = 0.02
+
+# Pente du skew, en points de volatilité par ÉCART-TYPE de log-moneyness
+# (z = ln(K/S) / (sigma·racine(T))). Normaliser par sigma·racine(T) plutôt que
+# par un pourcentage du spot rend la pente cohérente d'une maturité et d'une
+# volatilité à l'autre : à 2 ans sur un titre nerveux, +10% de strike est un
+# tout petit déplacement dans la distribution, à 3 mois sur un titre calme
+# c'en est un grand. Positive = les strikes bas coûtent plus cher.
+#
+# APPLIQUÉE AUX SEULS STRIKES SOUS LA MONNAIE, délibérément : au-dessus, la
+# volatilité cotée reste au niveau ATM. Un skew réel décroît aussi du côté
+# haut, mais le reproduire face à une loi de S_T lognormale à volatilité unique
+# fabriquerait un edge de bord de grille sans rapport avec la thèse -- voir le
+# raisonnement complet dans options_pricing.quoted_implied_vol.
+OPTIONS_VOL_SKEW_SLOPE = 0.025
+
+# Bornes de la volatilité cotée. Le skew est une approximation LINÉAIRE d'une
+# courbe qui s'aplatit dans les ailes : extrapolée à 5 ou 6 écarts-types, elle
+# produirait des volatilités absurdes, voire négatives côté strikes hauts.
+OPTIONS_QUOTED_VOL_MIN = 0.05
+OPTIONS_QUOTED_VOL_MAX = 2.00
+
 # Filtre de micro-trades, à DEUX points d'application :
 #   1. Redimensionnement sur dépôt SEC (_open_or_resize) : second filet,
 #      APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD ci-dessous) --
