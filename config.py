@@ -1264,13 +1264,83 @@ SECTOR_MULTIPLES: dict[str, list] = {
     "_default": ["EV/EBITDA", "EV/Sales", "P/E"],
 }
 
-# Bornes de plausibilité appliquées AVANT le calcul de la médiane sectorielle :
-# une entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x
-# et déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+# Bornes de plausibilité appliquées AVANT l'agrégation sectorielle : une
+# entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x et
+# déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+#
+# LES BORNES BASSES NE SONT PLUS À ZÉRO, et c'est la contrepartie de
+# l'agrégation par moyenne harmonique (cf. SECTOR_MULTIPLE_AGGREGATOR).
+# Agréger des multiples par leur moyenne harmonique revient à moyenner des
+# RENDEMENTS (1/multiple) : un multiple minuscule y devient un rendement
+# gigantesque, et un seul suffit à tirer toute l'agrégation. Là où la médiane
+# ignorait une valeur aberrante par le bas, la moyenne harmonique s'y expose.
+#
+# Les valeurs retenues n'écartent que ce qui est presque certainement une
+# erreur d'extraction pour une société de l'indice, jamais une valorisation
+# réelle : une entreprise du S&P 500 ne vaut pas moins d'une année d'EBITDA
+# (EV/EBITDA < 1), et n'a pas un P/E sous 1. Le plancher d'EV/Sales est plus
+# bas parce que la distribution y est réellement plus étalée -- distributeurs
+# et négociants traitent légitimement à 0,1-0,2 x le chiffre d'affaires.
 MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
-    "EV/EBITDA": (0.0, 50.0),
-    "EV/Sales": (0.0, 20.0),
-    "P/E": (0.0, 60.0),
+    "EV/EBITDA": (1.0, 50.0),
+    "EV/Sales": (0.05, 20.0),
+    "P/E": (1.0, 60.0),
+}
+
+# ----------------------------------------------------------------------------
+# Agrégation des multiples sectoriels
+# ----------------------------------------------------------------------------
+# "harmonic" (défaut) ou "median" (comportement historique, conservé pour
+# rejouer un run ancien -- même logique que OPTIONS_MULTIPLES_GAP_BASIS).
+#
+# POURQUOI LA MOYENNE HARMONIQUE. Un multiple est un RATIO, et la grandeur qu'on
+# veut vraiment moyenner est son inverse : le rendement. La moyenne harmonique
+# des P/E d'un secteur, c'est l'inverse du rendement bénéficiaire moyen -- une
+# quantité qui a un sens économique, là où la moyenne des P/E n'en a pas (elle
+# est mécaniquement tirée vers le haut par les multiples élevés, dont
+# l'amplitude n'est pas bornée alors que celle des multiples bas l'est).
+#
+# Baker & Ruback (Harvard, 1999, « Estimating Industry Multiples ») montrent
+# que sous une structure d'erreur MULTIPLICATIVE -- celle qui convient à un
+# ratio -- l'estimateur de variance minimale du multiple d'un secteur est la
+# moyenne harmonique, et que la moyenne arithmétique est biaisée à la hausse.
+#
+# La médiane, elle, n'est pas fausse : c'est un choix robuste raisonnable, et
+# c'est de loin le meilleur des deux estimateurs naïfs. Le passage à la moyenne
+# harmonique est donc un RAFFINEMENT, pas un correctif -- à A/B tester, ce que
+# ce réglage permet de faire sans toucher au code.
+SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
+
+# ----------------------------------------------------------------------------
+# Combinaison des valeurs implicites des trois multiples
+# ----------------------------------------------------------------------------
+# "tiers" (défaut) ou "flat" (comportement historique : médiane des trois).
+#
+# LE DÉFAUT DE LA MÉDIANE À TROIS VOIX. Elle traite EV/EBITDA, P/E et EV/Sales
+# comme également informatifs. Ils ne le sont pas : Liu, Nissim & Thomas
+# (Journal of Accounting Research, 2002, « Equity Valuation Using Multiples »)
+# mesurent la précision relative des multiples et trouvent que les multiples de
+# RÉSULTATS dominent nettement, et que les multiples de CHIFFRE D'AFFAIRES sont
+# les moins précis, de loin. Or dans une médiane à trois, quand EV/EBITDA et
+# P/E divergent, c'est EV/Sales -- le moins fiable -- qui tranche.
+#
+# Le mode "tiers" range donc les multiples par fiabilité et n'utilise que le
+# MEILLEUR RANG DISPONIBLE : les multiples de résultats quand il y en a,
+# EV/Sales seulement à défaut. Ce n'est pas une pondération mais une hiérarchie,
+# et c'est ce qui règle réellement le problème -- pondérer laisserait EV/Sales
+# départager dès qu'il tombe entre les deux autres.
+#
+# Le repli fonctionne tout seul là où il doit : une entreprise en perte n'a pas
+# de P/E exploitable (filtré en amont) et souvent pas d'EBITDA positif non plus
+# -- c'est précisément le cas où un multiple de chiffre d'affaires est la seule
+# valorisation possible, et le rang 2 le fournit.
+MULTIPLE_COMBINATION = "tiers"
+
+# Rang de fiabilité (1 = le plus fiable). Cf. MULTIPLE_COMBINATION.
+MULTIPLE_RELIABILITY_TIERS: dict[str, int] = {
+    "P/E": 1,
+    "EV/EBITDA": 1,
+    "EV/Sales": 2,
 }
 
 

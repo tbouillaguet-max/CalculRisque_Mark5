@@ -130,6 +130,86 @@ python 10_backtest_options.py --strategy ... --n-trials 64
 python 14_audit_backtest.py     # section 3c : Sharpe affiché vs plancher de bruit
 ```
 
+## Le signal de valorisation
+
+### Agrégation des multiples sectoriels
+
+Deux choix, autrefois implicites, désormais explicites et commutables — même
+mécanique que `OPTIONS_MULTIPLES_GAP_BASIS`, pour rejouer un run ancien et pour
+rendre l'A/B possible sans toucher au code.
+
+| Réglage | Défaut | Alternative |
+|---|---|---|
+| `SECTOR_MULTIPLE_AGGREGATOR` | `harmonic` | `median` (historique) |
+| `MULTIPLE_COMBINATION` | `tiers` | `flat` (historique) |
+
+**Moyenne harmonique.** Un multiple est un ratio ; la grandeur qu'on veut
+moyenner est son inverse, le rendement. La moyenne harmonique des P/E d'un
+secteur, c'est l'inverse du rendement bénéficiaire moyen — une quantité qui a un
+sens, là où la moyenne des P/E est mécaniquement tirée vers le haut. Baker &
+Ruback (1999) montrent que c'est l'estimateur de variance minimale d'un ratio
+sous erreur multiplicative. C'est un **raffinement**, pas un correctif : la
+médiane n'était pas fausse.
+
+Contrepartie : les bornes basses de `MULTIPLE_PLAUSIBLE_RANGE` ne sont plus à
+zéro. Un multiple minuscule devient un rendement gigantesque et tire toute la
+moyenne harmonique, là où la médiane l'ignorait. Les planchers retenus
+(EV/EBITDA ≥ 1, P/E ≥ 1, EV/Sales ≥ 0,05) n'écartent que ce qui est presque
+certainement une erreur d'extraction pour une société de l'indice.
+
+**Hiérarchie de fiabilité.** La médiane des trois prix implicites traitait
+EV/EBITDA, P/E et EV/Sales comme également informatifs. Liu, Nissim & Thomas
+(2002) mesurent le contraire : les multiples de résultats dominent nettement,
+les multiples de chiffre d'affaires sont les moins précis, de loin. Dans une
+médiane à trois, quand EV/EBITDA et P/E divergent, c'est donc EV/Sales — le
+moins fiable — qui tranchait.
+
+Le mode `tiers` n'utilise que le **meilleur rang disponible** : les multiples de
+résultats quand il y en a, EV/Sales seulement à défaut. Une hiérarchie, pas une
+pondération — pondérer laisserait EV/Sales départager dès qu'il tombe entre les
+deux autres. Le repli fonctionne là où il doit : une entreprise en perte n'a ni
+P/E ni souvent EBITDA positif, et c'est précisément le cas où un multiple de
+chiffre d'affaires est la seule valorisation possible.
+
+### Le multiple mérité : un test avant tout branchement
+
+`warranted_multiple.py` estime, par régression en coupe sur les fondamentaux
+(marge, croissance, levier, ROIC, taille — tous déjà dans le pipeline), le
+multiple que ces fondamentaux **justifient** :
+
+```
+ln(M_i) = a + b·x_i + e_i        M_mérité_i = exp(a + b·x_i)
+```
+
+L'idée (Bhojraj & Lee, 2002) : une décote sur la médiane sectorielle est le plus
+souvent *méritée*, et seul le **résidu** est un candidat à la mispricing. C'est
+la même chose que dit Fama-French (2015) en trouvant HML redondant une fois la
+rentabilité incluse.
+
+**Le module n'est branché nulle part, délibérément.** Avant de compliquer `06b`,
+il faut savoir si le multiple mérité prédit mieux — et cela se tranche **sans
+backtest** :
+
+```bash
+make merite                                  # EV/EBITDA, coupe complète
+make merite MULTIPLE=P/E GROUPING=secteur
+```
+
+`15_test_multiple_merite.py` compare, **hors échantillon**, l'erreur de
+prédiction des deux méthodes sur les mêmes pairs point-in-time (la ligne évaluée
+est exclue de ses propres pairs, comme `06b` l'exclut déjà de sa médiane). Il
+rapporte l'erreur absolue médiane en log — la convention de Liu-Nissim-Thomas —
+et conclut explicitement s'il faut brancher ou non.
+
+Le regroupement est la vraie décision : `--grouping millesime` (défaut) ajuste
+sur la coupe complète de l'indice avec indicatrices sectorielles, parce qu'une
+régression à cinq régresseurs demande des dizaines d'observations et qu'un
+secteur × millésime en compte rarement plus de vingt. `--grouping secteur`
+reste disponible et journalise ce qu'il doit abandonner.
+
+Si le test conclut **non**, il n'y a rien à brancher — et c'est une réponse,
+pas un échec.
+
 ## Configuration requise
 
 ```bash

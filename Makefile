@@ -8,6 +8,8 @@
 PYTHON  ?= python3
 LIMIT   ?=
 STRATEGY?= valuation_gap_multiples_options
+MULTIPLE ?= EV/EBITDA
+GROUPING ?= millesime
 START   ?= 2015-01-01
 
 # --limit n'est transmis que s'il est renseigné (make daily LIMIT=10).
@@ -15,7 +17,7 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
-        compare report test install universe bootstrap slippage
+        compare report test install universe bootstrap slippage merite
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -32,6 +34,7 @@ help:
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"
+	@echo "    make merite        Le multiple merite predit-il mieux que le sectoriel ?"
 	@echo "    make report        Dashboard Streamlit"
 	@echo
 	@echo "  DEVELOPPEMENT"
@@ -39,7 +42,7 @@ help:
 	@echo "    make install       Dependances"
 	@echo "    make bootstrap     Premier remplissage complet de data/ (long : plusieurs heures)"
 	@echo
-	@echo "  Variables : LIMIT=10  STRATEGY=...  START=AAAA-MM-JJ  PYTHON=python3.11"
+	@echo "  Variables : LIMIT=10  STRATEGY=...  START=AAAA-MM-JJ  MULTIPLE=P/E  GROUPING=secteur"
 
 # ---------------------------------------------------------------------------
 # Mise a jour
@@ -84,6 +87,12 @@ compare:
 
 slippage:
 	$(PYTHON) mesure_slippage_options.py
+
+# Le multiple MERITE (regression sur fondamentaux) predit-il mieux que le
+# multiple sectoriel ? Se tranche sans backtest, et decide s'il faut le brancher
+# dans 06b. MULTIPLE=... et GROUPING=... pour explorer.
+merite:
+	$(PYTHON) 15_test_multiple_merite.py --multiple "$(MULTIPLE)" --grouping $(GROUPING)
 
 report:
 	streamlit run report/Home.py

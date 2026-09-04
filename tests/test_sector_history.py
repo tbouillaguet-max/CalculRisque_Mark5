@@ -206,8 +206,16 @@ def test_une_radiee_compte_dans_les_millesimes_ou_elle_etait_membre():
         df, sector_history.MembershipIndex(history))
     cible = df.index[df["symbol"] == "CIBLE"][0]
     assert resultat.loc[cible, "P/E_n_peers"] == 6
-    # Sans elle, la médiane des cinq survivantes vaudrait 22.
-    assert resultat.loc[cible, "P/E_median"] == pytest.approx(21.5)
+
+    # La radiée (P/E 4) doit peser sur l'agrégation, pas seulement figurer au
+    # compteur. Comparé aux DEUX groupes de pairs plutôt qu'à une constante :
+    # le test porte sur la composition du groupe, pas sur la façon de le
+    # résumer (cf. config.SECTOR_MULTIPLE_AGGREGATOR, commutable).
+    survivantes = pd.Series([20.0, 21.0, 22.0, 23.0, 24.0])
+    avec_radiee = pd.Series([20.0, 21.0, 22.0, 23.0, 24.0, 4.0])
+    assert resultat.loc[cible, "P/E_median"] == pytest.approx(
+        module_06b.aggregate_multiple(avec_radiee))
+    assert resultat.loc[cible, "P/E_median"] < module_06b.aggregate_multiple(survivantes)
 
 
 def test_le_secteur_d_epoque_repartit_les_pairs_autrement():
