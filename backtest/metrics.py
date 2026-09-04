@@ -12,6 +12,7 @@ se lisent pas."""
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -20,6 +21,50 @@ import pandas as pd
 import config
 
 TRADING_DAYS_PER_YEAR = 252
+
+_INV_SQRT_2 = 1.0 / math.sqrt(2.0)
+
+
+def _norm_cdf(x: float) -> float:
+    """Même implémentation que backtest/options_pricing.py (math.erfc plutôt
+    que scipy.stats.norm) : ce module n'a pas d'autre besoin de scipy, et une
+    dépendance entière pour deux appels scalaires ne se justifie pas."""
+    return 0.5 * math.erfc(-x * _INV_SQRT_2)
+
+
+def _norm_ppf(p: float) -> float:
+    """Quantile de la loi normale centrée réduite, par l'approximation
+    rationnelle d'Acklam (erreur relative < 1,15e-9 sur tout le support) --
+    largement au-delà de ce qu'exige un seuil de bruit dont les entrées, elles,
+    sont connues à deux chiffres près.
+
+    Le raffiner par une itération de Newton n'aurait aucun sens ici : `p` vient
+    d'un NOMBRE D'ESSAIS approximatif, pas d'une mesure."""
+    if not 0.0 < p < 1.0:
+        return math.copysign(math.inf, p - 0.5)
+
+    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01)
+    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00)
+    p_bas, p_haut = 0.02425, 1 - 0.02425
+
+    if p < p_bas:
+        q = math.sqrt(-2 * math.log(p))
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+    if p > p_haut:
+        q = math.sqrt(-2 * math.log(1 - p))
+        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+                ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
+           (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1)
 
 
 def _max_drawdown_duration_days(equity_curve: pd.DataFrame) -> int:
@@ -46,6 +91,116 @@ def _risk_free_daily(dates: pd.Series, fallback_annual_rate: float) -> pd.Series
         return pd.Series(fallback_annual_rate / TRADING_DAYS_PER_YEAR, index=dates.index)
     annual = pd.DatetimeIndex(dates).year.map(lambda y: by_year.get(int(y), fallback_annual_rate))
     return pd.Series(np.asarray(annual, dtype=float) / TRADING_DAYS_PER_YEAR, index=dates.index)
+
+
+# ----------------------------------------------------------------------------
+# Sharpe DÉFLATÉ : ce que le Sharpe vaut une fois retiré ce que le hasard donne
+# ----------------------------------------------------------------------------
+#
+# LE PROBLÈME. Un grid-search classé sur un unique chemin historique retient, par
+# construction, la combinaison qui colle le mieux à CE chemin-là. Le Sharpe qu'il
+# affiche n'est donc pas le Sharpe d'une stratégie, c'est le MAXIMUM de N tirages
+# -- et le maximum de N tirages n'est pas nul même quand la vraie performance
+# l'est. Il croît en racine(2·ln N).
+#
+# Ordre de grandeur, avec l'écart-type d'un Sharpe annualisé estimé sur T années
+# (~1/racine(T)) : sur 10 ans d'historique, 8 essais donnent déjà 0,46 de Sharpe
+# gratuit, 64 essais 0,75, une centaine 0,80. Le seul optimiseur des stops de ce
+# dépôt en balaie 64 (8 stops x 8 take-profits), et il n'est pas seul.
+#
+# LA CORRECTION. Bailey & Lopez de Prado (Journal of Portfolio Management, 2014)
+# proposent de rendre non plus un ratio mais une PROBABILITÉ : celle que le vrai
+# Sharpe dépasse ce seuil de bruit, en tenant compte de l'asymétrie et des queues
+# de la distribution des rendements -- deux corrections qui comptent ici, un
+# portefeuille d'options longues n'ayant rien de gaussien.
+#
+#     DSR = Phi[ (SR - SR0)·racine(N-1) / racine(1 - g3·SR + (g4-1)/4·SR²) ]
+#
+# avec N le nombre d'observations, g3 l'asymétrie, g4 le kurtosis (3 = normal),
+# et SR, SR0 exprimés PAR OBSERVATION (jamais annualisés : la formule mélange
+# sinon deux échelles). Lecture : DSR = 0,95 veut dire « 95% de chances que la
+# vraie performance dépasse ce que N essais auraient produit par hasard ».
+#
+# Harvey, Liu & Zhu (Review of Financial Studies, 2016) arrivent au même endroit
+# par la voie des tests multiples : la barre pour un nouveau facteur n'est pas un
+# t de 2,0 mais d'environ 3,0.
+
+_EULER_MASCHERONI = 0.5772156649015329
+
+
+def expected_maximum_sharpe(n_trials: int, sharpe_std: float) -> float:
+    """SR0 : Sharpe MAXIMUM attendu sur `n_trials` essais indépendants quand la
+    vraie performance est nulle. Exprimé dans l'unité de `sharpe_std`.
+
+    Approximation de l'espérance du maximum de n_trials gaussiennes :
+
+        SR0 = sharpe_std · [ (1-gamma)·Z⁻¹(1 - 1/N) + gamma·Z⁻¹(1 - 1/(N·e)) ]
+
+    `sharpe_std` est la dispersion des Sharpe ENTRE ESSAIS. Quand on dispose des
+    Sharpe réellement obtenus par le grid-search, c'est leur écart-type qu'il
+    faut passer ; sinon, l'écart-type d'échantillonnage d'un Sharpe sous
+    l'hypothèse nulle (~1/racine(N observations)) en est l'approximation usuelle.
+
+    0 pour un seul essai : sans sélection, il n'y a pas de biais de sélection à
+    retirer, et le Sharpe déflaté se réduit alors au Sharpe probabiliste testé
+    contre zéro."""
+    if n_trials <= 1 or sharpe_std <= 0 or not math.isfinite(sharpe_std):
+        return 0.0
+    n = float(n_trials)
+    quantile = (
+        (1 - _EULER_MASCHERONI) * _norm_ppf(1 - 1 / n)
+        + _EULER_MASCHERONI * _norm_ppf(1 - 1 / (n * math.e))
+    )
+    return sharpe_std * quantile
+
+
+def probabilistic_sharpe_ratio(
+    returns: pd.Series, benchmark_sharpe: float = 0.0,
+) -> Optional[float]:
+    """P(vrai Sharpe > `benchmark_sharpe`), corrigée de l'asymétrie et des
+    queues des rendements.
+
+    `returns` et `benchmark_sharpe` sont PAR OBSERVATION (rendements quotidiens
+    -> Sharpe quotidien). Annualiser l'un sans l'autre est l'erreur classique et
+    donne des probabilités absurdes."""
+    n = len(returns)
+    if n < 4:
+        return None
+    ecart_type = float(returns.std())
+    if not ecart_type or not math.isfinite(ecart_type) or ecart_type <= 0:
+        return None
+
+    sharpe = float(returns.mean()) / ecart_type
+    asymetrie = float(returns.skew())
+    kurtosis = float(returns.kurt()) + 3.0        # pandas rend l'EXCÈS de kurtosis
+    if not all(math.isfinite(x) for x in (sharpe, asymetrie, kurtosis)):
+        return None
+
+    # Variance de l'estimateur du Sharpe (Mertens) : gaussienne -> 1, puis
+    # corrigée par l'asymétrie et l'épaisseur des queues.
+    variance = 1.0 - asymetrie * sharpe + (kurtosis - 1.0) / 4.0 * sharpe * sharpe
+    if variance <= 0:
+        return None
+    return _norm_cdf((sharpe - benchmark_sharpe) * math.sqrt(n - 1) / math.sqrt(variance))
+
+
+def deflated_sharpe_ratio(
+    returns: pd.Series, n_trials: int, sharpe_std: Optional[float] = None,
+) -> Optional[float]:
+    """DSR : probabilité que le vrai Sharpe dépasse ce que `n_trials` essais
+    auraient produit par pur hasard (cf. le pavé ci-dessus).
+
+    `sharpe_std` : dispersion des Sharpe entre essais, PAR OBSERVATION. À
+    défaut, l'écart-type d'échantillonnage sous l'hypothèse nulle,
+    1/racine(N-1) -- approximation prudente et standard quand les Sharpe des
+    autres essais n'ont pas été conservés."""
+    n = len(returns)
+    if n < 4:
+        return None
+    if sharpe_std is None:
+        sharpe_std = 1.0 / math.sqrt(n - 1)
+    return probabilistic_sharpe_ratio(
+        returns, benchmark_sharpe=expected_maximum_sharpe(n_trials, sharpe_std))
 
 
 def _position_level_metrics(trades: pd.DataFrame) -> dict:
@@ -163,11 +318,20 @@ def compute_metrics(
     risk_free_rate: float = 0.0,
     benchmark_prices: Optional[pd.Series] = None,
     extra: Optional[dict] = None,
+    n_trials: int = 1,
 ) -> dict:
     """benchmark_prices : clôtures quotidiennes de l'indice de référence
     (Series indexée par date). Absent -> les champs benchmark_*, alpha_pct,
     beta, information_ratio et tracking_error_pct ne sont simplement pas
     produits.
+
+    `n_trials` : nombre de configurations essayées avant de retenir celle-ci.
+    1 pour un run isolé ; la taille de la grille pour un run issu d'un
+    grid-search. Il pilote `deflated_sharpe_ratio` et `sharpe_noise_floor`, les
+    deux seuls chiffres qui disent si le Sharpe affiché dépasse ce que la
+    sélection aurait produit toute seule (cf. le pavé plus haut). Le laisser à 1
+    quand plusieurs dizaines de combinaisons ont été balayées ne rend pas le
+    résultat plus prudent : il le rend simplement muet sur la question.
 
     `extra` : métriques calculées par le moteur lui-même (ordres tronqués,
     exposition delta...), fusionnées telles quelles dans le dictionnaire de
@@ -245,6 +409,17 @@ def compute_metrics(
         "cagr_pct": float(cagr_pct) if pd.notna(cagr_pct) else None,
         "annualized_volatility_pct": float(ann_vol_pct) if pd.notna(ann_vol_pct) else None,
         "sharpe_ratio": float(sharpe) if pd.notna(sharpe) else None,
+        # Nombre d'essais dont ce run est le survivant, et les deux chiffres
+        # qui en découlent. `sharpe_noise_floor` est ANNUALISÉ pour se lire
+        # directement à côté de `sharpe_ratio` ; le calcul, lui, reste par
+        # observation (cf. expected_maximum_sharpe).
+        "n_trials": int(n_trials),
+        "sharpe_noise_floor": float(
+            expected_maximum_sharpe(n_trials, 1.0 / math.sqrt(len(daily_returns) - 1))
+            * np.sqrt(TRADING_DAYS_PER_YEAR)
+        ) if len(daily_returns) > 1 else None,
+        "deflated_sharpe_ratio": deflated_sharpe_ratio(excess, n_trials),
+        "probabilistic_sharpe_ratio": probabilistic_sharpe_ratio(excess),
         "sortino_ratio": float(sortino) if pd.notna(sortino) else None,
         "max_drawdown_pct": float(max_drawdown_pct) if pd.notna(max_drawdown_pct) else None,
         "max_drawdown_duration_days": max_drawdown_duration_days,

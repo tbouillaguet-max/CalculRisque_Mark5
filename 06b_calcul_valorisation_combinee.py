@@ -16,16 +16,23 @@ cross-sectionnelle des seuls pairs de cette année-là).
 Méthode, pour chaque ligne (symbol, period_type, fiscal_year, fiscal_quarter)
 -- period_type="FY" (annuel, 04) ou "TTM" (trimestriel glissant, 04b, si
 config.FINANCIALS_TTM_FILE existe ; sinon annuel seul, comportement inchangé) :
-    1. Multiples sectoriels médians du même "millésime de publication"
-       (période exacte : même period_type + fiscal_year + fiscal_quarter),
-       à partir des seules entreprises du même secteur pour cette période
-       (ignoré si moins de MIN_PEERS_PER_SECTOR_YEAR pairs disponibles --
-       plus fréquent en TTM tant que peu d'entreprises ont un historique
-       04b, repli DCF alors plus sollicité, cf. point 4).
+    1. Multiples sectoriels du même "millésime de publication" (période
+       exacte : même period_type + fiscal_year + fiscal_quarter), à partir des
+       seules entreprises du même secteur pour cette période (ignoré si moins
+       de MIN_PEERS_PER_SECTOR_YEAR pairs disponibles -- plus fréquent en TTM
+       tant que peu d'entreprises ont un historique 04b, repli DCF alors plus
+       sollicité, cf. point 4). Agrégés par MOYENNE HARMONIQUE, l'estimateur de
+       variance minimale d'un ratio (cf. config.SECTOR_MULTIPLE_AGGREGATOR) ;
+       "median" restitue le comportement historique.
     2. Valeur implicite par action selon chacun des 3 multiples, appliqués
        aux fondamentaux propres de l'entreprise (EBITDA, revenue, net_income).
-    3. valuation_multiples_per_share = médiane des valeurs implicites
-       disponibles (plus robuste qu'une moyenne à un multiple aberrant).
+    3. valuation_multiples_per_share = combinaison de ces valeurs implicites
+       PAR HIÉRARCHIE DE FIABILITÉ : les multiples de résultats (P/E,
+       EV/EBITDA) quand au moins un est exploitable, EV/Sales seulement à
+       défaut (cf. config.MULTIPLE_COMBINATION). L'ancienne médiane à trois
+       voix traitait les trois comme également informatifs, si bien qu'EV/Sales
+       -- le moins précis des trois -- tranchait dès que les deux autres
+       divergeaient ; "flat" la restitue.
     4. Repli sur valuation_dcf_per_share (07) si aucun multiple sectoriel
        n'est exploitable cette année-là (secteur trop restreint, fondamentaux
        manquants...).
@@ -153,6 +160,72 @@ def _clean_multiple(values: pd.Series, col: str) -> pd.Series:
     return vals[(vals >= lo) & (vals <= hi)]
 
 
+def aggregate_multiple(values: pd.Series, aggregator: Optional[str] = None) -> Optional[float]:
+    """Multiple représentatif d'un groupe de pairs -- moyenne HARMONIQUE par
+    défaut, médiane si config.SECTOR_MULTIPLE_AGGREGATOR vaut "median".
+
+    La moyenne harmonique revient à moyenner les RENDEMENTS (1/multiple) puis à
+    réinverser : c'est l'estimateur de variance minimale d'un ratio sous erreur
+    multiplicative (Baker & Ruback, 1999 -- voir config.SECTOR_MULTIPLE_AGGREGATOR
+    pour le raisonnement complet).
+
+    `values` est supposée DÉJÀ NETTOYÉE par _clean_multiple : strictement
+    positive et dans les bornes de plausibilité. La borne BASSE compte ici plus
+    que pour une médiane -- un multiple minuscule devient un rendement énorme et
+    tire toute la moyenne -- d'où les planchers de
+    config.MULTIPLE_PLAUSIBLE_RANGE."""
+    if aggregator is None:
+        aggregator = config.SECTOR_MULTIPLE_AGGREGATOR
+    if values.empty:
+        return None
+    if aggregator == "median":
+        return float(values.median())
+    if aggregator != "harmonic":
+        raise ValueError(
+            f"SECTOR_MULTIPLE_AGGREGATOR attend 'harmonic' ou 'median', reçu {aggregator!r}.")
+    # _clean_multiple garantit values > 0, donc aucune division par zéro ; la
+    # garde reste pour un appel direct avec des données non nettoyées.
+    positives = values[values > 0]
+    if positives.empty:
+        return None
+    return float(len(positives) / (1.0 / positives).sum())
+
+
+def combine_implied_prices(
+    implied: pd.DataFrame, combination: Optional[str] = None,
+) -> pd.Series:
+    """Valeur théorique par action à partir des prix implicites des trois
+    multiples -- par HIÉRARCHIE DE FIABILITÉ par défaut (cf.
+    config.MULTIPLE_COMBINATION), médiane à plat si "flat".
+
+    En mode "tiers", chaque ligne n'utilise que le MEILLEUR rang disponible :
+    les multiples de résultats (P/E, EV/EBITDA) quand au moins un est
+    exploitable, EV/Sales seulement à défaut. À l'intérieur d'un rang, la
+    médiane -- pour deux valeurs, c'est leur moyenne.
+
+    Le calcul est vectorisé par rang plutôt que ligne à ligne : le nombre de
+    rangs est fixe (deux) alors que le nombre de lignes se compte en dizaines
+    de milliers."""
+    if combination is None:
+        combination = config.MULTIPLE_COMBINATION
+    if combination == "flat":
+        return implied.median(axis=1, skipna=True)
+    if combination != "tiers":
+        raise ValueError(
+            f"MULTIPLE_COMBINATION attend 'tiers' ou 'flat', reçu {combination!r}.")
+
+    tiers = config.MULTIPLE_RELIABILITY_TIERS
+    resultat = pd.Series(np.nan, index=implied.index, dtype=float)
+    for rang in sorted(set(tiers.get(col, max(tiers.values()) + 1) for col in implied.columns)):
+        colonnes = [c for c in implied.columns if tiers.get(c, max(tiers.values()) + 1) == rang]
+        if not colonnes:
+            continue
+        candidat = implied[colonnes].median(axis=1, skipna=True)
+        # Un rang ne sert qu'aux lignes qu'aucun rang MEILLEUR n'a servies.
+        resultat = resultat.where(resultat.notna(), candidat)
+    return resultat
+
+
 def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
     """Médiane de chaque multiple par (secteur, period_type, fiscal_year,
     fiscal_quarter) -- comparaison cross-sectionnelle au sein du même
@@ -174,7 +247,9 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
         row = dict(zip(GROUP_COLUMNS, keys))
         for col in MULTIPLE_COLUMNS:
             vals = _clean_multiple(group[col], col)
-            row[f"{col}_median"] = vals.median() if len(vals) >= MIN_PEERS_PER_SECTOR_YEAR else None
+            row[f"{col}_median"] = (
+                aggregate_multiple(vals) if len(vals) >= MIN_PEERS_PER_SECTOR_YEAR else None
+            )
             row[f"{col}_n_peers"] = len(vals)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -260,7 +335,7 @@ def compute_pit_sector_multiples(
                 # comparer à soi tire mécaniquement l'écart vers zéro.
                 visible = visible.drop(index=idx, errors="ignore")
                 row[f"{col}_median"] = (
-                    visible.median() if len(visible) >= MIN_PEERS_PER_SECTOR_YEAR else None
+                    aggregate_multiple(visible) if len(visible) >= MIN_PEERS_PER_SECTOR_YEAR else None
                 )
                 row[f"{col}_n_peers"] = len(visible)
             out_index.append(idx)
@@ -489,7 +564,7 @@ def compute_implied_valuations(
         series.where(applicable, inplace=True)
 
     implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
-    df["valuation_multiples_per_share"] = implied.median(axis=1, skipna=True)
+    df["valuation_multiples_per_share"] = combine_implied_prices(implied)
     df["n_multiples_used"] = implied.notna().sum(axis=1)
     # ROBUSTESSE de la médiane derrière cette valorisation : le nombre de
     # pairs du multiple le mieux fourni parmi ceux réellement utilisés.

@@ -162,12 +162,19 @@ def _run_one(
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
     train_fraction: Optional[float] = None,
+    n_trials: int = 1,
 ) -> dict:
     """Un run complet pour ce seuil d'entrée. Isolé en fonction de module
     (plutôt que méthode/closure) pour rester picklable par
     ProcessPoolExecutor -- les données volumineuses (_DATA) ne sont PAS des
     arguments : elles viennent du fork, voir le commentaire sur _DATA
-    plus haut."""
+    plus haut.
+
+    `n_trials` : taille de la grille balayée, transmise à compute_metrics pour
+    que chaque ligne porte son Sharpe DÉFLATÉ. Le Sharpe brut du meilleur point
+    de grille est celui d'un MAXIMUM sur n_trials tirages, et le maximum de n
+    tirages n'est pas nul même quand la vraie performance l'est (cf.
+    backtest/metrics.py, section « Sharpe déflaté »)."""
     row = {
         "entry_threshold_pct": entry_threshold,
         "ecart_equivalent_pct": _log_points_to_gap_pct(entry_threshold),
@@ -206,7 +213,7 @@ def _run_one(
         )
         equity_curve, _positions_history, trades, _signals_history = engine.run()
         run_metrics = metrics_mod.compute_metrics(
-            equity_curve, trades,
+            equity_curve, trades, n_trials=n_trials,
             risk_free_rate=config.RISK_FREE_RATE,
             benchmark_prices=_DATA["benchmark_prices"],
             extra=engine.execution_diagnostics(),
@@ -214,6 +221,10 @@ def _run_one(
         for key in (
             "num_trades", "win_rate_pct", "profit_factor", "total_return_pct",
             "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
+            # Le Sharpe brut de la MEILLEURE ligne est celui d'un maximum sur
+            # toute la grille : ces deux colonnes disent de combien il faut le
+            # rabattre (cf. backtest/metrics.py, « Sharpe déflaté »).
+            "sharpe_noise_floor", "deflated_sharpe_ratio",
             "max_drawdown_pct", "calmar_ratio", "avg_holding_days",
             # L'exposition dit ce que le seuil coûte en capital qui dort : un
             # seuil haut peut « améliorer » le Sharpe en n'investissant plus.
@@ -394,7 +405,7 @@ def main() -> None:
             )
             rows.append(_run_one(
                 seuil, args.strategy, strategy_params, baseline_settings, engine_kwargs,
-                start_date, end_date, args.train_fraction,
+                start_date, end_date, args.train_fraction, n_trials=len(threshold_grid),
             ))
     else:
         # initializer/initargs : cf. le commentaire sur _pool_initializer.
@@ -406,7 +417,7 @@ def main() -> None:
                 pool.submit(
                     _run_one, seuil, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
-                    args.train_fraction,
+                    args.train_fraction, n_trials=len(threshold_grid),
                 ): seuil
                 for seuil in threshold_grid
             }

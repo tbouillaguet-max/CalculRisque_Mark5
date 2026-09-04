@@ -495,9 +495,13 @@ def test_S4_la_derniere_ligne_du_millesime_voit_tous_ses_pairs():
     df = _multiples_du_millesime(dates, [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0])
     pit = module.compute_pit_sector_multiples(df)
     # 6 pairs pour la dernière ligne (elle-même exclue), donc au-dessus du
-    # seuil de robustesse : une médiane est produite.
+    # seuil de robustesse : un multiple sectoriel est produit.
     assert pit["P/E_n_peers"].iloc[-1] == 6
-    assert pit["P/E_median"].iloc[-1] == pytest.approx(np.median([10, 11, 12, 13, 14, 15]))
+    # Comparé à l'agrégation du groupe de pairs ATTENDU, pas à une constante :
+    # ce test porte sur QUELS pairs sont visibles, pas sur la façon de les
+    # résumer (cf. config.SECTOR_MULTIPLE_AGGREGATOR, commutable).
+    assert pit["P/E_median"].iloc[-1] == pytest.approx(
+        module.aggregate_multiple(pd.Series([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])))
 
 
 def test_S4_le_nombre_de_pairs_est_propage_jusqu_au_signal():

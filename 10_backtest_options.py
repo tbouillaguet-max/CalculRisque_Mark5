@@ -279,6 +279,12 @@ def main() -> None:
         help="Indice de référence (défaut: %(default)s). Doit être présent dans les cours "
              "quotidiens ; sinon un indice équipondéré de l'univers point-in-time est reconstruit.",
     )
+    parser.add_argument(
+        "--n-trials", type=int, default=1,
+        help="Nombre de configurations essayées avant de retenir celle-ci (défaut: %(default)s, "
+             "run isolé). Après un grid-search, passe la TAILLE DE LA GRILLE : le Sharpe du "
+             "meilleur point est celui d'un maximum sur autant de tirages, et metrics.json "
+             "rapporte alors sharpe_noise_floor et deflated_sharpe_ratio en regard.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -417,6 +423,7 @@ def main() -> None:
         risk_free_rate=config.RISK_FREE_RATE,
         benchmark_prices=benchmark_prices,
         extra=engine.execution_diagnostics(),
+        n_trials=args.n_trials,
     )
     run_metrics["benchmark_label"] = benchmark_label
 

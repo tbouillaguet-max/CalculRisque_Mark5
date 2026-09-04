@@ -726,6 +726,67 @@ OPTIONS_EV_QUADRATURE_NODES = 128
 # parfaitement su ouvrir la position.
 OPTIONS_FALLBACK_VOL = 0.30
 
+# ----------------------------------------------------------------------------
+# Volatilité COTÉE : ce que le marché fait payer, et non ce que le titre a fait
+# ----------------------------------------------------------------------------
+# POURQUOI CES DEUX CONSTANTES EXISTENT. Faute de surface de volatilité
+# historique, le moteur ouvrait ses positions simulées au prix Black-Scholes
+# calculé sur la volatilité RÉALISÉE du titre. Or on n'achète jamais une option
+# à la réalisée : on l'achète à l'IMPLICITE cotée, qui en diffère de deux
+# façons, toutes deux systématiques et toutes deux au détriment de l'acheteur.
+#
+#   1. UN NIVEAU plus haut que la réalisée (prime de risque de variance). Elle
+#      est bien documentée sur l'indice ; sur titres individuels elle est plus
+#      FAIBLE, et c'est un point favorable à une stratégie qui, comme ici, ne
+#      traite que des noms individuels (Driessen, Maenhout & Vilkov, Journal of
+#      Finance, 2009 : la grosse prime de l'indice est essentiellement une
+#      prime de risque de corrélation). D'où un écart volontairement modeste.
+#
+#   2. UNE PENTE en fonction du strike (skew). À maturité égale, les strikes
+#      BAS se paient plus cher que les strikes hauts -- effet d'une pression
+#      d'achat structurelle sur la protection (Bollen & Whaley, Journal of
+#      Finance, 2004). C'est une propriété du SOUS-JACENT, pas du sens du
+#      contrat : par parité call-put, un call et un put de même strike et même
+#      échéance partagent la même implicite. La fonction ne prend donc pas
+#      d'option_type, et c'est voulu.
+#
+# CE QUE ÇA CHANGE POUR LA STRATÉGIE. Le strike visé est à mi-chemin vers la
+# valeur théorique : une thèse baissière (PUT) vise donc un strike SOUS le
+# cours, du côté cher du skew, et une thèse haussière (CALL) un strike au-
+# DESSUS, du côté bon marché. La jambe put était ainsi la plus sous-facturée du
+# backtest, alors que l'écart en log qui la sélectionne est, lui, symétrique.
+#
+# CE SONT DES HYPOTHÈSES, PAS DES MESURES. Elles remplacent une hypothèse bien
+# pire (écart nul, skew nul), mais elles restent à calibrer sur les snapshots
+# réels dès qu'il y en a assez -- `python mesure_slippage_options.py` et les
+# archives de 08_recuperation_options.py sont là pour ça. Les mettre à 0
+# reproduit exactement le comportement d'avant.
+
+# Écart implicite - réalisée à la monnaie, en POINTS de volatilité (0,02 = +2
+# points : une réalisée de 28% se cote 30%). Volontairement modeste, cf. le
+# point 1 ci-dessus.
+OPTIONS_IMPLIED_VOL_SPREAD = 0.02
+
+# Pente du skew, en points de volatilité par ÉCART-TYPE de log-moneyness
+# (z = ln(K/S) / (sigma·racine(T))). Normaliser par sigma·racine(T) plutôt que
+# par un pourcentage du spot rend la pente cohérente d'une maturité et d'une
+# volatilité à l'autre : à 2 ans sur un titre nerveux, +10% de strike est un
+# tout petit déplacement dans la distribution, à 3 mois sur un titre calme
+# c'en est un grand. Positive = les strikes bas coûtent plus cher.
+#
+# APPLIQUÉE AUX SEULS STRIKES SOUS LA MONNAIE, délibérément : au-dessus, la
+# volatilité cotée reste au niveau ATM. Un skew réel décroît aussi du côté
+# haut, mais le reproduire face à une loi de S_T lognormale à volatilité unique
+# fabriquerait un edge de bord de grille sans rapport avec la thèse -- voir le
+# raisonnement complet dans options_pricing.quoted_implied_vol.
+OPTIONS_VOL_SKEW_SLOPE = 0.025
+
+# Bornes de la volatilité cotée. Le skew est une approximation LINÉAIRE d'une
+# courbe qui s'aplatit dans les ailes : extrapolée à 5 ou 6 écarts-types, elle
+# produirait des volatilités absurdes, voire négatives côté strikes hauts.
+OPTIONS_QUOTED_VOL_MIN = 0.05
+OPTIONS_QUOTED_VOL_MAX = 2.00
+
 # Filtre de micro-trades, à DEUX points d'application :
 #   1. Redimensionnement sur dépôt SEC (_open_or_resize) : second filet,
 #      APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD ci-dessous) --
@@ -1203,13 +1264,83 @@ SECTOR_MULTIPLES: dict[str, list] = {
     "_default": ["EV/EBITDA", "EV/Sales", "P/E"],
 }
 
-# Bornes de plausibilité appliquées AVANT le calcul de la médiane sectorielle :
-# une entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x
-# et déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+# Bornes de plausibilité appliquées AVANT l'agrégation sectorielle : une
+# entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x et
+# déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+#
+# LES BORNES BASSES NE SONT PLUS À ZÉRO, et c'est la contrepartie de
+# l'agrégation par moyenne harmonique (cf. SECTOR_MULTIPLE_AGGREGATOR).
+# Agréger des multiples par leur moyenne harmonique revient à moyenner des
+# RENDEMENTS (1/multiple) : un multiple minuscule y devient un rendement
+# gigantesque, et un seul suffit à tirer toute l'agrégation. Là où la médiane
+# ignorait une valeur aberrante par le bas, la moyenne harmonique s'y expose.
+#
+# Les valeurs retenues n'écartent que ce qui est presque certainement une
+# erreur d'extraction pour une société de l'indice, jamais une valorisation
+# réelle : une entreprise du S&P 500 ne vaut pas moins d'une année d'EBITDA
+# (EV/EBITDA < 1), et n'a pas un P/E sous 1. Le plancher d'EV/Sales est plus
+# bas parce que la distribution y est réellement plus étalée -- distributeurs
+# et négociants traitent légitimement à 0,1-0,2 x le chiffre d'affaires.
 MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
-    "EV/EBITDA": (0.0, 50.0),
-    "EV/Sales": (0.0, 20.0),
-    "P/E": (0.0, 60.0),
+    "EV/EBITDA": (1.0, 50.0),
+    "EV/Sales": (0.05, 20.0),
+    "P/E": (1.0, 60.0),
+}
+
+# ----------------------------------------------------------------------------
+# Agrégation des multiples sectoriels
+# ----------------------------------------------------------------------------
+# "harmonic" (défaut) ou "median" (comportement historique, conservé pour
+# rejouer un run ancien -- même logique que OPTIONS_MULTIPLES_GAP_BASIS).
+#
+# POURQUOI LA MOYENNE HARMONIQUE. Un multiple est un RATIO, et la grandeur qu'on
+# veut vraiment moyenner est son inverse : le rendement. La moyenne harmonique
+# des P/E d'un secteur, c'est l'inverse du rendement bénéficiaire moyen -- une
+# quantité qui a un sens économique, là où la moyenne des P/E n'en a pas (elle
+# est mécaniquement tirée vers le haut par les multiples élevés, dont
+# l'amplitude n'est pas bornée alors que celle des multiples bas l'est).
+#
+# Baker & Ruback (Harvard, 1999, « Estimating Industry Multiples ») montrent
+# que sous une structure d'erreur MULTIPLICATIVE -- celle qui convient à un
+# ratio -- l'estimateur de variance minimale du multiple d'un secteur est la
+# moyenne harmonique, et que la moyenne arithmétique est biaisée à la hausse.
+#
+# La médiane, elle, n'est pas fausse : c'est un choix robuste raisonnable, et
+# c'est de loin le meilleur des deux estimateurs naïfs. Le passage à la moyenne
+# harmonique est donc un RAFFINEMENT, pas un correctif -- à A/B tester, ce que
+# ce réglage permet de faire sans toucher au code.
+SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
+
+# ----------------------------------------------------------------------------
+# Combinaison des valeurs implicites des trois multiples
+# ----------------------------------------------------------------------------
+# "tiers" (défaut) ou "flat" (comportement historique : médiane des trois).
+#
+# LE DÉFAUT DE LA MÉDIANE À TROIS VOIX. Elle traite EV/EBITDA, P/E et EV/Sales
+# comme également informatifs. Ils ne le sont pas : Liu, Nissim & Thomas
+# (Journal of Accounting Research, 2002, « Equity Valuation Using Multiples »)
+# mesurent la précision relative des multiples et trouvent que les multiples de
+# RÉSULTATS dominent nettement, et que les multiples de CHIFFRE D'AFFAIRES sont
+# les moins précis, de loin. Or dans une médiane à trois, quand EV/EBITDA et
+# P/E divergent, c'est EV/Sales -- le moins fiable -- qui tranche.
+#
+# Le mode "tiers" range donc les multiples par fiabilité et n'utilise que le
+# MEILLEUR RANG DISPONIBLE : les multiples de résultats quand il y en a,
+# EV/Sales seulement à défaut. Ce n'est pas une pondération mais une hiérarchie,
+# et c'est ce qui règle réellement le problème -- pondérer laisserait EV/Sales
+# départager dès qu'il tombe entre les deux autres.
+#
+# Le repli fonctionne tout seul là où il doit : une entreprise en perte n'a pas
+# de P/E exploitable (filtré en amont) et souvent pas d'EBITDA positif non plus
+# -- c'est précisément le cas où un multiple de chiffre d'affaires est la seule
+# valorisation possible, et le rang 2 le fournit.
+MULTIPLE_COMBINATION = "tiers"
+
+# Rang de fiabilité (1 = le plus fiable). Cf. MULTIPLE_COMBINATION.
+MULTIPLE_RELIABILITY_TIERS: dict[str, int] = {
+    "P/E": 1,
+    "EV/EBITDA": 1,
+    "EV/Sales": 2,
 }
 
 

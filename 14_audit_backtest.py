@@ -403,6 +403,39 @@ def main() -> None:
             print(f"\nAlpha négatif sur {negatifs}/{len(sous_periodes)} fenêtres "
                   f"(médiane {_pct(sous_periodes['alpha_pct'].median())}).")
 
+    # 3c ----------------------------------------------------------------- #
+    # Le Sharpe affiché est-il au-dessus de ce que la SÉLECTION aurait produit
+    # toute seule ? La question ne se pose que si le run vient d'une recherche
+    # (n_trials > 1) -- et elle ne peut se poser QUE si quelqu'un a pensé à le
+    # dire, d'où le rappel quand l'information manque.
+    metriques = run["metrics"]
+    n_essais = metriques.get("n_trials")
+    plancher = metriques.get("sharpe_noise_floor")
+    sharpe = metriques.get("sharpe_ratio")
+    print("\n--- 3c. Sharpe déflaté du nombre d'essais ---")
+    if not n_essais or n_essais <= 1:
+        print("run isolé (n_trials=1) : aucun biais de sélection à retirer.")
+        print("Si ce run est le MEILLEUR POINT d'un grid-search, relance-le avec "
+              "--n-trials <taille de la grille> : le Sharpe d'un maximum sur N tirages "
+              "n'est pas comparable à celui d'un run unique.")
+    elif sharpe is None or plancher is None:
+        print(f"n_trials={n_essais}, mais Sharpe indisponible : rien à comparer.")
+    else:
+        deflate = metriques.get("deflated_sharpe_ratio")
+        print(f"essais            : {n_essais}")
+        print(f"Sharpe affiché    : {sharpe:.2f}")
+        print(f"plancher de bruit : {plancher:.2f}  (Sharpe max attendu sur "
+              f"{n_essais} essais si la vraie performance était NULLE)")
+        if deflate is not None:
+            print(f"Sharpe déflaté    : {deflate:.3f}  "
+                  f"(probabilité que la performance soit réelle)")
+        if sharpe <= plancher:
+            print("\n>>> Le Sharpe affiché est SOUS le plancher de bruit : ce résultat est "
+                  "indistinguable de ce qu'aurait donné le hasard sur autant d'essais.")
+        elif deflate is not None and deflate < 0.95:
+            print("\n>>> Au-dessus du plancher, mais le Sharpe déflaté reste sous 0,95 : "
+                  "la performance n'est pas établie au seuil usuel.")
+
     # 4 ------------------------------------------------------------------ #
     print("\n--- 4. Sensibilité à la date de départ ---")
     print(audit_date_de_depart(equity_curve, benchmark).round(2).to_string(index=False))

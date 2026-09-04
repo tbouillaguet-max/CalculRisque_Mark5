@@ -113,6 +113,10 @@ FIXED_PARAMS: dict = {
 REPORT_COLUMNS = [
     "calmar_ratio", "sharpe_ratio", "total_return_pct", "cagr_pct",
     "max_drawdown_pct", "num_trades", "win_rate_pct", "profit_factor",
+    # Le meilleur essai d'une recherche aléatoire à plusieurs centaines de
+    # tirages est un MAXIMUM, pas une performance : ces deux colonnes disent de
+    # combien rabattre son Sharpe (cf. backtest/metrics.py, « Sharpe déflaté »).
+    "sharpe_noise_floor", "deflated_sharpe_ratio",
 ]
 
 
@@ -176,10 +180,18 @@ def load_data() -> LoadedData:
 def run_trial(
     params: dict, data: LoadedData, initial_capital: float,
     start_date: Optional[pd.Timestamp], end_date: Optional[pd.Timestamp],
+    n_trials: int = 1,
 ) -> Optional[dict]:
     """Un essai : construit la stratégie et le moteur avec `params`, lance le
     backtest, retourne {params..., metrics...}. None si l'essai n'a produit
-    aucun résultat exploitable (ex: aucun jour de bourse dans la plage)."""
+    aucun résultat exploitable (ex: aucun jour de bourse dans la plage).
+
+    `n_trials` : budget total d'essais de la recherche (--trials). C'est la
+    recherche la plus exposée du dépôt au biais de sélection -- un tirage
+    aléatoire de plusieurs centaines de jeux de paramètres --, et c'est
+    justement là que le Sharpe brut du meilleur essai veut le moins dire :
+    le maximum de n tirages n'est pas nul même quand la vraie performance
+    l'est (cf. backtest/metrics.py, section Sharpe déflaté)."""
     # inflation_adjust est un réglage GLOBAL (config.INFLATION_ADJUST_GAP),
     # lu par la stratégie à chaque appel -- pas un paramètre de constructeur.
     # Cf. backtest/strategies/base.inflation_adjusted_gap.
@@ -230,7 +242,8 @@ def run_trial(
 
     if equity_curve.empty:
         return None
-    run_metrics = metrics_mod.compute_metrics(equity_curve, trades, risk_free_rate=config.RISK_FREE_RATE)
+    run_metrics = metrics_mod.compute_metrics(
+        equity_curve, trades, risk_free_rate=config.RISK_FREE_RATE, n_trials=n_trials)
     if not run_metrics:
         return None
     return {**params, **{k: run_metrics.get(k) for k in REPORT_COLUMNS}}
@@ -281,7 +294,8 @@ def main() -> None:
     started = time.monotonic()
     for i in range(1, args.trials + 1):
         params = sample_params(rng)
-        result = run_trial(params, data, args.initial_capital, start_date, end_date)
+        result = run_trial(
+            params, data, args.initial_capital, start_date, end_date, n_trials=args.trials)
         if result is None:
             failures += 1
             continue

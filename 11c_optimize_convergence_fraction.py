@@ -136,11 +136,18 @@ def _run_one(
     engine_kwargs: dict,
     start_date: Optional[pd.Timestamp],
     end_date: Optional[pd.Timestamp],
+    n_trials: int = 1,
 ) -> dict:
     """Un run complet pour cette fraction. Isolé en fonction de module (plutôt
     que méthode/closure) pour rester picklable par ProcessPoolExecutor -- les
     données volumineuses (_DATA) ne sont PAS des arguments : elles viennent du
-    fork, voir le commentaire sur _DATA plus haut."""
+    fork, voir le commentaire sur _DATA plus haut.
+
+    `n_trials` : taille de la grille balayée, transmise à compute_metrics pour
+    que chaque ligne porte son Sharpe DÉFLATÉ. Le Sharpe brut du meilleur point
+    de grille est celui d'un MAXIMUM sur n_trials tirages, et le maximum de n
+    tirages n'est pas nul même quand la vraie performance l'est (cf.
+    backtest/metrics.py, section « Sharpe déflaté »)."""
     row = {"convergence_fraction": fraction, "error": None}
     try:
         strategy_cls = OPTIONS_STRATEGY_REGISTRY[strategy_name]
@@ -170,7 +177,7 @@ def _run_one(
         )
         equity_curve, _positions_history, trades, _signals_history = engine.run()
         run_metrics = metrics_mod.compute_metrics(
-            equity_curve, trades,
+            equity_curve, trades, n_trials=n_trials,
             risk_free_rate=config.RISK_FREE_RATE,
             benchmark_prices=_DATA["benchmark_prices"],
             extra=engine.execution_diagnostics(),
@@ -178,6 +185,10 @@ def _run_one(
         for key in (
             "num_trades", "win_rate_pct", "profit_factor", "total_return_pct",
             "cagr_pct", "annualized_volatility_pct", "sharpe_ratio", "sortino_ratio",
+            # Le Sharpe brut de la MEILLEURE ligne est celui d'un maximum sur
+            # toute la grille : ces deux colonnes disent de combien il faut le
+            # rabattre (cf. backtest/metrics.py, « Sharpe déflaté »).
+            "sharpe_noise_floor", "deflated_sharpe_ratio",
             "max_drawdown_pct", "calmar_ratio", "avg_holding_days",
             "total_commission_dollar", "total_slippage_dollar",
             "total_friction_dollar", "total_friction_pct_of_initial",
@@ -309,7 +320,7 @@ def main() -> None:
             logger.info("[%d/%d] convergence_fraction=%s", i, len(fraction_grid), fraction)
             rows.append(_run_one(
                 fraction, args.strategy, strategy_params, baseline_settings, engine_kwargs,
-                start_date, end_date,
+                start_date, end_date, n_trials=len(fraction_grid),
             ))
     else:
         # initializer/initargs : cf. le commentaire sur _pool_initializer.
@@ -321,6 +332,7 @@ def main() -> None:
                 pool.submit(
                     _run_one, fraction, args.strategy, strategy_params,
                     baseline_settings, engine_kwargs, start_date, end_date,
+                    n_trials=len(fraction_grid),
                 ): fraction
                 for fraction in fraction_grid
             }

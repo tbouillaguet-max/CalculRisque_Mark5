@@ -4,6 +4,212 @@ Dashboard Streamlit à deux pages, lu directement depuis les fichiers produits
 par le pipeline (`01_build_universe.py` à `08_recuperation_options.py`). Le
 rapport ne relance jamais de collecte lui-même : il ne fait que lire `./data/`.
 
+## Raccourcis (`make`)
+
+`make` seul liste les cibles disponibles. Les trois utiles au quotidien :
+
+```bash
+make daily        # mise à jour QUOTIDIENNE complète (la cible du cron)
+make daily-fast   # cours + recalcul du signal seulement, aucun appel SEC ni LLM
+make quarterly    # rafraîchissement trimestriel (10-Q, 8-K, valorisation)
+```
+
+Le `Makefile` n'ajoute aucune logique : il assemble les invocations décrites
+plus bas, et chaque cible reste lançable à la main avec d'autres options
+(`make -n daily` affiche la commande sans l'exécuter).
+
+## Mise à jour quotidienne (`run_pipeline_daily.py`)
+
+**Pourquoi un run quotidien alors que les comptes sont trimestriels.** Le
+signal est un ÉCART entre deux grandeurs : `100 × ln(valeur théorique / cours)`.
+La valeur théorique ne bouge qu'au dépôt d'un 10-Q/10-K, mais le COURS bouge
+tous les jours — et la stratégie multiples est configurée en
+`daily_rebalance=True` exactement pour cela. Une entreprise peut donc franchir
+le seuil d'entrée, ou repasser sous le seuil de sortie, par le seul mouvement
+du titre. Sans run quotidien, ces franchissements ne sont vus qu'au trimestre
+suivant.
+
+```bash
+python run_pipeline_daily.py                  # run complet
+python run_pipeline_daily.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
+python run_pipeline_daily.py --prices-only    # cours + signal, hors ligne SEC/LLM
+python run_pipeline_daily.py --resume         # reprend un run interrompu
+```
+
+Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
+`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `06b` → `07` → `07b` → `08`.
+`03b` et `05/06/06b/07` sont **requises** (sans elles le signal du jour est
+absent ou incohérent avec les cours) ; `04/04b/04c/07b/08` sont des
+enrichissements dont l'échec est journalisé sans arrêter le run, qui se
+termine alors en statut `partial`.
+
+**Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
+relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
+récupération des cours laisserait le signal du jour calculé sur ceux de la
+veille, silencieusement. `08`, qui n'a aucune source alternative, est bien
+sautée.
+
+Toute la mécanique d'exécution (réessais avec backoff, délai par étape,
+journal JSON par run sous `data/pipeline_runs/`, `--resume`, redémarrage
+automatique d'IB Gateway) est celle de `run_pipeline_quarterly.py`, réutilisée
+telle quelle.
+
+Cron (jours de bourse, après la clôture US) :
+
+```
+30 22 * * 1-5  cd /chemin/vers/CalculRisque_Mark5 && python3 run_pipeline_daily.py >> logs/daily.log 2>&1
+```
+
+## Ce que le backtest fait payer, et ce qu'il vaut
+
+Trois correctifs de MESURE (ils ne changent aucune thèse, ils changent ce que
+les chiffres veulent dire). Les trois vont dans le même sens : retirer un
+optimisme qui n'était pas voulu.
+
+### 1. On achète à l'implicite, pas à la réalisée
+
+Faute de surface de volatilité historique, le moteur ouvrait ses positions
+simulées au prix Black-Scholes calculé sur la volatilité **réalisée** du titre.
+On n'achète jamais une option à la réalisée : on l'achète à l'**implicite
+cotée**. `options_pricing.quoted_implied_vol` modélise cette dernière à partir
+de la réalisée, par deux constantes documentées dans `config.py` :
+
+| Réglage | Défaut | Ce qu'il représente |
+|---|---|---|
+| `OPTIONS_IMPLIED_VOL_SPREAD` | `0.02` | Écart implicite − réalisée à la monnaie (prime de risque de variance) |
+| `OPTIONS_VOL_SKEW_SLOPE` | `0.025` | Supplément par écart-type de log-moneyness **sous** la monnaie (skew) |
+
+Le skew n'est appliqué **qu'aux strikes sous la monnaie**, délibérément : un
+skew réel décroît aussi du côté haut, mais le reproduire face à une loi de S_T
+lognormale à volatilité unique fabriquerait un edge de bord de grille sans
+rapport avec la thèse (constaté en test : une thèse à +0,5 % ouvrait une
+position à 22 fois le cours). La correction ne peut ainsi que rendre les
+options **plus** chères, jamais moins.
+
+Ce sont des **hypothèses, pas des mesures** — meilleures que celle qu'elles
+remplacent (écart nul, skew nul), mais à calibrer sur les snapshots réels dès
+qu'il y en a assez : `make slippage` et les archives de `08`. Les mettre à `0`
+reproduit exactement le comportement d'avant.
+
+### 2. Deux volatilités, pas une
+
+La stratégie « espérance de gain » distingue désormais :
+
+- **σ_P** (volatilité réalisée) — la loi de S_T : espérance, variance, Kelly ;
+- **σ_Q** (implicite cotée, ou modélisée) — le prix payé.
+
+Les confondre, comme avant, revenait à supposer que le titre bougera d'autant
+que le marché le facture : acheter de la volatilité devenait gratuit par
+construction, et la prime de risque de variance disparaissait du calcul. Les
+séparer la rend visible dans l'espérance nette, si bien qu'un contrat trop cher
+est écarté par la seule condition d'existence de Kelly (`E[R] > 0`) — sans
+filtre ajouté.
+
+### 3. Le Sharpe déflaté du nombre d'essais
+
+Un grid-search classé sur un unique chemin historique retient la combinaison
+qui colle le mieux à *ce* chemin. Son Sharpe est celui d'un **maximum sur N
+tirages**, et le maximum de N tirages n'est pas nul même quand la vraie
+performance l'est.
+
+| Essais | Sharpe « gratuit » sur 10 ans |
+|---|---|
+| 8 | 0,46 |
+| 16 | 0,57 |
+| 64 (la grille de `11`) | 0,75 |
+| 200 | 0,87 |
+
+`metrics.json` porte maintenant `n_trials`, `sharpe_noise_floor` (le plancher
+ci-dessus, annualisé) et `deflated_sharpe_ratio` (la probabilité que la
+performance soit réelle, corrigée de l'asymétrie et des queues). Les cinq
+optimiseurs transmettent leur taille de grille automatiquement ; pour un run
+isolé qui reprend le meilleur point d'une recherche :
+
+```bash
+python 10_backtest_options.py --strategy ... --n-trials 64
+python 14_audit_backtest.py     # section 3c : Sharpe affiché vs plancher de bruit
+```
+
+## Le signal de valorisation
+
+### Agrégation des multiples sectoriels
+
+Deux choix, autrefois implicites, désormais explicites et commutables — même
+mécanique que `OPTIONS_MULTIPLES_GAP_BASIS`, pour rejouer un run ancien et pour
+rendre l'A/B possible sans toucher au code.
+
+| Réglage | Défaut | Alternative |
+|---|---|---|
+| `SECTOR_MULTIPLE_AGGREGATOR` | `harmonic` | `median` (historique) |
+| `MULTIPLE_COMBINATION` | `tiers` | `flat` (historique) |
+
+**Moyenne harmonique.** Un multiple est un ratio ; la grandeur qu'on veut
+moyenner est son inverse, le rendement. La moyenne harmonique des P/E d'un
+secteur, c'est l'inverse du rendement bénéficiaire moyen — une quantité qui a un
+sens, là où la moyenne des P/E est mécaniquement tirée vers le haut. Baker &
+Ruback (1999) montrent que c'est l'estimateur de variance minimale d'un ratio
+sous erreur multiplicative. C'est un **raffinement**, pas un correctif : la
+médiane n'était pas fausse.
+
+Contrepartie : les bornes basses de `MULTIPLE_PLAUSIBLE_RANGE` ne sont plus à
+zéro. Un multiple minuscule devient un rendement gigantesque et tire toute la
+moyenne harmonique, là où la médiane l'ignorait. Les planchers retenus
+(EV/EBITDA ≥ 1, P/E ≥ 1, EV/Sales ≥ 0,05) n'écartent que ce qui est presque
+certainement une erreur d'extraction pour une société de l'indice.
+
+**Hiérarchie de fiabilité.** La médiane des trois prix implicites traitait
+EV/EBITDA, P/E et EV/Sales comme également informatifs. Liu, Nissim & Thomas
+(2002) mesurent le contraire : les multiples de résultats dominent nettement,
+les multiples de chiffre d'affaires sont les moins précis, de loin. Dans une
+médiane à trois, quand EV/EBITDA et P/E divergent, c'est donc EV/Sales — le
+moins fiable — qui tranchait.
+
+Le mode `tiers` n'utilise que le **meilleur rang disponible** : les multiples de
+résultats quand il y en a, EV/Sales seulement à défaut. Une hiérarchie, pas une
+pondération — pondérer laisserait EV/Sales départager dès qu'il tombe entre les
+deux autres. Le repli fonctionne là où il doit : une entreprise en perte n'a ni
+P/E ni souvent EBITDA positif, et c'est précisément le cas où un multiple de
+chiffre d'affaires est la seule valorisation possible.
+
+### Le multiple mérité : un test avant tout branchement
+
+`warranted_multiple.py` estime, par régression en coupe sur les fondamentaux
+(marge, croissance, levier, ROIC, taille — tous déjà dans le pipeline), le
+multiple que ces fondamentaux **justifient** :
+
+```
+ln(M_i) = a + b·x_i + e_i        M_mérité_i = exp(a + b·x_i)
+```
+
+L'idée (Bhojraj & Lee, 2002) : une décote sur la médiane sectorielle est le plus
+souvent *méritée*, et seul le **résidu** est un candidat à la mispricing. C'est
+la même chose que dit Fama-French (2015) en trouvant HML redondant une fois la
+rentabilité incluse.
+
+**Le module n'est branché nulle part, délibérément.** Avant de compliquer `06b`,
+il faut savoir si le multiple mérité prédit mieux — et cela se tranche **sans
+backtest** :
+
+```bash
+make merite                                  # EV/EBITDA, coupe complète
+make merite MULTIPLE=P/E GROUPING=secteur
+```
+
+`15_test_multiple_merite.py` compare, **hors échantillon**, l'erreur de
+prédiction des deux méthodes sur les mêmes pairs point-in-time (la ligne évaluée
+est exclue de ses propres pairs, comme `06b` l'exclut déjà de sa médiane). Il
+rapporte l'erreur absolue médiane en log — la convention de Liu-Nissim-Thomas —
+et conclut explicitement s'il faut brancher ou non.
+
+Le regroupement est la vraie décision : `--grouping millesime` (défaut) ajuste
+sur la coupe complète de l'indice avec indicatrices sectorielles, parce qu'une
+régression à cinq régresseurs demande des dizaines d'observations et qu'un
+secteur × millésime en compte rarement plus de vingt. `--grouping secteur`
+reste disponible et journalise ce qu'il doit abandonner.
+
+Si le test conclut **non**, il n'y a rien à brancher — et c'est une réponse,
+pas un échec.
+
 ## Configuration requise
 
 ```bash

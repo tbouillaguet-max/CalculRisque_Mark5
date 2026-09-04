@@ -207,60 +207,108 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         `dropped_expected_value_negative_count` est le chiffre qui dit si le
         critère MORD : à zéro, la contrainte d'espérance positive n'a jamais
         rien écarté et la stratégie se réduit à sa grille ; très élevé, le
-        signal produit surtout des thèses que le marché facture déjà."""
-        vol_total = self._n_implied_vol + self._n_realized_vol
+        signal produit surtout des thèses que le marché facture déjà. C'est
+        aussi lui qu'il faut regarder après la séparation sigma_P / sigma_Q :
+        faire payer l'implicite plutôt que la réalisée doit le faire MONTER,
+        et de combien dit ce que coûtait l'ancienne hypothèse.
+
+        LES DEUX COMPTEURS DE VOLATILITÉ NE S'EXCLUENT PLUS. Ils portaient
+        autrefois sur une seule grandeur (« a-t-on utilisé l'implicite ou la
+        réalisée ? »), d'où un pourcentage. Ils comptent désormais deux choses
+        indépendantes, une par mesure : la réalisée sert TOUJOURS de loi de
+        S_T, et l'implicite cotée sert au prix quand un snapshot en donne une.
+        Leur somme n'a donc plus de sens, et le pourcentage qui la prenait
+        pour dénominateur a été remplacé par une part rapportée au nombre
+        d'ÉVALUATIONS -- la seule base qui reste une partition."""
         return {
             "expected_value_evaluations_count": self._n_evaluations,
             "dropped_expected_value_negative_count": self._n_negative_edge,
+            # Part des évaluations dont la PRIME est venue d'une implicite
+            # réellement cotée, le reste étant modélisé depuis la réalisée
+            # (options_pricing.quoted_implied_vol).
             "expected_value_implied_vol_count": self._n_implied_vol,
-            "expected_value_realized_vol_count": self._n_realized_vol,
-            "expected_value_implied_vol_pct": (
-                float(self._n_implied_vol / vol_total * 100) if vol_total else None
+            "expected_value_market_priced_pct": (
+                float(self._n_implied_vol / self._n_evaluations * 100)
+                if self._n_evaluations else None
             ),
+            # Volatilité de la LOI de S_T : réalisée, ou repli quand
+            # l'historique est trop court.
+            "expected_value_realized_vol_count": self._n_realized_vol,
             "expected_value_fallback_vol_count": self._n_fallback_vol,
             "expected_value_quoted_grid_count": self._n_quoted_grid,
             "expected_value_theoretical_grid_count": self._n_theoretical_grid,
         }
 
     # ------------------------------------------------------------------ #
-    def _volatility(self, symbol: str, option_type: str, tenor_days: int) -> float:
-        """Volatilité de sélection : IMPLICITE réellement cotée si disponible,
-        RÉALISÉE sinon, repli partagé avec le moteur en dernier recours.
+    def _physical_volatility(self, symbol: str) -> float:
+        """Volatilité de la DISTRIBUTION de S_T -- la réalisée du titre.
 
-        L'implicite est préférée parce que c'est elle qui fixe le PRIX auquel
-        on achètera : sélectionner sur une réalisée de 25 % un contrat que le
-        marché price à 45 % d'implicite reviendrait à calculer une espérance
-        sur une distribution que le vendeur ne partage pas -- et à trouver
-        systématiquement des « bonnes affaires » là où le marché anticipe
-        simplement plus de mouvement.
+        DEUX VOLATILITÉS, ET C'EST TOUT L'ENJEU. Le calcul d'espérance en fait
+        intervenir deux, qui ne sont pas la même grandeur et qu'il serait faux
+        de confondre :
 
-        À défaut, la réalisée est celle du REPRICING (même fenêtre, mêmes
-        bornes que options_engine._repricing_vol) : choisir un contrat sur une
-        volatilité que le repricing du lendemain ne reprendrait pas ferait
-        apparaître un saut de P&L sans qu'aucun prix n'ait bougé."""
+            sigma_P (ici)  : à quelle vitesse le TITRE bouge réellement. C'est
+                             elle qui gouverne la loi de S_T, donc E[payoff],
+                             la variance, et le taux de croissance de Kelly.
+            sigma_Q (plus bas) : à quelle volatilité le contrat se PAIE. C'est
+                             un prix de marché, pas une prévision qu'on
+                             partage.
+
+        La version précédente n'en utilisait qu'une, en préférant l'implicite
+        quand elle existait. Le raisonnement d'alors n'était pas absurde --
+        « ne pas trouver de bonnes affaires là où le marché anticipe plus de
+        mouvement » -- mais il jetait avec l'eau du bain le seul endroit où la
+        PRIME DE RISQUE DE VARIANCE pouvait apparaître : si l'on suppose que
+        le titre bougera d'autant que le marché le facture, alors acheter de la
+        volatilité est gratuit par construction, et l'écart implicite/réalisée
+        ne coûte jamais rien.
+
+        Les séparer le rend au contraire visible là où il doit l'être, dans
+        l'espérance nette : un contrat coté 45 % d'implicite sur un titre qui
+        en réalise 25 % voit son espérance calculée sous 25 % et sa prime sous
+        45 %. L'edge fond, et la condition d'existence de Kelly (E[R] > 0)
+        écarte la ligne d'elle-même. C'est le prédicteur de rendement d'options
+        établi par Goyal & Saretto (JFE, 2009), obtenu sans filtre ajouté :
+        il tombe du calcul.
+
+        Même fenêtre et mêmes bornes que options_engine._repricing_vol : choisir
+        un contrat sur une volatilité que le repricing du lendemain ne
+        reprendrait pas ferait apparaître un saut de P&L sans qu'aucun prix
+        n'ait bougé."""
+        contexte = self.market_context
+        if contexte is not None:
+            realisee = contexte.realized_vol(symbol)
+            if realisee is not None and realisee > 0:
+                self._n_realized_vol += 1
+                return realisee
+
+        # Historique trop court : on se replie sur la MÊME volatilité que le
+        # moteur appliquera au pricing d'entrée (config.OPTIONS_FALLBACK_VOL).
+        # Écarter la ligne serait plus prudent en apparence, mais introduirait
+        # un biais de sélection vers les seuls titres à long historique --
+        # alors que le moteur, lui, sait parfaitement ouvrir la position.
+        self._n_fallback_vol += 1
+        return config.OPTIONS_FALLBACK_VOL
+
+    def _market_implied_vol(self, symbol: str, option_type: str, tenor_days: int):
+        """Implicite RÉELLEMENT COTÉE (sigma_Q observée), ou None.
+
+        Résolue UNE FOIS par évaluation, pas une fois par strike : le snapshot
+        est indexé par (symbole, sens, échéance) et rendrait la même valeur
+        pour toute la grille -- l'interroger dans la boucle gonflerait le
+        compteur d'un facteur égal au nombre de strikes candidats, et ferait
+        mentir `expected_value_implied_vol_count`.
+
+        Quand elle existe, elle prime sur toute modélisation : c'est un prix de
+        marché observé, et il porte déjà le skew du jour."""
         contexte = self.market_context
         if contexte is None:
-            self._n_fallback_vol += 1
-            return config.OPTIONS_FALLBACK_VOL
-
+            return None
         implicite = contexte.implied_vol(symbol, option_type, float(tenor_days))
         if implicite is not None and implicite > 0:
             self._n_implied_vol += 1
-            return implicite
-
-        realisee = contexte.realized_vol(symbol)
-        if realisee is not None and realisee > 0:
-            self._n_realized_vol += 1
-            return realisee
-
-        # Ni implicite cotée, ni historique assez long : on se replie sur la
-        # MÊME volatilité que le moteur appliquera au pricing d'entrée
-        # (config.OPTIONS_FALLBACK_VOL). Écarter la ligne serait plus prudent
-        # en apparence, mais introduirait un biais de sélection vers les seuls
-        # titres à long historique -- alors que le moteur, lui, sait
-        # parfaitement ouvrir la position, au même prix.
-        self._n_fallback_vol += 1
-        return config.OPTIONS_FALLBACK_VOL
+            return float(implicite)
+        return None
 
     def _strikes(
         self, symbol: str, option_type: str, spot: float, sigma: float, t_years: float,
@@ -311,12 +359,16 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         tenor_days = self.tenor_days
         t_years = tenor_days / 365.0
 
-        sigma = self._volatility(symbol, option_type, tenor_days)
+        # sigma_P : la loi de S_T. C'est elle que reçoit optimal_strike, donc
+        # elle qui gouverne E[payoff], la variance et le taux de croissance.
+        sigma_physique = self._physical_volatility(symbol)
         mu = expected_value.convergence_drift(spot, theoretical, t_years, self.convergence_fraction)
         if mu is None:
             return None
 
-        strikes = self._strikes(symbol, option_type, spot, sigma, t_years, tenor_days)
+        # La grille de strikes candidats est une question de DISTRIBUTION (où
+        # le titre peut plausiblement aller), donc sigma_P là aussi.
+        strikes = self._strikes(symbol, option_type, spot, sigma_physique, t_years, tenor_days)
         if not strikes:
             return None
 
@@ -327,11 +379,24 @@ class ValuationGapExpectedValueOptionsStrategy(ValuationGapMultiplesOptionsStrat
         contexte = self.market_context
         r, q = contexte.pricing_context(symbol) if contexte is not None else (config.RISK_FREE_RATE, 0.0)
 
+        # sigma_Q : le PRIX. À défaut d'implicite cotée, elle est MODÉLISÉE par
+        # strike -- le skew en dépend, et c'est ce qui fait payer sa juste prime
+        # au strike bas d'une thèse baissière, là où l'ancienne version
+        # appliquait la même volatilité de part et d'autre du cours.
+        iv_marche = self._market_implied_vol(symbol, option_type, tenor_days)
+
+        def prime(strike: float) -> float:
+            sigma_cotee = (
+                iv_marche if iv_marche is not None
+                else options_pricing.quoted_implied_vol(sigma_physique, spot, strike, t_years)
+            )
+            return options_pricing.bs_price(
+                spot, strike, t_years, sigma_cotee, option_type, r=r, q=q)
+
         self._n_evaluations += 1
         resultat = expected_value.optimal_strike(
-            spot, mu, sigma, t_years, option_type, strikes, r=r, q=q, criterion="kelly",
-            premium_fn=lambda strike: options_pricing.bs_price(
-                spot, strike, t_years, sigma, option_type, r=r, q=q),
+            spot, mu, sigma_physique, t_years, option_type, strikes, r=r, q=q,
+            criterion="kelly", premium_fn=prime,
         )
         if resultat is None:
             self._n_negative_edge += 1

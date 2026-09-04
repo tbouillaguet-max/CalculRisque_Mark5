@@ -231,7 +231,24 @@ def test_min_resize_relative_pct_reste_un_second_filet_apres_epsilon(monkeypatch
     """Δ franchit largement ε, mais min_resize_relative_pct=99% bloque le
     micro-ajustement en NOMBRE DE CONTRATS -- le second filet documenté dans
     la refonte reste actif après le premier."""
-    appels = _spy_open_or_resize(monkeypatch)
+    # Un seul espion, qui enregistre le jour de chaque appel ET la variation de
+    # taille qu'il produit sur AAA. Le premier appel est l'OUVERTURE : il n'a
+    # pas de position antérieure et n'alimente donc pas `deltas`, qui ne porte
+    # que sur les redimensionnements -- ce que le filtre est censé bloquer.
+    appels: list[tuple[str, pd.Timestamp]] = []
+    deltas: list[float] = []
+    vrai_resize = OptionsBacktestEngine._open_or_resize
+
+    def espion(self, symbol, option_type, target_dollar, spot, today, reason, **kwargs):
+        appels.append((symbol, today))
+        avant = self.positions["AAA"].contracts if symbol == "AAA" and "AAA" in self.positions else None
+        resultat = vrai_resize(self, symbol, option_type, target_dollar, spot, today, reason, **kwargs)
+        if avant is not None:
+            deltas.append(self.positions["AAA"].contracts - avant)
+        return resultat
+
+    monkeypatch.setattr(OptionsBacktestEngine, "_open_or_resize", espion)
+
     # min_resize_relative_pct compare au delta BRUT (target_contracts -
     # existing.contracts), avant toute troncature par max_trade_dollar/le
     # cash disponible : avec weight_cap_pct=0, ce delta brut est énorme ici
@@ -249,16 +266,18 @@ def test_min_resize_relative_pct_reste_un_second_filet_apres_epsilon(monkeypatch
     aaa_jours = [j for s, j in appels if s == "AAA"]
     # _open_or_resize est bien RETENTÉ (le filtre ε a laissé passer l'ordre)...
     assert len(aaa_jours) == 2
-    # ...mais min_resize_relative_pct='99%' est conçu pour bloquer un
-    # changement de conviction qui ne représente pas 99% des contrats
-    # détenus : la taille de la position ne doit donc pas avoir bougé au même
-    # degré que dans le test sans second filet.
-    engine_sans_filet, _ = _moteur_six_candidats(
-        theorique_second_signal_aaa=500.0, rebalance_log_gap_threshold=0.15,
-        min_resize_relative_pct=None,
+    # ...et le second filet doit avoir empêché ce second appel de changer la
+    # taille de la position.
+    #
+    # MESURÉ SUR L'APPEL LUI-MÊME, et non sur le nombre de contrats en fin de
+    # run. Ce dernier ne dit rien du filtre : le delta brut (~1300% des
+    # contrats détenus) est de toute façon tronqué par le cash disponible, si
+    # bien que les deux variantes terminent à un contrat près -- l'ancienne
+    # assertion comparait donc du bruit d'arrondi, et basculait au moindre
+    # changement de prix d'entrée.
+    assert deltas == [pytest.approx(0.0)], (
+        "le second appel n'aurait pas dû redimensionner la position"
     )
-    engine_sans_filet.run()
-    assert engine.positions["AAA"].contracts < engine_sans_filet.positions["AAA"].contracts
 
 
 # --------------------------------------------------------------------------- #
