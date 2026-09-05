@@ -88,9 +88,25 @@ from run_pipeline_quarterly import (
 
 logger = logging.getLogger("run_pipeline_daily")
 
-# Plus court que les 2 h du run trimestriel : un run quotidien qui déborde sur
-# la séance suivante n'a plus d'intérêt, et le cron du lendemain le remplacera.
+# Délai des étapes de CALCUL (05/06/06b/07), qui travaillent sur le cache local
+# et se comptent en secondes ou en minutes. Plus court que les 2 h du run
+# trimestriel : une étape de calcul qui dépasse l'heure est bloquée, pas lente.
 STEP_TIMEOUT_DEFAULT = 3600
+
+# Délai des étapes qui interrogent IBKR TICKER PAR TICKER, à une cadence imposée
+# par le courtier et non par nous : 03b s'impose 11 s entre deux requêtes
+# historiques (limite de ~55 requêtes / 10 min), donc 504 tickers prennent
+# ~94 minutes AU MIEUX -- et l'univers complet, radiées comprises, bien
+# davantage.
+#
+# Le défaut d'une heure rendait ces étapes structurellement incapables
+# d'aboutir : interrompue à 60 minutes, 03b repartait du premier ticker à
+# chaque tentative. Trois heures pour zéro progrès.
+#
+# 6 h laisse la place à un rattrapage complet (cache vieux de plusieurs
+# semaines, ou premier run) tout en gardant une borne : en régime établi, un
+# run quotidien saute les tickers déjà à jour et ne dure que quelques minutes.
+STEP_TIMEOUT_IBKR = 6 * 3600
 
 # Fenêtre de fraîcheur des dépôts SEC. 7 jours plutôt que les 30 du run
 # trimestriel : on veut qu'un 10-K/10-Q déposé aujourd'hui entre dans le signal
@@ -113,6 +129,7 @@ def daily_steps(filings_refresh_days: int) -> List[Step]:
         Step(
             "03b_recuperation_cours_quotidiens.py",
             needs_gateway=True, degraded_args=("--skip-ibkr",), accepts_limit=True,
+            timeout=STEP_TIMEOUT_IBKR,
         ),
         Step("04_recuperation_10k.py", required=False, accepts_limit=True, extra_args=refresh),
         Step("04b_recuperation_10q.py", required=False, accepts_limit=True, extra_args=refresh),
@@ -122,7 +139,10 @@ def daily_steps(filings_refresh_days: int) -> List[Step]:
         Step("06b_calcul_valorisation_combinee.py"),
         Step("07_calcul_dcf.py"),
         Step("07b_validation_qualitative.py", required=False, accepts_limit=True),
-        Step("08_recuperation_options.py", required=False, needs_gateway=True),
+        # Même cadence IBKR que 03b, sur des chaînes d'options bien plus
+        # volumineuses que des cours : même délai généreux.
+        Step("08_recuperation_options.py", required=False, needs_gateway=True,
+             timeout=STEP_TIMEOUT_IBKR),
     ]
 
 

@@ -131,6 +131,24 @@ class Step:
                    (le run quotidien y met --refresh-days pour resserrer la
                    fenêtre de fraîcheur SEC). Vides pour toutes les étapes du
                    run trimestriel, qui gardent leurs défauts.
+    timeout      : délai maximal PROPRE à cette étape, en secondes. None = le
+                   délai global de la ligne de commande.
+
+                   POURQUOI UN DÉLAI PAR ÉTAPE. Les étapes n'ont pas le même
+                   ordre de grandeur, et un délai unique est forcément faux
+                   pour l'une ou pour l'autre : 05/06/06b/07 calculent en
+                   quelques secondes sur le cache, tandis que 03b et 08
+                   interrogent IBKR ticker par ticker à une cadence IMPOSÉE
+                   (03b_recuperation_cours_quotidiens.HIST_REQUEST_PAUSE_SEC =
+                   11 s, soit la limite de ~55 requêtes par 10 minutes). Un
+                   univers de 504 tickers y prend donc 504 x 11 s ~= 94
+                   minutes AU MIEUX, et davantage sur l'univers complet avec
+                   les radiées.
+
+                   Un délai global d'une heure rendait ces étapes
+                   structurellement incapables d'aboutir : interrompues à 60
+                   minutes, relancées depuis le premier ticker, interrompues à
+                   nouveau. Trois tentatives, trois heures, aucun progrès.
     """
     script: str
     required: bool = True
@@ -138,6 +156,7 @@ class Step:
     needs_gateway: bool = False
     degraded_args: tuple = ()
     extra_args: tuple = ()
+    timeout: Optional[int] = None
 
 
 LIVE_STEPS: List[Step] = [
@@ -148,7 +167,11 @@ LIVE_STEPS: List[Step] = [
     Step("06b_calcul_valorisation_combinee.py"),
     Step("07_calcul_dcf.py"),
     Step("07b_validation_qualitative.py", required=False, accepts_limit=True),
-    Step("08_recuperation_options.py", required=False, needs_gateway=True),
+    # Interroge IBKR contrat par contrat, à la cadence imposée par le courtier :
+    # sa durée est dictée par la taille de l'univers retenu, pas par la machine.
+    # Le délai global de 2 h la coupait sur un univers large (cf. Step.timeout).
+    Step("08_recuperation_options.py", required=False, needs_gateway=True,
+         timeout=6 * 3600),
 ]
 
 REPLAY_STEPS: List[Step] = [
@@ -273,12 +296,17 @@ def _stream_subprocess(cmd: List[str], cwd: Optional[Path], log_path: Path, time
 def run_step(step: Step, extra_args: List[str], report: RunReport, retries: int, timeout: int, cwd: Optional[Path] = None) -> bool:
     """Exécute une étape, avec réessais et backoff. Retourne True si elle a
     réussi. Une étape requise en échec lève RuntimeError (le pipeline
-    s'arrête) ; une étape optionnelle est simplement journalisée."""
+    s'arrête) ; une étape optionnelle est simplement journalisée.
+
+    `timeout` est le délai GLOBAL ; une étape qui déclare le sien (Step.timeout)
+    l'emporte, parce qu'elle seule sait ce que sa cadence lui impose."""
+    timeout = step.timeout or timeout
     cmd = [sys.executable, str(REPO_ROOT / step.script), *extra_args]
     entry = {
         "script": step.script, "required": step.required, "args": extra_args,
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "attempts": 0, "status": "failed", "returncode": None,
+        "timeout_seconds": timeout,
         "log": str((report.directory / f"{step.script}.log").relative_to(config.BASE_DIR)),
     }
     started = time.monotonic()
