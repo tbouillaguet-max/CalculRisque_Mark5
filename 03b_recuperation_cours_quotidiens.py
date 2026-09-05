@@ -70,6 +70,24 @@ RETRY_PER_TICKER = 3
 HIST_REQUEST_PAUSE_SEC = 11  # même pacing IBKR que 03 (~55 req/10min sur reqHistoricalData)
 STOOQ_REQUEST_PAUSE_SEC = 1.0
 
+# Sauvegarde intermédiaire tous les N tickers.
+#
+# POURQUOI. À 11 s par ticker (pacing IBKR ci-dessus), un univers de 504 tickers
+# demande ~94 minutes, et l'univers complet avec les radiées bien davantage.
+# N'écrire qu'à la toute fin faisait perdre l'INTÉGRALITÉ du travail à la
+# moindre interruption -- délai de l'orchestrateur, Ctrl-C, coupure du Gateway,
+# mise en veille de la machine. Constaté en run réel : 322 tickers récupérés en
+# une heure, process tué, parquet jamais écrit, et la tentative suivante
+# repartant du premier ticker parce que le cache n'avait pas bougé.
+#
+# Avec un point de reprise, une interruption ne coûte au pire que N tickers, et
+# la relance SAUTE ce qui est déjà en cache (determine_fetch_from lit le
+# parquet) : le rattrapage progresse même en plusieurs fois.
+#
+# 25 tickers ~= 4,6 minutes de collecte, pour une réécriture du parquet qui se
+# compte en secondes. Le surcoût est négligeable devant ce qu'il assure.
+CHECKPOINT_EVERY_TICKERS = 25
+
 STOOQ_URL = "https://stooq.com/q/d/l/?s={symbol}&d1={d1}&d2={d2}&i=d"
 STOOQ_HEADERS = {"User-Agent": "options-pipeline/1.0 (contact: voir SEC_CONTACT_EMAIL dans 04_recuperation_10k.py)"}
 
@@ -205,6 +223,34 @@ def to_stooq_symbol(ric: str) -> str:
     utilise un tiret -- deux conventions différentes, d'où une fonction
     séparée plutôt que de réutiliser to_ib_symbol."""
     return ric.strip().lower().replace(".", "-") + ".us"
+
+
+def ecrire_cours(existing: pd.DataFrame, all_rows: list, output_file: Path) -> pd.DataFrame:
+    """Fusionne le cache existant et les lignes collectées, et écrit le
+    parquet. Rend le tableau écrit.
+
+    ÉCRITURE ATOMIQUE (fichier temporaire puis remplacement). Cette fonction
+    est appelée en cours de collecte, donc à des moments où le process peut
+    être tué -- délai de l'orchestrateur, Ctrl-C, arrêt de la machine. Écrire
+    directement dans le fichier de destination exposerait le cache, qui
+    représente des heures de collecte, à rester tronqué. `Path.replace` est
+    atomique sur un même système de fichiers, y compris sous Windows.
+
+    Idempotente : la déduplication sur (symbol, date) fait qu'appeler cette
+    fonction dix fois avec un `all_rows` qui s'allonge produit le même
+    résultat qu'un unique appel final."""
+    df_new = pd.DataFrame(all_rows, columns=OUTPUT_COLUMNS) if all_rows else pd.DataFrame(columns=OUTPUT_COLUMNS)
+    combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
+    combined = (
+        combined.sort_values(["symbol", "date"])
+        .drop_duplicates(subset=["symbol", "date"], keep="last")
+        .reset_index(drop=True)
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_file.with_suffix(output_file.suffix + ".tmp")
+    combined.to_parquet(tmp, index=False, engine="pyarrow")
+    tmp.replace(output_file)
+    return combined
 
 
 def determine_fetch_from(existing: pd.DataFrame, symbol: str, start_date: date, today: date, refresh_days: int) -> Optional[date]:
@@ -411,6 +457,7 @@ def main() -> None:
     all_rows: list[dict] = []
     ok_count, fail_count = 0, 0
     source_counts: dict[str, int] = {}
+    dernier_point_de_reprise = 0
 
     try:
         for idx, (row, fetch_from) in enumerate(to_process):
@@ -425,6 +472,25 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 fail_count += 1
                 logger.warning("  -> ECHEC (ni IBKR ni Stooq) pour %s : %s -- TROU DE COUVERTURE.", symbol, exc)
+
+            # Point de reprise : ce qui est écrit ici sera SAUTÉ à la relance
+            # (determine_fetch_from lit le parquet), donc une interruption ne
+            # coûte au pire que CHECKPOINT_EVERY_TICKERS tickers.
+            traites = idx + 1 - dernier_point_de_reprise
+            if all_rows and traites >= CHECKPOINT_EVERY_TICKERS:
+                ecrire_cours(existing, all_rows, output_file)
+                logger.info(
+                    "  [point de reprise] %d/%d tickers traités, %d lignes en cache.",
+                    idx + 1, len(to_process), len(all_rows),
+                )
+                dernier_point_de_reprise = idx + 1
+    except KeyboardInterrupt:
+        # Interruption VOLONTAIRE : on sauve ce qui a été collecté avant de
+        # ressortir, plutôt que de jeter jusqu'à 25 tickers de travail.
+        logger.warning("Interruption demandée -- sauvegarde de ce qui a été collecté...")
+        if all_rows:
+            ecrire_cours(existing, all_rows, output_file)
+        raise
     finally:
         if ib is not None:
             ib.disconnect()
@@ -442,16 +508,11 @@ def main() -> None:
             logger.info("Rien de nouveau à écrire : fichier existant conservé tel quel (%s).", output_file)
         return
 
-    df_new = pd.DataFrame(all_rows)
-    combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
-    combined = (
-        combined.sort_values(["symbol", "date"])
-        .drop_duplicates(subset=["symbol", "date"], keep="last")
-        .reset_index(drop=True)
+    combined = ecrire_cours(existing, all_rows, output_file)
+    logger.info(
+        "Fichier écrit : %s (%d lignes au total, %d nouvelles/mises à jour ce run).",
+        output_file, len(combined), len(all_rows),
     )
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(output_file, index=False, engine="pyarrow")
-    logger.info("Fichier écrit : %s (%d lignes au total, %d nouvelles/mises à jour ce run).", output_file, len(combined), len(df_new))
 
 
 if __name__ == "__main__":
