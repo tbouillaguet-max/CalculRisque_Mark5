@@ -44,6 +44,7 @@ equity_curve = data["equity_curve"]
 positions_history = data["positions_history"]
 trades = data["trades"]
 signals_history = data["signals_history"]
+executions = data["executions"]
 metrics = data["metrics"]
 run_config = data["run_config"]
 
@@ -122,14 +123,30 @@ with tab_composition:
 # Journal achats / ventes : quand et pourquoi
 # ============================================================================
 st.markdown("### Journal des achats / ventes")
-st.caption(
-    "Les ventes reprennent la raison d'exécution du moteur (stop-loss, take-profit, "
-    "rebalancement, expiration, disparition des données). Les achats sont reconstruits "
-    "à partir des positions détenues (le moteur ne loggue explicitement que les ventes) "
-    "et rattachés au dernier signal de valorisation connu à cette date."
-)
 
-log = build_trade_log(positions_history, trades, signals_history)
+log = build_trade_log(positions_history, trades, signals_history, executions)
+
+# La provenance N'EST PAS un détail : le journal des exécutions est fidèle
+# (une ligne par ordre réellement passé), la reconstruction ne l'est pas. Les
+# annoncer pareil, c'était laisser croire à des quantités exactes là où il n'y
+# avait qu'une différence de positions détenues d'un jour sur l'autre.
+if log.attrs.get("source_exacte"):
+    st.caption(
+        "Une ligne par ordre réellement exécuté par le moteur (`executions.parquet`), "
+        "achats **et** ventes, exprimés en **contrats**. Les quantités s'y conservent : "
+        "sur un symbole donné, les achats couvrent les ventes, au solde encore détenu près. "
+        "Le P&L et le strike des ventes proviennent de `trades.parquet`."
+    )
+else:
+    st.caption(
+        "⚠️ Ce run n'a pas de journal d'exécutions (`executions.parquet`) : seules les "
+        "ventes sont loguées par le moteur, et **les achats sont reconstruits** par "
+        "différence de quantité détenue d'un jour sur l'autre, rattachés au dernier "
+        "signal de valorisation connu. Un aller-retour intervenu entre deux "
+        "enregistrements n'y laisse donc aucune trace, et les quantités affichées ne "
+        "se conservent pas exactement. Relance le backtest pour obtenir le journal exact."
+    )
+
 if log.empty:
     st.info("Aucun achat/vente enregistré sur ce run.")
 else:
@@ -154,8 +171,16 @@ else:
             "date": st.column_config.DateColumn("Date"),
             "symbol": st.column_config.TextColumn("Symbole"),
             "action": st.column_config.TextColumn("Action"),
-            "quantite": st.column_config.NumberColumn("Quantité", format="%.2f"),
-            "prix": st.column_config.NumberColumn("Prix", format="%.2f"),
+            # Unité explicite : c'est en la laissant implicite qu'on a pu
+            # afficher des ventes en actions sous-jacentes (contrats x 100)
+            # en regard d'achats en contrats.
+            "quantite": st.column_config.NumberColumn(
+                "Quantité (contrats)" if kind == "options" else "Quantité (actions)",
+                format="%.2f",
+            ),
+            "prix": st.column_config.NumberColumn(
+                "Prime" if kind == "options" else "Prix", format="%.2f",
+            ),
             "raison": st.column_config.TextColumn("Pourquoi", width="large"),
             "pnl": st.column_config.NumberColumn("P&L", format="%.2f"),
             "return_pct": st.column_config.NumberColumn("Rendement %", format="%.1f"),
