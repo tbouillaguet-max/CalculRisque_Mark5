@@ -1,0 +1,1292 @@
+"""
+Récupération des chaînes d'options (ITM / ATM / OTM) via l'API IBKR
+(ib_insync), UNIQUEMENT pour les entreprises dont le cours de bourse
+s'écarte significativement de leur valeur théorique.
+
+Dernière étape du pipeline : 03 (cours) et 04 (10-K) alimentent 05/06
+(multiples) et 07 (DCF), qui calcule pour chaque entreprise l'écart en %
+entre cours de bourse et valeur théorique (Écart_DCF_vs_Cours_%). Ce script
+ne récupère les options que pour les entreprises dont cet écart dépasse
+config.VALUATION_GAP_THRESHOLD_PCT (±20% par défaut) : la récupération
+d'options via IBKR est lente et rate-limitée, inutile de la lancer sur les
+~500 entreprises de l'univers si seule une fraction montre une valorisation
+de marché significativement différente de sa valeur théorique.
+Voir filter_universe_by_valuation_gap() ; --skip-valuation-filter retrouve
+l'ancien comportement (options pour tout l'univers fourni).
+
+Filtres appliqués sur les contrats eux-mêmes (inchangés) :
+    - expiration à plus de 9 mois (aucun plafond en haut)
+    - strikes compris entre -30% et +30% du dernier prix de clôture du sous-jacent
+
+Conçu pour un compte SANS abonnement de données de marché payant : le script
+utilise des données DIFFÉRÉES-FIGÉES (delayed-frozen, market data type 4) et
+est prévu pour être lancé APRÈS la clôture des marchés US.
+
+Corrections / changements par rapport à RecuperationOptionMark9 :
+    - Exchange map réduite aux places US (config.EXCHANGE_MAP). L'univers US
+      étant homogène (contrairement au STOXX 600 multi-pays), toute valeur
+      non mappée est routée en SMART par défaut plutôt qu'ignorée : la
+      logique de blacklist d'exchange (v9, conçue pour les abonnements
+      manquants par pays en Europe) est conservée pour les vrais refus de
+      permission IBKR, mais ne sert plus à filtrer des pays entiers.
+    - Bug corrigé : le fichier de sortie était écrit en dur dans
+      /option/calcul/... (ignorant --output-dir). Écrit maintenant dans
+      config.OPTIONS_FILE.
+    - Lit config.UNIVERSE_FILE par défaut (au lieu d'un chemin CSV STOXX 600 en dur).
+    - NOUVEAU : passage en dernière étape du pipeline (était l'étape 04) et
+      filtre par écart de valorisation DCF (voir plus haut), au lieu de
+      récupérer les options pour tout l'univers à chaque run.
+    - NOUVEAU : source Alpha Vantage (HISTORICAL_OPTIONS) en SUPPORT d'IBKR,
+      voir section dédiée ci-dessous.
+
+Alpha Vantage en support d'IBKR (moins de Black-Scholes local) :
+    Avec un compte IBKR sans abonnement de données d'options (MARKET_DATA_TYPE=4,
+    delayed-frozen), IBKR ne renvoie quasiment jamais modelGreeks : jusqu'ici,
+    l'IV et les greeks de CHAQUE contrat étaient donc recalculés localement par
+    Black-Scholes (estimate_iv_and_greeks), une approximation (pas de dividende,
+    taux constant, prix medio comme cible du solveur).
+
+    Ce script interroge maintenant en plus, gratuitement, l'API Alpha Vantage
+    (https://www.alphavantage.co, fonction HISTORICAL_OPTIONS) : UNE requête
+    par ticker renvoie sa chaîne d'options complète avec IV et greeks calculés
+    CÔTÉ Alpha Vantage (pas notre propre Black-Scholes). Quand un contrat y est
+    trouvé, iv_source="alpha_vantage" ; sinon, repli sur Black-Scholes local
+    comme avant (iv_source="estime_local").
+
+    Clé gratuite (aucune carte bancaire) : https://www.alphavantage.co/support/#api-key
+        export ALPHAVANTAGE_API_KEY="ta_cle"
+    Sans cette variable d'environnement, le script se comporte exactement comme
+    avant (Alpha Vantage simplement ignoré). Le palier gratuit est limité
+    (ALPHA_VANTAGE_FREE_DAILY_LIMIT, 25 requêtes/jour par défaut -- ajuste si
+    ton palier diffère) : un compteur journalier est persisté dans
+    --output-dir/alpha_vantage_quota.json pour ne pas le re-consommer bêtement
+    entre deux runs le même jour, et les réponses de quota dépassé d'Alpha
+    Vantage ("Note"/"Information") sont de toute façon détectées et journalisées.
+    --no-alpha-vantage force l'ancien comportement (Black-Scholes local seul).
+
+    NOUVEAU (vrai historique, pas juste le snapshot du jour) : --av-backfill-dates
+    interroge Alpha Vantage avec des dates PASSÉES (paramètre `date` de
+    HISTORICAL_OPTIONS) pour reconstituer un historique réel d'options déjà
+    expirées -- ce qu'IBKR ne peut pas faire (les contrats expirés ne se
+    résolvent plus). Une archive par date est écrite dans
+    data/options/history/option_chains_avhist_<date>.parquet, avec le même
+    schéma que les snapshots IBKR habituels : le backtest (10_backtest_options.py)
+    les traite donc comme des snapshots "réels" au même titre, sans attendre
+    l'accumulation de runs futurs.
+
+Prérequis :
+    pip install ib_insync pandas pyarrow requests
+
+Usage :
+    python 08_recuperation_options.py
+    python 08_recuperation_options.py --resume       # reprendre un run interrompu
+    python 08_recuperation_options.py --limit 10      # test rapide (après filtre de valorisation)
+    python 08_recuperation_options.py --valuation-threshold 30   # seuil plus strict
+    python 08_recuperation_options.py --skip-valuation-filter    # options pour tout l'univers
+    python 08_recuperation_options.py --no-alpha-vantage             # Black-Scholes local uniquement
+    python 08_recuperation_options.py --av-backfill-dates 2026-06-30 2026-05-29  # vrai historique passé
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import math
+import os
+import re
+import sys
+import threading
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import requests
+from scipy.optimize import brentq
+from scipy.stats import norm
+
+from ib_insync import IB, Stock, Option, Contract, util
+
+import config
+import ib_connect
+
+IB_HOST = "127.0.0.1"
+IB_PORT = 4002
+IB_CLIENT_ID = 1
+
+MIN_DAYS_TO_EXPIRY = 9 * 30
+STRIKE_BAND_PCT = 0.30
+
+BATCH_SIZE = 25
+BATCH_PAUSE_SEC = 0.5
+SNAPSHOT_MAX_WAIT_SEC = 3.0   # délai MAXIMUM (voir _wait_for_batch : sort dès que les données arrivent)
+SNAPSHOT_POLL_SEC = 0.25
+HIST_REQUEST_PAUSE_SEC = 0.4
+
+RETRY_PER_TICKER = 1
+RETRY_PAUSE_SEC = 1.5
+
+CHECKPOINT_EVERY = 10
+
+MARKET_DATA_TYPE = 4  # 1=live, 2=frozen, 3=delayed, 4=delayed-frozen
+
+# Timeout par appel bloquant IBKR (reqContractDetails, reqHistoricalData,
+# reqSecDefOptParams...). Était à 360s ("Ajout après une erreur temps
+# infini") : un compte sans abonnement data adapté fait bloquer certains
+# appels, et avec RETRY_PER_TICKER=1 un seul ticker à problème pouvait
+# coûter plusieurs fois 6 minutes -> plusieurs heures pour 10 tickers.
+# 20s suffit largement pour un appel qui va aboutir ; au-delà, il vaut mieux
+# échouer vite (et retenter/passer au ticker suivant) que rester bloqué.
+IB_REQUEST_TIMEOUT_SEC = 20
+
+REQUIRED_COLUMNS = [
+    "symbol", "company_name", "expiry", "strike", "option_type",
+    "last_price", "bid", "ask", "volume", "open_interest", "iv_source",
+]
+
+# Source externe (gratuite) d'IV/greeks, en support d'IBKR -- voir docstring en
+# tête de fichier. Clé gratuite : https://www.alphavantage.co/support/#api-key
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY")
+ALPHA_VANTAGE_URL = "https://www.alphavantage.co/query"
+ALPHA_VANTAGE_FREE_DAILY_LIMIT = 25  # palier gratuit publié par Alpha Vantage ; ajuste si ton offre diffère
+AV_REQUEST_PAUSE_SEC = 1.0
+AV_QUOTA_FILENAME = "alpha_vantage_quota.json"
+
+logger = logging.getLogger("us_options")
+
+# 200 = "No security definition has been found for the request". C'est la
+# réponse NORMALE d'IBKR à une combinaison (strike, échéance) qui n'est pas
+# cotée, et qualify_contracts_in_batches sonde délibérément une grille
+# théorique dont une partie n'existe pas : la grille vient de
+# reqSecDefOptParams, qui renvoie l'UNION des strikes toutes échéances
+# confondues, alors qu'une échéance lointaine (LEAP) n'est cotée que sur des
+# strikes espacés de 5 ou 10$. C'est donc un résultat de sondage attendu, pas
+# un incident -- il n'a rien à faire en ERROR dans les logs.
+NOISY_ERROR_CODES = {200, 300, 2103, 2104, 2105, 2106, 2107, 2108, 2119, 2157, 2158}
+NOISY_MESSAGE_MARKERS = ("delayed market data is available",)
+
+
+class NoisyIBFilter(logging.Filter):
+    """Supprime du log les messages ib_insync répétitifs sans intérêt pratique."""
+
+    _pattern = re.compile(r"\b(?:Error|Warning) (\d+)")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        m = self._pattern.search(msg)
+        if m and int(m.group(1)) in NOISY_ERROR_CODES:
+            return False
+        low = msg.lower()
+        return not any(marker in low for marker in NOISY_MESSAGE_MARKERS)
+
+
+def setup_logging(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / f"us_options_{datetime.now():%Y%m%d_%H%M%S}.log"
+    handlers = [logging.FileHandler(log_path, encoding="utf-8"), logging.StreamHandler(sys.stdout)]
+    noisy_filter = NoisyIBFilter()
+    for h in handlers:
+        h.addFilter(noisy_filter)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", handlers=handlers)
+    logger.info("Log file: %s", log_path)
+
+
+# En dessous de ce rendement de qualification, la grille théorique sonde
+# surtout des contrats inexistants : le détail passe en debug pour ne pas
+# noyer le log, mais la mesure reste disponible.
+LOW_QUALIFY_YIELD_PCT = 25.0
+
+
+class PermanentTickerError(RuntimeError):
+    """Erreur structurelle : un nouvel essai ne changera jamais le résultat."""
+
+
+PERMISSION_ERROR_CODES = {162, 354, 10089, 10197}
+_EXCHANGE_FROM_162 = re.compile(r"for ([A-Z0-9.]+) STK")
+_EXCHANGE_FROM_STREAM = re.compile(r"[A-Z0-9]+\s+([A-Z0-9.]+)/TOP/ALL")
+
+BLACKLISTED_EXCHANGES: set[str] = set()
+
+# Erreurs qui indiquent un état de SESSION corrompu (pas propre au ticker en
+# cours) : typiquement une souscription IBKR fantôme (ex: reqAccountSummary)
+# laissée ouverte par un ancien process de ce script tué/planté sans
+# déconnexion propre. Contrairement aux PERMISSION_ERROR_CODES, retenter le
+# même ticker ne sert à rien tant que la session elle-même n'est pas
+# nettoyée -- voir recover_from_session_poisoning().
+SESSION_ERROR_CODES = {322}
+MAX_SESSION_RECOVERIES_PER_TICKER = 3
+_session_poisoned = threading.Event()
+
+
+def _extract_exchange(error_string: str, contract) -> Optional[str]:
+    m = _EXCHANGE_FROM_162.search(error_string)
+    if m:
+        return m.group(1)
+    m = _EXCHANGE_FROM_STREAM.search(error_string)
+    if m:
+        return m.group(1)
+    if contract is not None and getattr(contract, "exchange", None):
+        return contract.exchange
+    return None
+
+
+def _on_ib_error(reqId, errorCode, errorString, contract=None) -> None:
+    if errorCode in SESSION_ERROR_CODES:
+        logger.error(
+            "Erreur de session IBKR détectée (code %d: %s). Probable souscription fantôme "
+            "issue d'un ancien process non déconnecté proprement -- récupération automatique...",
+            errorCode, errorString,
+        )
+        _session_poisoned.set()
+        return
+
+    if errorCode not in PERMISSION_ERROR_CODES:
+        return
+    low = errorString.lower()
+    if any(marker in low for marker in NOISY_MESSAGE_MARKERS):
+        return
+    exch = _extract_exchange(errorString, contract)
+    if exch and exch not in BLACKLISTED_EXCHANGES:
+        BLACKLISTED_EXCHANGES.add(exch)
+        logger.warning(
+            "Exchange '%s' BLACKLISTÉE (pas d'abonnement data, erreur %d: %s) "
+            "-> tickers suivants sur cet exchange ignorés sans requête réseau.",
+            exch, errorCode, errorString,
+        )
+
+
+def kill_stray_pipeline_processes() -> int:
+    """Termine toute AUTRE instance de CE script encore en cours d'exécution
+    (processus zombie issu d'un run précédent qui a planté/été tué sans se
+    déconnecter proprement d'IBKR -- cause typique de l'erreur 322). Ne
+    touche jamais au processus courant, ni à TWS/IB Gateway lui-même : s'il
+    est dans un état incohérent, il faut le redémarrer manuellement.
+    Nécessite `pip install psutil` ; sans lui, ce nettoyage est simplement
+    sauté (avec un avertissement) plutôt que de faire planter le script."""
+    try:
+        import psutil
+    except ImportError:
+        logger.warning(
+            "psutil n'est pas installé (pip install psutil) : impossible de fermer "
+            "automatiquement les processus fantômes. Vérifie-le manuellement."
+        )
+        return 0
+
+    this_script = Path(__file__).name
+    current_pid = os.getpid()
+    killed = 0
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if proc.info["pid"] == current_pid:
+                continue
+            cmdline = proc.info["cmdline"] or []
+            if not cmdline:
+                continue
+            # Exige (1) un interpréteur python en premier argument ET (2) un
+            # argument qui correspond EXACTEMENT (ou en suffixe de chemin) au
+            # nom de ce script -- une simple sous-chaîne dans la ligne de
+            # commande ne suffit pas (ça tuerait par erreur n'importe quel
+            # processus qui mentionne juste ce nom de fichier, ex: un éditeur
+            # de texte ou une commande git).
+            if "python" not in str(cmdline[0]).lower():
+                continue
+            if not any(str(part).endswith(this_script) for part in cmdline[1:]):
+                continue
+            joined = " ".join(str(part) for part in cmdline)
+            logger.warning("Processus fantôme détecté (PID %d) : %s -- fermeture.", proc.info["pid"], joined)
+            proc.terminate()
+            killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if killed:
+        time.sleep(3)  # laisse le temps à IBKR de détecter la déconnexion et libérer les souscriptions
+    return killed
+
+
+def recover_from_session_poisoning(ib: IB, auto_restart_gateway: bool = False, escalate: bool = False) -> None:
+    """Erreur 322 (et assimilées) : ferme toute autre instance de ce script
+    encore active, se déconnecte proprement, attend, puis se reconnecte. Le
+    ticker en cours n'est jamais marqué comme traité tant que cette
+    récupération n'a pas réussi -- il est retenté juste après (voir la
+    boucle principale dans main()).
+
+    Si `escalate` est vrai (dernière tentative pour ce ticker) et que
+    `auto_restart_gateway` est activé, tente en plus un redémarrage complet
+    d'IB Gateway via IBC (restart_gateway.py) AVANT de se reconnecter --
+    utile quand le problème dépasse notre propre process (ex: TWS/Gateway
+    lui-même dans un état bloqué)."""
+    killed = kill_stray_pipeline_processes()
+    if killed:
+        logger.warning("%d processus fantôme(s) fermé(s).", killed)
+
+    if escalate and auto_restart_gateway:
+        logger.warning("Récupération légère insuffisante -> tentative de redémarrage complet d'IB Gateway...")
+        try:
+            from restart_gateway import restart_ib_gateway
+            ok = restart_ib_gateway()
+            if not ok:
+                logger.error("Le redémarrage d'IB Gateway n'a pas abouti (voir les logs de restart_gateway).")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Redémarrage automatique d'IB Gateway impossible (%s). Vérifie .env et "
+                "l'installation d'IBC (voir restart_gateway.py).", exc,
+            )
+
+    try:
+        ib.disconnect()
+    except Exception:  # noqa: BLE001
+        pass
+
+    time.sleep(5)
+    ib_connect.connect(port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST, ib=ib)
+    ib.reqMarketDataType(MARKET_DATA_TYPE)
+    logger.info("Reconnecté après récupération de session.")
+    _session_poisoned.clear()
+
+
+def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:
+    df = pd.read_csv(csv_path, encoding="utf-8-sig")
+    required = {"RIC", "Instrument_Name", "Country", "Currency", "Exchange"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Colonnes manquantes dans le CSV: {missing}")
+
+    df = df.dropna(subset=["RIC"]).drop_duplicates(subset=["RIC"]).reset_index(drop=True)
+    df["ib_symbol"] = df["RIC"].apply(config.to_ib_symbol)
+    df["ib_exchange"] = df["Exchange"].map(config.EXCHANGE_MAP).fillna(config.DEFAULT_EXCHANGE)
+
+    if limit:
+        df = df.head(limit)
+
+    logger.info("Univers chargé : %d tickers.", len(df))
+    return df
+
+
+def filter_universe_by_valuation_gap(universe: pd.DataFrame, threshold_pct: float) -> pd.DataFrame:
+    """Ne garde que les tickers dont l'écart entre cours de bourse et valeur
+    théorique (DCF, calculé par 07_calcul_dcf.py) dépasse threshold_pct en
+    valeur absolue. C'est le nouveau filtre d'entrée de ce script : voir le
+    docstring en tête de fichier pour le raisonnement."""
+    if not config.DCF_FILE.exists():
+        raise FileNotFoundError(
+            f"{config.DCF_FILE} introuvable. Lance d'abord 03_recuperation_cours.py, "
+            "04_recuperation_10k.py, 05_calcul_multiples.py et 07_calcul_dcf.py "
+            "(dans cet ordre), ou relance ce script avec --skip-valuation-filter "
+            "pour récupérer les options sur tout l'univers sans filtre."
+        )
+
+    dcf = pd.read_excel(config.DCF_FILE, sheet_name="DCF", engine="openpyxl")
+    ecart_col = "Écart_DCF_vs_Cours_%"
+    valorises = dcf.dropna(subset=[ecart_col])
+    flagged = valorises[valorises[ecart_col].abs() >= threshold_pct]
+    tickers_retenus = set(flagged["Ticker"].astype(str))
+
+    filtered = universe[universe["ib_symbol"].isin(tickers_retenus)].reset_index(drop=True)
+    logger.info(
+        "Filtre de valorisation : %d/%d entreprises avec un écart cours/valeur théorique "
+        ">= %.0f%% (sur %d entreprises avec un DCF calculé, %d dans l'univers fourni).",
+        len(filtered), len(universe), threshold_pct, len(valorises), len(universe),
+    )
+    return filtered
+
+
+def connect_ib() -> IB:
+    # errorEvent branché AVANT la connexion, et l'instance est passée à
+    # ib_connect pour qu'un éventuel repli la reconnecte EN PLACE plutôt que
+    # d'en rendre une neuve, qui perdrait ce branchement.
+    ib = IB()
+    ib.errorEvent += _on_ib_error
+    ib_connect.connect(
+        port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST,
+        request_timeout=IB_REQUEST_TIMEOUT_SEC, ib=ib,
+    )
+    ib.reqMarketDataType(MARKET_DATA_TYPE)
+    logger.info("Connecté à IBKR sur %s:%s (clientId=%s), marketDataType=%s", IB_HOST, IB_PORT, IB_CLIENT_ID, MARKET_DATA_TYPE)
+    return ib
+
+
+def ensure_connected(ib: IB, max_attempts: int = 6) -> None:
+    if ib.isConnected():
+        return
+    # Force un état local propre avant de retenter : si la connexion a été
+    # coupée de façon inattendue, il peut rester des traces locales
+    # (souscriptions, event handlers) qui perturbent la reconnexion.
+    try:
+        ib.disconnect()
+    except Exception:  # noqa: BLE001
+        pass
+    attempt = 0
+    while not ib.isConnected():
+        attempt += 1
+        if attempt > max_attempts:
+            raise ConnectionError(f"Impossible de se reconnecter à IBKR après {max_attempts} tentatives.")
+        wait = min(60, 5 * attempt)
+        logger.warning("Connexion IBKR perdue. Reconnexion tentative %d/%d dans %ds...", attempt, max_attempts, wait)
+        time.sleep(wait)
+        try:
+            ib_connect.connect(port=IB_PORT, client_id=IB_CLIENT_ID, host=IB_HOST, ib=ib)
+            ib.reqMarketDataType(MARKET_DATA_TYPE)
+            logger.info("Reconnecté à IBKR.")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Tentative de reconnexion échouée: %s", exc)
+
+
+def resolve_stock_contract(ib: IB, symbol: str, exchange: str, currency: str) -> Optional[Contract]:
+    if exchange == "SMART":
+        candidates = [Stock(symbol, "SMART", currency)]
+    else:
+        candidates = [Stock(symbol, exchange, currency), Stock(symbol, "SMART", currency, primaryExchange=exchange)]
+    for contract in candidates:
+        try:
+            details = ib.reqContractDetails(contract)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reqContractDetails a échoué pour %s: %s", contract, exc)
+            details = []
+        if details:
+            return details[0].contract
+    return None
+
+
+def _has_price(value) -> bool:
+    if value is None:
+        return False
+    try:
+        return not math.isnan(value)
+    except TypeError:
+        return True
+
+
+def _wait_for_data(ib: IB, tickers, max_wait: float, poll_interval: float = SNAPSHOT_POLL_SEC) -> None:
+    """Attend que TOUS les tickers passés aient au moins une donnée de prix
+    (bid, ask ou last) ou que max_wait soit écoulé — en sortant dès que
+    possible plutôt que d'attendre systématiquement le délai plein. Gain de
+    temps important quand IBKR répond vite (cas majoritaire), et ne coûte
+    jamais plus que max_wait quand ça traîne."""
+    elapsed = 0.0
+    while elapsed < max_wait:
+        ib.sleep(poll_interval)
+        elapsed += poll_interval
+        if all(_has_price(t.bid) or _has_price(t.ask) or _has_price(t.last) for t in tickers):
+            return
+
+
+def get_spot_price(ib: IB, contract: Contract, end_date: Optional[datetime] = None) -> Optional[float]:
+    """Spot du sous-jacent. Par défaut (end_date=None) : dernière clôture
+    connue, avec repli sur un snapshot live si l'historique échoue -- comme
+    avant. Avec end_date (utilisé par le backfill Alpha Vantage sur des dates
+    passées), on ne demande QUE la clôture historique à cette date : un
+    snapshot live n'a pas de sens pour une requête sur le passé."""
+    end_str = end_date.strftime("%Y%m%d-23:59:59") if end_date else ""
+    try:
+        bars = ib.reqHistoricalData(
+            contract, endDateTime=end_str, durationStr="5 D", barSizeSetting="1 day",
+            whatToShow="TRADES", useRTH=True, formatDate=1,
+        )
+        time.sleep(HIST_REQUEST_PAUSE_SEC)
+        if bars:
+            return float(bars[-1].close)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("reqHistoricalData a échoué pour %s: %s", contract.symbol, exc)
+
+    if end_date is not None:
+        return None  # pas de repli snapshot live pour une requête historique
+
+    if contract.exchange in BLACKLISTED_EXCHANGES:
+        return None
+
+    try:
+        ticker = ib.reqMktData(contract, "", True, False)
+        _wait_for_data(ib, [ticker], SNAPSHOT_MAX_WAIT_SEC)
+        price = ticker.close or ticker.last or ticker.marketPrice()
+        ib.cancelMktData(contract)
+        if price and price == price:  # filtre NaN
+            return float(price)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Fallback snapshot spot a échoué pour %s: %s", contract.symbol, exc)
+
+    return None
+
+
+def get_option_chain(ib: IB, contract: Contract):
+    chains = ib.reqSecDefOptParams(contract.symbol, "", contract.secType, contract.conId)
+    if not chains:
+        return None
+    same_class_non_smart = [c for c in chains if c.tradingClass == contract.symbol and c.exchange != "SMART"]
+    non_smart = [c for c in chains if c.exchange != "SMART"]
+    if same_class_non_smart:
+        return same_class_non_smart[0]
+    if non_smart:
+        return non_smart[0]
+    return chains[0]
+
+
+class AlphaVantageQuota:
+    """Suivi du quota gratuit Alpha Vantage (HISTORICAL_OPTIONS), persisté sur
+    disque pour ne pas re-consommer le quota du jour si le script est relancé
+    plusieurs fois dans la même journée (--resume, retests...). Le palier
+    gratuit publié par Alpha Vantage est de ALPHA_VANTAGE_FREE_DAILY_LIMIT
+    requêtes/jour ; ce compteur local est une estimation prudente -- les
+    réponses "Note"/"Information" d'Alpha Vantage (quota réellement dépassé)
+    sont de toute façon détectées séparément dans fetch_alpha_vantage_chain."""
+
+    def __init__(self, path: Path, daily_limit: int = ALPHA_VANTAGE_FREE_DAILY_LIMIT):
+        self.path = path
+        self.daily_limit = daily_limit
+        self.today = datetime.now().date().isoformat()
+        self.used = 0
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if payload.get("date") == self.today:
+            self.used = int(payload.get("used", 0))
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"date": self.today, "used": self.used}), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def has_budget(self) -> bool:
+        return self.used < self.daily_limit
+
+    def consume(self) -> None:
+        self.used += 1
+        self._save()
+
+
+def fetch_alpha_vantage_chain(symbol: str, as_of: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """
+    Interroge HISTORICAL_OPTIONS d'Alpha Vantage : chaîne d'options COMPLÈTE
+    pour `symbol`, à la date `as_of` (YYYY-MM-DD) ou la dernière séance
+    disponible si None. Contrairement au repli local (estimate_iv_and_greeks
+    ci-dessous), l'IV et les greeks sont calculés côté Alpha Vantage -- une
+    vraie source externe, pas notre propre Black-Scholes.
+
+    Retourne None si la clé n'est pas configurée, la requête échoue, la
+    réponse est vide, ou si Alpha Vantage signale un quota dépassé (clé
+    gratuite qui a atteint son plafond journalier : message "Note" ou
+    "Information" dans la réponse au lieu de "data").
+    """
+    if not ALPHA_VANTAGE_API_KEY:
+        return None
+
+    params = {"function": "HISTORICAL_OPTIONS", "symbol": symbol, "apikey": ALPHA_VANTAGE_API_KEY}
+    if as_of:
+        params["date"] = as_of
+
+    try:
+        resp = requests.get(ALPHA_VANTAGE_URL, params=params, timeout=20)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Requête Alpha Vantage échouée pour %s: %s", symbol, exc)
+        return None
+
+    for noisy_key in ("Note", "Information", "Error Message"):
+        if noisy_key in payload:
+            logger.warning("Alpha Vantage (%s) : %s", symbol, payload[noisy_key])
+            return None
+
+    rows = payload.get("data")
+    if not rows:
+        return None
+
+    df = pd.DataFrame(rows)
+    if df.empty or "expiration" not in df.columns or "type" not in df.columns:
+        return None
+
+    numeric_cols = ["strike", "last", "mark", "bid", "ask", "volume", "open_interest",
+                     "implied_volatility", "delta", "gamma", "theta", "vega", "rho"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df["option_type"] = df["type"].astype(str).str.upper()
+    df["expiry"] = pd.to_datetime(df["expiration"], errors="coerce").dt.strftime("%Y%m%d")
+    return df
+
+
+def _match_av_contract(av_chain: Optional[pd.DataFrame], expiry: str, strike: float, option_type: str) -> Optional[pd.Series]:
+    """Cherche dans la chaîne Alpha Vantage déjà récupérée pour un ticker le
+    contrat correspondant exactement (échéance, strike, C/P) à un contrat
+    IBKR. None si la chaîne est vide/absente ou si aucun contrat ne correspond
+    (Alpha Vantage et IBKR n'ont pas toujours exactement les mêmes strikes cotés)."""
+    if av_chain is None or av_chain.empty:
+        return None
+    match = av_chain[
+        (av_chain["expiry"] == expiry)
+        & (av_chain["option_type"] == option_type)
+        & np.isclose(av_chain["strike"].astype(float), strike, atol=1e-6)
+    ]
+    if match.empty:
+        return None
+    return match.iloc[0]
+
+
+def _bs_price(spot: float, strike: float, t: float, vol: float, option_type: str, r: float = config.RISK_FREE_RATE) -> float:
+    """Prix Black-Scholes (pas de dividende, taux constant)."""
+    if t <= 0 or vol <= 0:
+        intrinsic = (spot - strike) if option_type == "CALL" else (strike - spot)
+        return max(0.0, intrinsic)
+    d1 = (np.log(spot / strike) + (r + 0.5 * vol ** 2) * t) / (vol * np.sqrt(t))
+    d2 = d1 - vol * np.sqrt(t)
+    if option_type == "CALL":
+        return spot * norm.cdf(d1) - strike * np.exp(-r * t) * norm.cdf(d2)
+    return strike * np.exp(-r * t) * norm.cdf(-d2) - spot * norm.cdf(-d1)
+
+
+def _bs_greeks(spot: float, strike: float, t: float, vol: float, option_type: str, r: float = config.RISK_FREE_RATE) -> dict:
+    d1 = (np.log(spot / strike) + (r + 0.5 * vol ** 2) * t) / (vol * np.sqrt(t))
+    d2 = d1 - vol * np.sqrt(t)
+    pdf_d1 = norm.pdf(d1)
+    gamma = pdf_d1 / (spot * vol * np.sqrt(t))
+    vega = spot * pdf_d1 * np.sqrt(t) / 100  # pour +1 point de vol (convention IBKR)
+    if option_type == "CALL":
+        delta = norm.cdf(d1)
+        theta = (-spot * pdf_d1 * vol / (2 * np.sqrt(t)) - r * strike * np.exp(-r * t) * norm.cdf(d2)) / 365
+    else:
+        delta = norm.cdf(d1) - 1
+        theta = (-spot * pdf_d1 * vol / (2 * np.sqrt(t)) + r * strike * np.exp(-r * t) * norm.cdf(-d2)) / 365
+    return {"delta": delta, "gamma": gamma, "vega": vega, "theta": theta}
+
+
+def estimate_iv_and_greeks(mid_price, spot, strike, days_to_expiry, option_type: str) -> Optional[dict]:
+    """
+    Volatilité implicite et greeks calculés localement (Black-Scholes +
+    solveur numérique `scipy.optimize.brentq`), utilisés en repli quand IBKR
+    ne renvoie pas de modelGreeks.
+
+    C'est le cas systématique avec MARKET_DATA_TYPE=4 (délayé-figé, cf. plus
+    haut) : IBKR ne calcule quasiment jamais les greeks côté serveur sur ce
+    type de flux (ça nécessite un abonnement temps réel ou figé), donc sans
+    ce repli, implied_vol/delta/gamma/vega/theta restent NULL pour TOUS les
+    contrats, et la nappe de volatilité du rapport n'a rien à afficher.
+
+    Approximation : taux sans risque constant (config.RISK_FREE_RATE), pas
+    de dividende. Retourne None si les données d'entrée sont insuffisantes
+    ou incohérentes (prix < valeur intrinsèque, résolution impossible du
+    solveur, etc.) plutôt que de forcer une valeur non fiable.
+    """
+    if mid_price is None or mid_price <= 0:
+        return None
+    if spot is None or spot <= 0 or strike is None or strike <= 0:
+        return None
+    if days_to_expiry is None or days_to_expiry <= 0:
+        return None
+
+    t = days_to_expiry / 365.0
+    intrinsic = max(0.0, (spot - strike) if option_type == "CALL" else (strike - spot))
+    if mid_price < intrinsic:
+        return None  # prix incohérent avec la valeur intrinsèque (quote figée/aberrante)
+
+    try:
+        iv = brentq(lambda v: _bs_price(spot, strike, t, v, option_type) - mid_price, 1e-4, 5.0, maxiter=100)
+    except ValueError:
+        return None  # pas de racine dans [0.01%, 500%] de vol : prix trop aberrant pour être inversé
+
+    return {"implied_vol": iv, **_bs_greeks(spot, strike, t, iv, option_type)}
+
+
+def fetch_market_data(ib: IB, contracts: list[Option]) -> dict:
+    data = {}
+    for i in range(0, len(contracts), BATCH_SIZE):
+        batch = contracts[i:i + BATCH_SIZE]
+        tickers = []
+        for c in batch:
+            try:
+                # Tick "106" (greeks calculés par IBKR) retiré : on calcule
+                # nous-mêmes l'IV/greeks localement (estimate_iv_and_greeks),
+                # donc ce tick n'apporte rien et sollicite un calcul serveur
+                # par contrat qui peut être lent/bloquant sur un compte sans
+                # abonnement de données d'options temps réel/figé.
+                t = ib.reqMktData(c, "101", False, False)
+                tickers.append((c, t))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("reqMktData a échoué pour %s: %s", c, exc)
+
+        _wait_for_data(ib, [t for _, t in tickers], SNAPSHOT_MAX_WAIT_SEC)
+
+        for c, t in tickers:
+            open_interest = t.callOpenInterest if c.right == "C" else t.putOpenInterest
+            greeks = t.modelGreeks
+            data[c.conId] = {
+                "last_price": _clean(t.last), "bid": _clean(t.bid), "ask": _clean(t.ask),
+                "close": _clean(t.close), "high": _clean(t.high), "low": _clean(t.low),
+                "volume": _clean(t.volume), "open_interest": _clean(open_interest),
+                "implied_vol": _clean(getattr(greeks, "impliedVol", None)) if greeks else None,
+                "delta": _clean(getattr(greeks, "delta", None)) if greeks else None,
+                "gamma": _clean(getattr(greeks, "gamma", None)) if greeks else None,
+                "vega": _clean(getattr(greeks, "vega", None)) if greeks else None,
+                "theta": _clean(getattr(greeks, "theta", None)) if greeks else None,
+            }
+
+        for c, _ in tickers:
+            try:
+                ib.cancelMktData(c)
+            except Exception:  # noqa: BLE001
+                pass
+
+        ib.sleep(BATCH_PAUSE_SEC)
+
+    return data
+
+
+def _clean(value):
+    if value is None:
+        return None
+    try:
+        if value != value:  # NaN
+            return None
+    except TypeError:
+        return value
+    if isinstance(value, (int, float)) and value in (-1.0, -1):
+        return None
+    return value
+
+
+def build_candidate_contracts(stock: Contract, chain, spot: float, min_days: int, band_pct: float) -> list[Option]:
+    """
+    Construit la liste des contrats CANDIDATS (strike x échéance x C/P)
+    directement à partir de chain.strikes / chain.expirations -- des listes
+    déjà en mémoire (obtenues via reqSecDefOptParams dans get_option_chain,
+    UN SEUL appel léger), filtrées aux mêmes critères qu'avant (>270 jours,
+    ±30% du spot).
+
+    Avant : fetch_chain_contracts demandait reqContractDetails() en mode
+    wildcard, qui renvoie TOUS les contrats du sous-jacent (potentiellement
+    plusieurs milliers pour un nom liquide type AAPL, toutes échéances et
+    tous strikes confondus) -- puis filter_contracts() en jetait l'immense
+    majorité. Ici on ne construit QUE les combinaisons qui nous intéressent
+    déjà, avant même de contacter IBKR pour les détails -- même couverture
+    finale, beaucoup moins de contrats à qualifier ensuite.
+    """
+    cutoff = datetime.now() + timedelta(days=min_days)
+    valid_expiries = []
+    for e in chain.expirations:
+        try:
+            if datetime.strptime(e, "%Y%m%d") > cutoff:
+                valid_expiries.append(e)
+        except (ValueError, TypeError):
+            continue
+
+    lo, hi = spot * (1 - band_pct), spot * (1 + band_pct)
+    valid_strikes = [s for s in chain.strikes if lo <= s <= hi]
+
+    # exchange="SMART" et NON chain.exchange (PSE, CBOE...) : reqSecDefOptParams
+    # renvoie une entrée PAR PLACE, mais dont les listes strikes/expirations
+    # sont l'UNION de ce qui est coté toutes places confondues. Bâtir la grille
+    # sur une place précise demandait donc à IBKR des contrats qui existent
+    # ailleurs mais pas là -- d'où un flot d'erreurs 200 ("No security
+    # definition has been found"), et surtout des contrats bien réels perdus
+    # parce qu'ils ne sont pas listés sur CETTE place.
+    #
+    # SMART résout le contrat là où il est effectivement coté, ce qui est aussi
+    # la façon dont il serait négocié. Les strikes et échéances, eux, viennent
+    # toujours de `chain` (l'entrée non-SMART, plus complète -- cf.
+    # get_option_chain).
+    contracts = []
+    for expiry in valid_expiries:
+        for strike in valid_strikes:
+            for right in ("C", "P"):
+                contracts.append(Option(
+                    symbol=stock.symbol, lastTradeDateOrContractMonth=expiry, strike=strike,
+                    right=right, exchange="SMART", currency=stock.currency,
+                    tradingClass=chain.tradingClass, multiplier=chain.multiplier,
+                ))
+    return contracts
+
+
+def qualify_contracts_in_batches(ib: IB, contracts: list[Option], batch_size: int = 100) -> list[Option]:
+    """Résout (qualifie : conId, exchange réel, etc.) les contrats candidats
+    par lots. Certaines combinaisons de la grille théorique strike x échéance
+    ne sont pas réellement cotées (pas toutes les échéances n'ont pas tous
+    les strikes) : ib_insync les laisse simplement de côté sans lever
+    d'erreur bloquante, ce qui remplace naturellement l'ancien
+    filter_contracts (déjà appliqué en amont, dans build_candidate_contracts).
+
+    Chaque combinaison inexistante fait répondre à IBKR une erreur 200 ("No
+    security definition has been found") : c'est le résultat NORMAL du
+    sondage, filtré des logs par NoisyIBFilter. Le rendement du sondage est
+    en revanche journalisé -- un rendement très bas signale une grille de
+    strikes mal calibrée, ce qui coûte des requêtes pour rien."""
+    qualified: list[Option] = []
+    for i in range(0, len(contracts), batch_size):
+        batch = contracts[i:i + batch_size]
+        try:
+            qualified.extend(c for c in ib.qualifyContracts(*batch) if c.conId)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Qualification du lot %d-%d échouée (%s), on continue.", i, i + len(batch), exc)
+
+    if contracts:
+        rendement = len(qualified) / len(contracts) * 100
+        niveau = logger.info if rendement >= LOW_QUALIFY_YIELD_PCT else logger.debug
+        niveau(
+            "%s : %d/%d contrats candidats réellement cotés (%.0f%%).",
+            contracts[0].symbol, len(qualified), len(contracts), rendement,
+        )
+    return qualified
+
+
+def process_ticker(ib: IB, row: pd.Series, av_quota: Optional[AlphaVantageQuota] = None) -> list[dict]:
+    symbol = row["ib_symbol"]
+    exchange = row["ib_exchange"]
+    currency = row["Currency"]
+    company_name = row["Instrument_Name"]
+
+    stock = resolve_stock_contract(ib, symbol, exchange, currency)
+    if stock is None:
+        raise PermanentTickerError(f"Impossible de résoudre le contrat action pour {symbol} ({exchange})")
+
+    spot = get_spot_price(ib, stock)
+    if spot is None:
+        if exchange in BLACKLISTED_EXCHANGES:
+            raise PermanentTickerError(f"Spot indisponible pour {symbol} : exchange {exchange} sans abonnement")
+        raise RuntimeError(f"Impossible d'obtenir le spot pour {symbol}")
+
+    chain = get_option_chain(ib, stock)
+    if chain is None:
+        raise PermanentTickerError(f"Chaîne d'options indisponible pour {symbol}")
+
+    candidates = build_candidate_contracts(stock, chain, spot, MIN_DAYS_TO_EXPIRY, STRIKE_BAND_PCT)
+    if not candidates:
+        raise PermanentTickerError(
+            f"Aucun contrat candidat pour {symbol} (spot={spot}, {len(chain.strikes)} strikes / "
+            f"{len(chain.expirations)} échéances dispo côté IBKR)"
+        )
+
+    selected = qualify_contracts_in_batches(ib, candidates)
+    if not selected:
+        raise PermanentTickerError(
+            f"Aucun des {len(candidates)} contrats candidats n'a pu être qualifié pour {symbol}"
+        )
+
+    md = fetch_market_data(ib, selected)
+
+    # Chaîne Alpha Vantage récupérée UNE FOIS pour tout le ticker (pas par
+    # contrat) : couvre potentiellement tous les contrats ci-dessous en une
+    # seule requête, avant même de savoir lesquels manqueront de modelGreeks
+    # IBKR (cas systématique en MARKET_DATA_TYPE=4, cf. estimate_iv_and_greeks).
+    av_chain = None
+    if av_quota is not None and av_quota.has_budget():
+        av_chain = fetch_alpha_vantage_chain(symbol)
+        av_quota.consume()
+        if av_chain is not None:
+            logger.info("  Alpha Vantage : %d contrats récupérés pour %s (IV/greeks externes, pas de Black-Scholes local).", len(av_chain), symbol)
+
+    rows = []
+    now_dt = datetime.now()
+    now = now_dt.isoformat(timespec="seconds")
+    for c in selected:
+        vals = md.get(c.conId, {})
+        implied_vol = vals.get("implied_vol")
+        delta, gamma, vega, theta = vals.get("delta"), vals.get("gamma"), vals.get("vega"), vals.get("theta")
+        option_type = "CALL" if c.right == "C" else "PUT"
+
+        if implied_vol is not None:
+            iv_source = "ibkr"
+        else:
+            av_match = _match_av_contract(av_chain, c.lastTradeDateOrContractMonth, c.strike, option_type)
+            if av_match is not None and pd.notna(av_match.get("implied_volatility")):
+                # Contrat trouvé chez Alpha Vantage : IV/greeks d'une vraie
+                # source externe, on n'a pas besoin de Black-Scholes local.
+                implied_vol = av_match.get("implied_volatility")
+                delta, gamma, vega, theta = av_match.get("delta"), av_match.get("gamma"), av_match.get("vega"), av_match.get("theta")
+                iv_source = "alpha_vantage"
+                # Complète aussi les données de marché manquantes (IBKR
+                # delayed-frozen renvoie souvent bid/ask/volume/OI vides).
+                for field, av_field in (("last_price", "last"), ("bid", "bid"), ("ask", "ask"),
+                                         ("volume", "volume"), ("open_interest", "open_interest")):
+                    if vals.get(field) is None and pd.notna(av_match.get(av_field)):
+                        vals[field] = av_match.get(av_field)
+            else:
+                # Ni IBKR ni Alpha Vantage : on estime l'IV et les greeks
+                # nous-mêmes à partir du prix de l'option (cf. estimate_iv_and_greeks).
+                bid, ask = vals.get("bid"), vals.get("ask")
+                mid_price = (bid + ask) / 2 if bid is not None and ask is not None else (vals.get("last_price") or vals.get("close"))
+                try:
+                    expiry_dt = datetime.strptime(c.lastTradeDateOrContractMonth, "%Y%m%d")
+                    days_to_expiry = (expiry_dt - now_dt).days
+                except (ValueError, TypeError):
+                    days_to_expiry = None
+                estimate = estimate_iv_and_greeks(mid_price, spot, c.strike, days_to_expiry, option_type)
+                if estimate:
+                    implied_vol = estimate["implied_vol"]
+                    delta, gamma, vega, theta = estimate["delta"], estimate["gamma"], estimate["vega"], estimate["theta"]
+                    iv_source = "estime_local"
+                else:
+                    iv_source = "indisponible"
+
+        rows.append({
+            "symbol": symbol, "company_name": company_name, "expiry": c.lastTradeDateOrContractMonth,
+            "strike": c.strike, "option_type": option_type,
+            "last_price": vals.get("last_price"), "bid": vals.get("bid"), "ask": vals.get("ask"),
+            "volume": vals.get("volume"), "open_interest": vals.get("open_interest"),
+            "close": vals.get("close"), "high": vals.get("high"), "low": vals.get("low"),
+            "implied_vol": implied_vol, "delta": delta, "gamma": gamma,
+            "vega": vega, "theta": theta, "iv_source": iv_source, "underlying_spot": spot,
+            "moneyness_pct": round((c.strike / spot - 1) * 100, 2), "currency": currency,
+            "exchange": c.exchange, "trading_class": c.tradingClass, "multiplier": c.multiplier,
+            "con_id": c.conId, "fetch_timestamp": now,
+        })
+    return rows
+
+
+def backfill_alpha_vantage_history(ib: IB, universe: pd.DataFrame, dates: list[str], av_quota: AlphaVantageQuota) -> None:
+    """
+    Contrairement au reste du script (snapshot du jour via IBKR, IV/greeks en
+    repli Black-Scholes si besoin), cette fonction récupère un VRAI historique
+    d'options déjà expirées via Alpha Vantage (HISTORICAL_OPTIONS accepte une
+    date passée) -- IBKR ne peut pas fournir ça, les contrats expirés ne se
+    résolvent plus. Le spot du sous-jacent à cette date passée, lui, vient
+    d'IBKR (historique gratuit même sans abonnement data, cf. get_spot_price),
+    pour rester cohérent avec le filtre strike/échéance utilisé partout ailleurs
+    dans ce script.
+
+    Un fichier d'archive par date est écrit dans data/options/history/
+    (même schéma que les snapshots IBKR habituels), pour que le backtest
+    (10_backtest_options.py) les traite comme des snapshots "réels" au même
+    titre, sans attendre l'accumulation de runs futurs.
+    """
+    if not ALPHA_VANTAGE_API_KEY:
+        logger.warning("--av-backfill-dates demandé mais ALPHAVANTAGE_API_KEY non définie : backfill ignoré.")
+        return
+
+    for date_str in dates:
+        try:
+            as_of = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            logger.warning("Date --av-backfill-dates invalide (attendu YYYY-MM-DD) : %s", date_str)
+            continue
+
+        rows_for_date: list[dict] = []
+        for _, row in universe.iterrows():
+            if not av_quota.has_budget():
+                logger.warning(
+                    "Quota Alpha Vantage journalier épuisé -- backfill %s interrompu (%d contrats récupérés jusqu'ici).",
+                    date_str, len(rows_for_date),
+                )
+                break
+
+            symbol = row["ib_symbol"]
+            av_chain = fetch_alpha_vantage_chain(symbol, as_of=date_str)
+            av_quota.consume()
+            ib.sleep(AV_REQUEST_PAUSE_SEC)
+            if av_chain is None or av_chain.empty:
+                continue
+
+            stock = resolve_stock_contract(ib, symbol, row["ib_exchange"], row["Currency"])
+            if stock is None:
+                continue
+            spot = get_spot_price(ib, stock, end_date=as_of)
+            if spot is None:
+                continue
+
+            cutoff = as_of + timedelta(days=MIN_DAYS_TO_EXPIRY)
+            lo, hi = spot * (1 - STRIKE_BAND_PCT), spot * (1 + STRIKE_BAND_PCT)
+            chain = av_chain[
+                (pd.to_datetime(av_chain["expiry"], format="%Y%m%d", errors="coerce") > cutoff)
+                & (av_chain["strike"] >= lo) & (av_chain["strike"] <= hi)
+            ]
+            if chain.empty:
+                continue
+
+            for _, opt in chain.iterrows():
+                rows_for_date.append({
+                    "symbol": symbol, "company_name": row["Instrument_Name"], "expiry": opt["expiry"],
+                    "strike": float(opt["strike"]), "option_type": opt["option_type"],
+                    "last_price": opt.get("last"), "bid": opt.get("bid"), "ask": opt.get("ask"),
+                    "volume": opt.get("volume"), "open_interest": opt.get("open_interest"),
+                    "close": None, "high": None, "low": None,
+                    "implied_vol": opt.get("implied_volatility"), "delta": opt.get("delta"),
+                    "gamma": opt.get("gamma"), "vega": opt.get("vega"), "theta": opt.get("theta"),
+                    "iv_source": "alpha_vantage", "underlying_spot": spot,
+                    "moneyness_pct": round((float(opt["strike"]) / spot - 1) * 100, 2), "currency": row["Currency"],
+                    "exchange": None, "trading_class": symbol, "multiplier": config.OPTIONS_CONTRACT_MULTIPLIER,
+                    "con_id": None, "fetch_timestamp": datetime.now().isoformat(timespec="seconds"),
+                })
+
+        if not rows_for_date:
+            logger.info("Backfill Alpha Vantage %s : aucune donnée récupérée.", date_str)
+            continue
+
+        df = pd.DataFrame(rows_for_date)
+        df["snapshot_date"] = date_str
+        df["snapshot_datetime"] = f"{date_str}T00:00:00"
+        config.DIR_OPTIONS_HISTORY.mkdir(parents=True, exist_ok=True)
+        out_path = config.DIR_OPTIONS_HISTORY / f"option_chains_avhist_{date_str.replace('-', '')}.parquet"
+        df.to_parquet(out_path, index=False, engine="pyarrow")
+        logger.info("Backfill Alpha Vantage %s : %d contrats -> %s", date_str, len(df), out_path)
+
+
+def _progress_path(output_dir: Path) -> Path:
+    return output_dir / "progress.json"
+
+
+def _checkpoint_path(output_dir: Path) -> Path:
+    return output_dir / "checkpoint.jsonl"
+
+
+def load_progress(output_dir: Path) -> tuple[set[str], set[str]]:
+    path = _progress_path(output_dir)
+    if not path.exists():
+        return set(), set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return set(payload.get("processed", [])), set(payload.get("blacklisted_exchanges", []))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Fichier de progression illisible (%s), on repart de zéro.", exc)
+        return set(), set()
+
+
+def save_progress(output_dir: Path, processed: set[str]) -> None:
+    path = _progress_path(output_dir)
+    tmp = path.with_suffix(".json.tmp")
+    payload = {
+        "processed": sorted(processed),
+        "blacklisted_exchanges": sorted(BLACKLISTED_EXCHANGES),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def append_checkpoint(output_dir: Path, rows: list[dict]) -> None:
+    if not rows:
+        return
+    with _checkpoint_path(output_dir).open("a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str, ensure_ascii=False) + "\n")
+
+
+def load_checkpoint_rows(output_dir: Path) -> list[dict]:
+    path = _checkpoint_path(output_dir)
+    if not path.exists():
+        return []
+    rows = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--tickers", type=Path, default=config.UNIVERSE_FILE)
+    parser.add_argument("--output-dir", default=config.DIR_OPTIONS, type=Path)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--auto-restart-gateway", action="store_true",
+        help="Si la récupération légère (fermeture des process fantômes + reconnexion) échoue "
+             "3 fois de suite, tente un redémarrage complet d'IB Gateway via IBC (nécessite .env "
+             "configuré, voir .env.example et restart_gateway.py).",
+    )
+    parser.add_argument(
+        "--valuation-threshold", type=float, default=config.VALUATION_GAP_THRESHOLD_PCT,
+        help="Écart minimum (valeur absolue, en %%) entre cours de bourse et valeur théorique "
+             "(07_calcul_dcf.py) pour qu'une entreprise soit retenue (défaut: %(default)s).",
+    )
+    parser.add_argument(
+        "--skip-valuation-filter", action="store_true",
+        help="Désactive le filtre de valorisation et récupère les options pour TOUT l'univers "
+             "fourni (comportement de l'ancien 04_recuperation_options.py).",
+    )
+    parser.add_argument(
+        "--no-alpha-vantage", action="store_true",
+        help="Désactive Alpha Vantage même si ALPHAVANTAGE_API_KEY est définie : retombe "
+             "entièrement sur le repli Black-Scholes local pour l'IV/greeks (comportement "
+             "d'avant l'ajout de cette source).",
+    )
+    parser.add_argument(
+        "--av-backfill-dates", nargs="+", default=None, metavar="YYYY-MM-DD",
+        help="En plus du snapshot du jour, récupère un VRAI historique d'options déjà "
+             "expirées via Alpha Vantage pour ces dates (une archive par date dans "
+             "data/options/history/), au lieu de compter uniquement sur l'accumulation "
+             "de snapshots IBKR au fil des runs. Consomme le même quota gratuit journalier "
+             "qu'Alpha Vantage sur le run principal. Nécessite ALPHAVANTAGE_API_KEY.",
+    )
+    args = parser.parse_args()
+
+    setup_logging(args.output_dir)
+    universe = load_universe(args.tickers, limit=args.limit)
+
+    if args.skip_valuation_filter:
+        logger.info("Filtre de valorisation désactivé (--skip-valuation-filter) : récupération pour tout l'univers fourni.")
+    else:
+        universe = filter_universe_by_valuation_gap(universe, threshold_pct=args.valuation_threshold)
+        if universe.empty:
+            logger.warning(
+                "Aucune entreprise ne dépasse le seuil d'écart de valorisation (%.0f%%) : rien à récupérer.",
+                args.valuation_threshold,
+            )
+            return
+
+    processed_keys: set[str] = set()
+    if args.resume:
+        processed_keys, seeded_blacklist = load_progress(args.output_dir)
+        BLACKLISTED_EXCHANGES.update(seeded_blacklist)
+        logger.info("Reprise : %d tickers déjà traités, exchanges blacklistés: %s", len(processed_keys), sorted(BLACKLISTED_EXCHANGES))
+    else:
+        _progress_path(args.output_dir).unlink(missing_ok=True)
+        _checkpoint_path(args.output_dir).unlink(missing_ok=True)
+
+    if not ALPHA_VANTAGE_API_KEY:
+        logger.info(
+            "Alpha Vantage désactivé (ALPHAVANTAGE_API_KEY non définie) : repli Black-Scholes "
+            "local uniquement pour l'IV/greeks. Clé gratuite : "
+            "https://www.alphavantage.co/support/#api-key"
+        )
+        av_quota = None
+    elif args.no_alpha_vantage:
+        logger.info("Alpha Vantage désactivé (--no-alpha-vantage) : repli Black-Scholes local uniquement.")
+        av_quota = None
+    else:
+        logger.info("Alpha Vantage activé en support d'IBKR (quota gratuit estimé : %d requêtes/jour).", ALPHA_VANTAGE_FREE_DAILY_LIMIT)
+        av_quota = AlphaVantageQuota(args.output_dir / AV_QUOTA_FILENAME)
+
+    ib = connect_ib()
+    ok_count, fail_count, skip_count = 0, 0, 0
+    since_last_checkpoint = 0
+
+    try:
+        for idx, row in universe.iterrows():
+            symbol = row["ib_symbol"]
+            exchange = row["ib_exchange"]
+            key = f"{symbol}|{exchange}"
+
+            if key in processed_keys:
+                continue
+
+            if exchange in BLACKLISTED_EXCHANGES:
+                skip_count += 1
+                processed_keys.add(key)
+                logger.info("[%d/%d] %s -> SKIP : exchange %s sans abonnement de données.", idx + 1, len(universe), symbol, exchange)
+                continue
+
+            ensure_connected(ib)
+
+            logger.info("[%d/%d] %s (%s)...", idx + 1, len(universe), symbol, row["Instrument_Name"])
+            last_exc, rows = None, None
+            attempt = 0
+            session_recoveries = 0
+
+            while attempt <= RETRY_PER_TICKER:
+                try:
+                    rows = process_ticker(ib, row, av_quota=av_quota)
+                    if _session_poisoned.is_set():
+                        # L'erreur peut arriver de façon asynchrone (callback
+                        # errorEvent) sans forcément faire échouer l'appel en
+                        # cours -- on vérifie explicitement après coup.
+                        raise RuntimeError("Session IBKR corrompue détectée pendant le traitement.")
+                    break
+                except PermanentTickerError as exc:
+                    last_exc = exc
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+
+                    if _session_poisoned.is_set():
+                        if session_recoveries >= MAX_SESSION_RECOVERIES_PER_TICKER:
+                            logger.error(
+                                "Erreur de session IBKR toujours présente après %d tentatives de "
+                                "récupération automatique pour %s. Abandon -- redémarre TWS/IB "
+                                "Gateway manuellement, puis relance avec --resume.",
+                                MAX_SESSION_RECOVERIES_PER_TICKER, symbol,
+                            )
+                            break
+                        session_recoveries += 1
+                        logger.warning("Tentative de récupération de session %d/%d pour %s...",
+                                        session_recoveries, MAX_SESSION_RECOVERIES_PER_TICKER, symbol)
+                        try:
+                            recover_from_session_poisoning(
+                                ib,
+                                auto_restart_gateway=args.auto_restart_gateway,
+                                escalate=(session_recoveries >= MAX_SESSION_RECOVERIES_PER_TICKER),
+                            )
+                        except Exception as recover_exc:  # noqa: BLE001
+                            logger.error("Échec de la récupération automatique de session : %s", recover_exc)
+                            break
+                        continue  # retente CE ticker, sans consommer de tentative RETRY_PER_TICKER
+
+                    if exchange in BLACKLISTED_EXCHANGES:
+                        break
+                    if attempt < RETRY_PER_TICKER:
+                        logger.debug("  -> tentative %d échouée pour %s (%s), nouvel essai...", attempt + 1, symbol, exc)
+                        ib.sleep(RETRY_PAUSE_SEC)
+                attempt += 1
+
+            processed_keys.add(key)
+            if rows is not None:
+                append_checkpoint(args.output_dir, rows)
+                ok_count += 1
+                logger.info("  -> %d contrats récupérés pour %s", len(rows), symbol)
+            else:
+                fail_count += 1
+                logger.warning("  -> ECHEC pour %s : %s (ticker ignoré, on continue)", symbol, last_exc)
+
+            since_last_checkpoint += 1
+            if since_last_checkpoint >= CHECKPOINT_EVERY:
+                save_progress(args.output_dir, processed_keys)
+                since_last_checkpoint = 0
+
+        if args.av_backfill_dates:
+            if av_quota is not None:
+                backfill_alpha_vantage_history(ib, universe, args.av_backfill_dates, av_quota)
+            else:
+                logger.warning(
+                    "--av-backfill-dates demandé mais Alpha Vantage est désactivé "
+                    "(ALPHAVANTAGE_API_KEY manquante ou --no-alpha-vantage) : backfill ignoré."
+                )
+    finally:
+        save_progress(args.output_dir, processed_keys)
+        ib.disconnect()
+        logger.info("Déconnecté d'IBKR.")
+
+    logger.info("Terminé. OK: %d | Echecs: %d | Skippés: %d | Exchanges blacklistés: %s", ok_count, fail_count, skip_count, sorted(BLACKLISTED_EXCHANGES))
+
+    all_rows = load_checkpoint_rows(args.output_dir)
+    if not all_rows:
+        logger.warning("Aucune donnée récupérée, pas de fichier de sortie généré.")
+        return
+
+    df = pd.DataFrame(all_rows)
+    for col in REQUIRED_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+
+    # Horodatage unique pour tout le run (une ligne = une date de snapshot),
+    # pratique pour regrouper/filtrer les archives par date côté rapport.
+    run_started_at = datetime.now()
+    df["snapshot_date"] = run_started_at.date().isoformat()
+    df["snapshot_datetime"] = run_started_at.isoformat(timespec="seconds")
+
+    # --output-dir pilote désormais réellement l'emplacement du fichier de
+    # sortie (avant : seuls logs/checkpoint en tenaient compte, le fichier de
+    # données allait toujours dans config.OPTIONS_FILE quel que soit l'argument).
+    output_file = args.output_dir / config.OPTIONS_FILE.name
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(output_file, index=False, engine="pyarrow")
+    logger.info("Fichier écrit (dernier snapshot) : %s (%d lignes)", output_file, len(df))
+
+    # Archive en plus un fichier horodaté, JAMAIS écrasé, pour construire une
+    # nappe de volatilité qui évolue dans le temps (le fichier ci-dessus,
+    # lui, est toujours remplacé au run suivant). Un fichier par run.
+    config.DIR_OPTIONS_HISTORY.mkdir(parents=True, exist_ok=True)
+    history_file = config.DIR_OPTIONS_HISTORY / f"option_chains_{run_started_at:%Y%m%d_%H%M%S}.parquet"
+    df.to_parquet(history_file, index=False, engine="pyarrow")
+    logger.info("Fichier archivé (historique) : %s (%d lignes)", history_file, len(df))
+
+
+if __name__ == "__main__":
+    main()

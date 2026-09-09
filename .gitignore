@@ -1,0 +1,11 @@
+# Identifiants -- NE JAMAIS committer
+.env
+
+# Données du pipeline (volumineuses, régénérables)
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

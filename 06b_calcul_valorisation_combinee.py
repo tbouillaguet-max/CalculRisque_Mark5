@@ -1,0 +1,719 @@
+"""
+Valorisation théorique COMBINÉE (multiples sectoriels en priorité, DCF en
+repli), pour CHAQUE exercice historique -- signal utilisé par la stratégie
+options (backtest/strategies/valuation_gap_options.py). La stratégie actions
+(backtest/strategies/valuation_gap.py) continue elle d'utiliser le DCF seul
+(dcf_historique.parquet, 07) et n'est pas affectée par ce script.
+
+Pourquoi pas 06_calcul_multiples_moyens.py : ce script blend TOUT
+l'historique en un seul jeu de moyennes/médianes par secteur, ce qui
+introduirait un biais de look-ahead si on l'utilisait pour valoriser une
+entreprise à une date passée (les multiples sectoriels évoluent dans le
+temps -- le P/E moyen de la tech en 2010 n'a rien à voir avec 2021). Ici, les
+multiples sectoriels moyens sont recalculés PAR ANNÉE (comparaison
+cross-sectionnelle des seuls pairs de cette année-là).
+
+Méthode, pour chaque ligne (symbol, period_type, fiscal_year, fiscal_quarter)
+-- period_type="FY" (annuel, 04) ou "TTM" (trimestriel glissant, 04b, si
+config.FINANCIALS_TTM_FILE existe ; sinon annuel seul, comportement inchangé) :
+    1. Multiples sectoriels du même "millésime de publication" (période
+       exacte : même period_type + fiscal_year + fiscal_quarter), à partir des
+       seules entreprises du même secteur pour cette période (ignoré si moins
+       de MIN_PEERS_PER_SECTOR_YEAR pairs disponibles -- plus fréquent en TTM
+       tant que peu d'entreprises ont un historique 04b, repli DCF alors plus
+       sollicité, cf. point 4). Agrégés par MOYENNE HARMONIQUE, l'estimateur de
+       variance minimale d'un ratio (cf. config.SECTOR_MULTIPLE_AGGREGATOR) ;
+       "median" restitue le comportement historique.
+    2. Valeur implicite par action selon chacun des 3 multiples, appliqués
+       aux fondamentaux propres de l'entreprise (EBITDA, revenue, net_income).
+    3. valuation_multiples_per_share = combinaison de ces valeurs implicites
+       PAR HIÉRARCHIE DE FIABILITÉ : les multiples de résultats (P/E,
+       EV/EBITDA) quand au moins un est exploitable, EV/Sales seulement à
+       défaut (cf. config.MULTIPLE_COMBINATION). L'ancienne médiane à trois
+       voix traitait les trois comme également informatifs, si bien qu'EV/Sales
+       -- le moins précis des trois -- tranchait dès que les deux autres
+       divergeaient ; "flat" la restitue.
+    4. Repli sur valuation_dcf_per_share (07) si aucun multiple sectoriel
+       n'est exploitable cette année-là (secteur trop restreint, fondamentaux
+       manquants...).
+
+Bénéfice notable du repli multiples-d'abord : une banque ou une foncière
+(EBIT non tagué en XBRL, cf. 04 ; et désormais écartées du DCF par
+config.SECTORS_SANS_DCF) peut avoir une valorisation par les multiples même
+quand son DCF est impossible à calculer -- les multiples ne nécessitent pas
+l'EBIT.
+
+COMPOSITION DU GROUPE DE PAIRS (biais de survivance, reclassements GICS)
+------------------------------------------------------------------------
+Recalculer les multiples par millésime de publication supprime le look-ahead
+temporel (le P/E médian de la tech en 2012 n'est pas celui de 2021), mais pas
+les erreurs de COMPOSITION du groupe de pairs. Deux d'entre elles sont
+désormais corrigées ici, via sector_history.py :
+
+    - QUI était dans l'indice. Les pairs d'une ligne sont restreints aux
+      entreprises qui étaient MEMBRES de l'indice à sa filed_date
+      (config.UNIVERSE_HISTORY_FILE, 01b). Cela écarte les entrantes
+      postérieures -- une entreprise entrée au S&P 500 en 2020 ne pesait pas
+      dans la médiane de 2012 -- et, une fois les données backfillées, remet
+      les radiées dans les millésimes où elles comptaient.
+
+    - DANS QUEL SECTEUR elle était. Le secteur GICS actuel n'est plus appliqué
+      rétroactivement par-dessus les remaniements de la nomenclature : la
+      colonne `sector` porte le secteur POINT-IN-TIME (sector_history::
+      sector_asof), et `sector_current` le secteur d'aujourd'hui. Avant
+      septembre 2018, Alphabet et Meta sont donc de nouveau comparées à la
+      technologie et non aux médias.
+
+CE QUI RESTE À FAIRE HORS DE CE SCRIPT : restreindre les pairs aux membres
+d'alors ne CRÉE pas les lignes manquantes. Tant que 03b/04/04b n'ont pas été
+backfillés sur config.UNIVERSE_FULL_FILE (01b), les entreprises radiées restent
+absentes de multiples.parquet. La différence est qu'elle est maintenant
+MESURÉE et non plus supposée : la couverture réelle de l'univers point-in-time
+est calculée par millésime et journalisée en fin de run (part de l'indice
+d'alors réellement présente dans les médianes). Procédure de backfill dans le
+README.
+
+Le nombre de pairs réellement utilisés par ligne est exposé dans les colonnes
+*_n_peers, et la robustesse par (secteur, millésime) reste journalisée.
+
+Usage :
+    python 06b_calcul_valorisation_combinee.py
+    python 06b_calcul_valorisation_combinee.py --no-point-in-time-peers
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+import config
+import sector_history
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
+
+MULTIPLE_COLUMNS = ["EV/EBITDA", "EV/Sales", "P/E"]
+# En dessous, la médiane sectorielle n'est pas jugée assez robuste. À 3 pairs,
+# la "médiane" est la valeur du milieu d'un trio : aucune robustesse à un
+# outlier, alors que c'est précisément ce qu'on lui demande.
+MIN_PEERS_PER_SECTOR_YEAR = 5
+
+# Délai de dépôt SEC par défaut (~2-3 mois après la clôture d'exercice),
+# utilisé UNIQUEMENT en repli quand filed_date est introuvable (cache
+# financials.parquet/dcf_historique.parquet antérieur à l'ajout de cette
+# colonne à 04_recuperation_10k.py, ou jamais régénéré depuis -- un run
+# throttlé de 04 qui ne retélécharge rien laisse l'ancien schéma en place).
+DEFAULT_FILING_LAG_DAYS = 75
+
+
+GROUP_COLUMNS = ["sector", "period_type", "fiscal_year", "fiscal_quarter"]
+
+
+def _normalize_fiscal_quarter(df: pd.DataFrame) -> pd.DataFrame:
+    """Force fiscal_quarter en dtype object (défensif : un aller-retour
+    Parquet, ou un DataFrame construit différemment selon la provenance,
+    peut typer une colonne 100% None en float64 d'un côté et object de
+    l'autre -- merge/groupby échouent alors sur cette clé)."""
+    if "fiscal_quarter" in df.columns:
+        df = df.copy()
+        df["fiscal_quarter"] = df["fiscal_quarter"].astype(object)
+    return df
+
+
+def _ensure_period_columns(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
+    """multiples.parquet (05) porte period_type/fiscal_year/fiscal_quarter
+    depuis l'ajout du TTM (04b) -- absent seulement si régénéré par une
+    version de 05 antérieure à ce changement. Repli en "tout annuel" (comme
+    avant) plutôt que de planter, avec le même style d'avertissement que le
+    repli filed_date déjà en place plus bas."""
+    missing = [c for c in ("period_type", "fiscal_year", "fiscal_quarter") if c not in df.columns]
+    if not missing:
+        return df
+    logger.warning(
+        "%s n'a pas de colonne(s) %s : relance 05_calcul_multiples.py pour bénéficier du TTM "
+        "(04b_recuperation_10q.py). Repli sur period_type='FY' uniquement en attendant.",
+        source_label, missing,
+    )
+    df = df.copy()
+    df["period_type"] = "FY"
+    df["fiscal_year"] = df["year"]
+    # dtype "object" explicite -- voir le même commentaire dans
+    # 05_calcul_multiples.py::load_financials_with_periods (sinon merge/
+    # groupby ultérieur sur fiscal_quarter échoue si l'autre côté a des
+    # valeurs "Q1".."Q4", object).
+    df["fiscal_quarter"] = pd.Series([None] * len(df), index=df.index, dtype=object)
+    return df
+
+
+def _clean_multiple(values: pd.Series, col: str) -> pd.Series:
+    """Multiples exploitables d'une colonne : finis, strictement positifs, et
+    dans la plage de plausibilité du multiple (cf.
+    config.MULTIPLE_PLAUSIBLE_RANGE) -- un P/E à 800x (sortie de perte)
+    déplace la médiane d'un secteur peu peuplé."""
+    vals = values.replace([np.inf, -np.inf], np.nan).dropna()
+    vals = vals[vals > 0]
+    lo, hi = config.MULTIPLE_PLAUSIBLE_RANGE.get(col, (0.0, float("inf")))
+    return vals[(vals >= lo) & (vals <= hi)]
+
+
+def aggregate_multiple(values: pd.Series, aggregator: Optional[str] = None) -> Optional[float]:
+    """Multiple représentatif d'un groupe de pairs -- moyenne HARMONIQUE par
+    défaut, médiane si config.SECTOR_MULTIPLE_AGGREGATOR vaut "median".
+
+    La moyenne harmonique revient à moyenner les RENDEMENTS (1/multiple) puis à
+    réinverser : c'est l'estimateur de variance minimale d'un ratio sous erreur
+    multiplicative (Baker & Ruback, 1999 -- voir config.SECTOR_MULTIPLE_AGGREGATOR
+    pour le raisonnement complet).
+
+    `values` est supposée DÉJÀ NETTOYÉE par _clean_multiple : strictement
+    positive et dans les bornes de plausibilité. La borne BASSE compte ici plus
+    que pour une médiane -- un multiple minuscule devient un rendement énorme et
+    tire toute la moyenne -- d'où les planchers de
+    config.MULTIPLE_PLAUSIBLE_RANGE."""
+    if aggregator is None:
+        aggregator = config.SECTOR_MULTIPLE_AGGREGATOR
+    if values.empty:
+        return None
+    if aggregator == "median":
+        return float(values.median())
+    if aggregator != "harmonic":
+        raise ValueError(
+            f"SECTOR_MULTIPLE_AGGREGATOR attend 'harmonic' ou 'median', reçu {aggregator!r}.")
+    # _clean_multiple garantit values > 0, donc aucune division par zéro ; la
+    # garde reste pour un appel direct avec des données non nettoyées.
+    positives = values[values > 0]
+    if positives.empty:
+        return None
+    return float(len(positives) / (1.0 / positives).sum())
+
+
+def combine_implied_prices(
+    implied: pd.DataFrame, combination: Optional[str] = None,
+) -> pd.Series:
+    """Valeur théorique par action à partir des prix implicites des trois
+    multiples -- par HIÉRARCHIE DE FIABILITÉ par défaut (cf.
+    config.MULTIPLE_COMBINATION), médiane à plat si "flat".
+
+    En mode "tiers", chaque ligne n'utilise que le MEILLEUR rang disponible :
+    les multiples de résultats (P/E, EV/EBITDA) quand au moins un est
+    exploitable, EV/Sales seulement à défaut. À l'intérieur d'un rang, la
+    médiane -- pour deux valeurs, c'est leur moyenne.
+
+    Le calcul est vectorisé par rang plutôt que ligne à ligne : le nombre de
+    rangs est fixe (deux) alors que le nombre de lignes se compte en dizaines
+    de milliers."""
+    if combination is None:
+        combination = config.MULTIPLE_COMBINATION
+    if combination == "flat":
+        return implied.median(axis=1, skipna=True)
+    if combination != "tiers":
+        raise ValueError(
+            f"MULTIPLE_COMBINATION attend 'tiers' ou 'flat', reçu {combination!r}.")
+
+    tiers = config.MULTIPLE_RELIABILITY_TIERS
+    resultat = pd.Series(np.nan, index=implied.index, dtype=float)
+    for rang in sorted(set(tiers.get(col, max(tiers.values()) + 1) for col in implied.columns)):
+        colonnes = [c for c in implied.columns if tiers.get(c, max(tiers.values()) + 1) == rang]
+        if not colonnes:
+            continue
+        candidat = implied[colonnes].median(axis=1, skipna=True)
+        # Un rang ne sert qu'aux lignes qu'aucun rang MEILLEUR n'a servies.
+        resultat = resultat.where(resultat.notna(), candidat)
+    return resultat
+
+
+def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
+    """Médiane de chaque multiple par (secteur, period_type, fiscal_year,
+    fiscal_quarter) -- comparaison cross-sectionnelle au sein du même
+    "millésime de publication" (une ligne TTM-Q3-2025 comparée aux pairs
+    eux-mêmes en TTM-Q3-2025, pas mélangée avec des exercices FY d'une autre
+    période). Avec period_type="FY" uniquement (pas de 04b), équivaut à
+    l'ancien regroupement par (secteur, année).
+
+    ATTENTION : cette fonction ne connaît PAS les dates de dépôt, donc sa
+    médiane inclut des pairs déposés APRÈS la ligne valorisée. C'est
+    compute_pit_sector_multiples ci-dessous qui produit la version
+    point-in-time réellement consommée ; celle-ci reste utilisée pour la
+    statistique de couverture (log_peer_coverage), où l'on veut au contraire
+    la population complète de chaque millésime."""
+    df = _normalize_fiscal_quarter(df)
+    valid = df.dropna(subset=["sector"])
+    rows = []
+    for keys, group in valid.groupby(GROUP_COLUMNS, dropna=False):
+        row = dict(zip(GROUP_COLUMNS, keys))
+        for col in MULTIPLE_COLUMNS:
+            vals = _clean_multiple(group[col], col)
+            row[f"{col}_median"] = (
+                aggregate_multiple(vals) if len(vals) >= MIN_PEERS_PER_SECTOR_YEAR else None
+            )
+            row[f"{col}_n_peers"] = len(vals)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def compute_pit_sector_multiples(
+    df: pd.DataFrame, membership: Optional[sector_history.MembershipIndex] = None,
+) -> pd.DataFrame:
+    """Médianes sectorielles POINT-IN-TIME : pour chaque ligne, la médiane
+    n'est calculée que sur les pairs du même millésime DÉJÀ DÉPOSÉS à sa
+    propre filed_date, et qui étaient MEMBRES DE L'INDICE à cette date.
+
+    POURQUOI. Regrouper par millésime de publication supprime le mélange
+    ENTRE millésimes (le P/E médian de la tech en 2012 n'est pas celui de
+    2021), et c'est ce que faisait déjà ce script. Mais cela ne supprime pas
+    le décalage À L'INTÉRIEUR d'un millésime : le multiple d'un pair est
+    calculé sur SON cours à SA propre filed_date (cf.
+    05_calcul_multiples.match_price_asof), et les 10-K d'un même exercice
+    s'étalent sur près de trois mois. La médiane servant à valoriser une
+    entreprise qui dépose en février intégrait donc les cours de bourse de ses
+    pairs jusqu'en avril -- jusqu'à trois mois d'information future, sur la
+    grandeur la plus sensible qui soit.
+
+    CONSÉQUENCE ASSUMÉE : les premiers déposants d'un millésime voient moins
+    de pairs, parfois moins que MIN_PEERS_PER_SECTOR_YEAR -- ils retombent
+    alors sur le repli DCF (source="dcf_fallback"). C'est la réalité de
+    l'information disponible à cette date, pas une dégradation.
+
+    APPARTENANCE À L'INDICE (`membership`, cf. sector_history) : un pair n'est
+    retenu que s'il était membre de l'indice à la filed_date de la ligne
+    valorisée. Sans ce filtre, la médiane de 2012 intègre les entreprises
+    ENTRÉES depuis -- or une entrée au S&P 500 récompense en général un
+    parcours boursier, ce qui pousse la médiane vers le haut exactement comme
+    l'absence des radiées. `membership=None` désactive la restriction
+    (comportement d'avant, conservé pour comparaison chiffrée).
+
+    Le nombre de pairs RÉELLEMENT utilisés est reporté par ligne dans
+    `<multiple>_n_peers` (et non plus par groupe) : deux entreprises du même
+    secteur et du même millésime n'ont plus forcément la même médiane, ni le
+    même nombre de pairs derrière."""
+    df = _normalize_fiscal_quarter(df)
+    out_index, out_rows = [], []
+
+    for _, group in df.dropna(subset=["sector"]).groupby(GROUP_COLUMNS, dropna=False):
+        # Les lignes sans filed_date exploitable ne peuvent pas être datées :
+        # elles voient l'ensemble du millésime, comme avant (le repli
+        # year+1-04-01 est appliqué plus loin, après ce calcul).
+        filed = pd.to_datetime(group.get("filed_date"), errors="coerce")
+        order = np.argsort(filed.to_numpy(dtype="datetime64[ns]"), kind="stable")
+        ordered = group.iloc[order]
+        ordered_filed = filed.iloc[order].to_numpy(dtype="datetime64[ns]")
+
+        cleaned = {col: _clean_multiple(ordered[col], col) for col in MULTIPLE_COLUMNS}
+        ordered_symbols = (
+            ordered["symbol"].to_numpy() if "symbol" in ordered.columns else None
+        )
+
+        for position, (idx, when) in enumerate(zip(ordered.index, ordered_filed)):
+            # Membres de l'indice à CETTE date, parmi les pairs déjà déposés.
+            # Calculé une fois par ligne (et non par multiple) : les trois
+            # colonnes partagent la même restriction d'appartenance.
+            deja_deposes = ordered.index[: position + 1]
+            if membership and ordered_symbols is not None and not np.isnat(when):
+                membres = pd.Index([
+                    peer_idx for peer_idx, peer_symbol
+                    in zip(deja_deposes, ordered_symbols[: position + 1])
+                    if membership.is_member(peer_symbol, when)
+                ])
+            else:
+                membres = deja_deposes
+
+            row = {}
+            for col in MULTIPLE_COLUMNS:
+                vals = cleaned[col]
+                if np.isnat(when):
+                    visible = vals  # date inconnue : pas de restriction possible
+                else:
+                    # Pairs dont la filed_date est <= la nôtre ET qui étaient
+                    # membres de l'indice à cette date -- restreints à ceux
+                    # qui ont un multiple exploitable pour cette colonne.
+                    visible = vals[vals.index.isin(membres)]
+                # La ligne elle-même est exclue de sa propre médiane : se
+                # comparer à soi tire mécaniquement l'écart vers zéro.
+                visible = visible.drop(index=idx, errors="ignore")
+                row[f"{col}_median"] = (
+                    aggregate_multiple(visible) if len(visible) >= MIN_PEERS_PER_SECTOR_YEAR else None
+                )
+                row[f"{col}_n_peers"] = len(visible)
+            out_index.append(idx)
+            out_rows.append(row)
+
+    return pd.DataFrame(out_rows, index=out_index).reindex(df.index)
+
+
+def log_peer_coverage(sector_year_multiples: pd.DataFrame) -> None:
+    """Journalise le nombre de pairs par (secteur, millésime) : c'est la
+    mesure directe de la robustesse des médianes, déjà calculée dans les
+    colonnes *_n_peers mais jamais exposée. Une médiane assise sur 5 pairs et
+    une assise sur 40 ne méritent pas la même confiance."""
+    if sector_year_multiples.empty:
+        return
+    peer_columns = [f"{col}_n_peers" for col in MULTIPLE_COLUMNS if f"{col}_n_peers" in sector_year_multiples]
+    if not peer_columns:
+        return
+
+    peers = sector_year_multiples[peer_columns].max(axis=1)
+    retenues = sum(sector_year_multiples[f"{col}_median"].notna().sum() for col in MULTIPLE_COLUMNS)
+    total = len(sector_year_multiples) * len(MULTIPLE_COLUMNS)
+    logger.info(
+        "Médianes sectorielles : %d groupes (secteur x millésime), %d pairs en médiane "
+        "(min %d, max %d) ; %d/%d médianes retenues (seuil : %d pairs).",
+        len(sector_year_multiples), int(peers.median()), int(peers.min()), int(peers.max()),
+        retenues, total, MIN_PEERS_PER_SECTOR_YEAR,
+    )
+    maigres = int((peers < MIN_PEERS_PER_SECTOR_YEAR).sum())
+    if maigres:
+        logger.info(
+            "%d/%d groupes ont moins de %d pairs : leurs multiples sont écartés et ces "
+            "entreprises retombent sur le DCF (source='dcf_fallback').",
+            maigres, len(sector_year_multiples), MIN_PEERS_PER_SECTOR_YEAR,
+        )
+
+
+def apply_point_in_time_sectors(multiples: pd.DataFrame) -> pd.DataFrame:
+    """Remplace `sector` (photo GICS actuelle) par le secteur tel qu'il était
+    classé à la filed_date de chaque ligne, et conserve l'ancien dans
+    `sector_current`.
+
+    Le remplacement porte sur la colonne `sector` elle-même, et pas sur une
+    colonne parallèle, pour que TOUT ce qui suit en hérite sans le savoir : le
+    regroupement des pairs, mais aussi config.SECTOR_MULTIPLES (quels multiples
+    ont un sens pour ce secteur). Une ligne Alphabet de 2015 doit être
+    comparée à la technologie ET jugée avec les multiples de la technologie."""
+    if "sector" not in multiples.columns:
+        return multiples
+
+    df = sector_history.apply_sector_asof(
+        multiples, symbol_col="symbol", sector_col="sector",
+        date_col="filed_date", target_col="_sector_asof",
+    )
+    df["sector_current"] = df["sector"]
+    df["sector"] = df["_sector_asof"]
+    df = df.drop(columns=["_sector_asof"])
+
+    reclasses = df["sector"] != df["sector_current"]
+    reclasses &= df["sector"].notna() & df["sector_current"].notna()
+    if reclasses.any():
+        detail = (
+            df.loc[reclasses]
+            .groupby(["sector_current", "sector"], dropna=False)["symbol"].nunique()
+            .sort_values(ascending=False)
+        )
+        logger.info(
+            "Reclassements GICS appliqués : %d lignes (%d entreprises) reclassées à leur "
+            "secteur d'époque. Mouvements (secteur actuel -> secteur d'alors, nb entreprises) : %s",
+            int(reclasses.sum()), df.loc[reclasses, "symbol"].nunique(),
+            {f"{actuel} -> {alors}": int(n) for (actuel, alors), n in detail.items()},
+        )
+    else:
+        logger.info(
+            "Aucun reclassement GICS applicable sur cet historique (aucune entreprise de "
+            "sector_history.GICS_RECLASSIFICATIONS présente, ou historique entièrement "
+            "postérieur au dernier remaniement)."
+        )
+    return df
+
+
+def log_universe_coverage(multiples: pd.DataFrame, history: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Couverture de l'univers RÉEL par millésime : quelle part de l'indice
+    d'alors est effectivement présente dans les médianes.
+
+    C'est la mesure du biais de survivance RÉSIDUEL. Elle remplace l'ancien
+    avertissement binaire ("des radiées manquent") par un chiffre daté : une
+    couverture de 100 % dit que la médiane de ce millésime porte sur l'indice
+    complet, 62 % dit exactement de combien elle est amputée."""
+    vide = pd.DataFrame(columns=["fiscal_year", "members", "present", "coverage_ratio"])
+    if history is None or history.empty or "filed_date" not in multiples.columns:
+        logger.warning(
+            "01b_historique_univers_sp500.py jamais lancé (%s absent) : la composition "
+            "point-in-time des pairs est DÉSACTIVÉE et le biais de survivance reste "
+            "non mesurable. Lance 01b, puis backfille 03b/04/04b avec --tickers %s.",
+            getattr(config, "UNIVERSE_HISTORY_FILE", "?"),
+            getattr(config, "UNIVERSE_FULL_FILE", "?"),
+        )
+        return vide
+
+    dates = pd.to_datetime(multiples["filed_date"], errors="coerce")
+    annees = dates.dt.year
+    rows = []
+    for annee in sorted(annees.dropna().unique()):
+        presents = set(multiples.loc[annees == annee, "symbol"].dropna())
+        # Milieu d'année : une date de référence unique par millésime suffit
+        # pour une statistique de couverture, et évite de dépendre de la
+        # dispersion des dates de dépôt à l'intérieur de l'année.
+        rapport = sector_history.coverage_report(
+            history, presents, pd.Timestamp(year=int(annee), month=7, day=1),
+        )
+        if rapport is None:
+            continue
+        rows.append({
+            "fiscal_year": int(annee), "members": rapport["members"],
+            "present": rapport["present"], "coverage_ratio": rapport["coverage_ratio"],
+        })
+
+    couverture = pd.DataFrame(rows)
+    if couverture.empty:
+        return vide
+
+    moyenne = couverture["coverage_ratio"].mean()
+    pire = couverture.loc[couverture["coverage_ratio"].idxmin()]
+    logger.info(
+        "Couverture de l'univers point-in-time : %.0f%% en moyenne sur %d millésimes "
+        "(pire : %.0f%% en %d, %d/%d membres présents).",
+        moyenne * 100, len(couverture), pire["coverage_ratio"] * 100,
+        int(pire["fiscal_year"]), int(pire["present"]), int(pire["members"]),
+    )
+    if moyenne < 0.95:
+        logger.warning(
+            "Il manque en moyenne %.0f%% de l'indice d'alors dans %s : les entreprises "
+            "radiées n'ayant jamais été backfillées, les médianes sectorielles historiques "
+            "restent calculées sur les survivantes et donc SURESTIMÉES. Backfille 03b, 04 "
+            "et 04b avec --tickers %s, puis relance 05 et 06b.",
+            (1 - moyenne) * 100, config.MULTIPLES_FILE,
+            getattr(config, "UNIVERSE_FULL_FILE", "?"),
+        )
+    return couverture
+
+
+def warn_if_delisted_missing(multiples: pd.DataFrame) -> None:
+    """Avertit quand des entreprises RADIÉES connues de 01b sont absentes de
+    multiples.parquet : ce sont exactement celles dont l'absence biaise les
+    médianes sectorielles historiques (voir la limite documentée en tête de
+    fichier). Sans 01b, on ne peut rien dire -- silence plutôt que fausse
+    assurance."""
+    path = getattr(config, "UNIVERSE_FULL_FILE", None)
+    if path is None or not path.exists():
+        logger.info(
+            "01b_historique_univers_sp500.py jamais lancé : impossible de mesurer combien "
+            "d'entreprises radiées manquent aux médianes sectorielles (biais de survivance "
+            "non quantifiable, voir la docstring de ce fichier)."
+        )
+        return
+
+    try:
+        full = pd.read_csv(path, encoding="utf-8-sig")
+    except (OSError, pd.errors.ParserError) as exc:
+        logger.warning("%s illisible (%s) : couverture de l'univers non vérifiée.", path, exc)
+        return
+
+    if "RIC" not in full.columns:
+        return
+    connus = set(full["RIC"].dropna().map(config.to_ib_symbol))
+    presents = set(multiples["symbol"].dropna().unique())
+    manquants = connus - presents
+    if manquants:
+        apercu = ", ".join(sorted(manquants)[:15])
+        logger.warning(
+            "%d/%d entreprises de l'univers COMPLET (01b) sont absentes de %s : les médianes "
+            "sectorielles historiques sont donc calculées sur les seuls survivants, et "
+            "probablement SURESTIMÉES. Backfille 03b et 04 avec --tickers %s, puis relance "
+            "05 et 06b. Manquantes (extrait) : %s%s",
+            len(manquants), len(connus), config.MULTIPLES_FILE, path, apercu,
+            "..." if len(manquants) > 15 else "",
+        )
+
+
+def compute_implied_valuations(
+    df: pd.DataFrame, sector_year_multiples: pd.DataFrame = None,
+    membership: Optional[sector_history.MembershipIndex] = None,
+) -> pd.DataFrame:
+    """`sector_year_multiples` : table par GROUP_COLUMNS (comportement
+    historique, non point-in-time) ou None pour calculer les médianes
+    POINT-IN-TIME ligne à ligne (défaut, cf. compute_pit_sector_multiples).
+    `membership` : voir compute_pit_sector_multiples."""
+    df = _normalize_fiscal_quarter(df).reset_index(drop=True)
+    if sector_year_multiples is None:
+        df = pd.concat([df, compute_pit_sector_multiples(df, membership)], axis=1)
+    else:
+        sector_year_multiples = _normalize_fiscal_quarter(sector_year_multiples)
+        df = df.merge(sector_year_multiples, on=GROUP_COLUMNS, how="left")
+
+    ev_ebitda_med, ev_sales_med, pe_med = df["EV/EBITDA_median"], df["EV/Sales_median"], df["P/E_median"]
+    ebitda, revenue, net_income = df["ebitda"], df["revenue"], df["net_income"]
+    shares = df["shares_outstanding"]
+    # net_debt (04) est DÉJÀ net de cash (dette brute - cash) : la conversion
+    # EV -> equity est donc simplement "EV - net_debt". 07_calcul_dcf.py
+    # applique la même formule (calculer_dcf : equity_value = ev - dette_nette)
+    # -- son ancien "EV - net_debt + cash", qui comptait le cash deux fois, a
+    # été corrigé depuis, et ce commentaire décrivait un écart qui n'existe
+    # plus entre les deux scripts.
+    net_debt = df["net_debt"]
+
+    def implied_price(implied_ev: pd.Series) -> pd.Series:
+        equity = implied_ev - net_debt
+        price = equity / shares
+        return price.where((shares > 0) & np.isfinite(price))
+
+    price_from_ebitda = implied_price(ev_ebitda_med * ebitda).where(ebitda > 0)
+    price_from_sales = implied_price(ev_sales_med * revenue).where(revenue > 0)
+    price_from_pe = (pe_med * (net_income / shares)).where((net_income > 0) & (shares > 0))
+
+    # Chaque multiple n'est retenu que s'il a un sens pour le secteur de la
+    # ligne (config.SECTOR_MULTIPLES) : sinon la médiane des trois valeurs
+    # implicites mélange, pour une banque, un P/E pertinent et un EV/EBITDA
+    # qui ne veut rien dire.
+    for col, series in (("EV/EBITDA", price_from_ebitda), ("EV/Sales", price_from_sales), ("P/E", price_from_pe)):
+        applicable = df["sector"].map(
+            lambda s: col in config.SECTOR_MULTIPLES.get(
+                s if isinstance(s, str) else "", config.SECTOR_MULTIPLES["_default"],
+            )
+        )
+        series.where(applicable, inplace=True)
+
+    implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
+    df["valuation_multiples_per_share"] = combine_implied_prices(implied)
+    df["n_multiples_used"] = implied.notna().sum(axis=1)
+    # ROBUSTESSE de la médiane derrière cette valorisation : le nombre de
+    # pairs du multiple le mieux fourni parmi ceux réellement utilisés.
+    # Propagé jusqu'au signal pour qu'un écart de 30% adossé à 40 pairs et le
+    # même adossé à 5 cessent d'être indiscernables en aval.
+    peer_columns = [f"{col}_n_peers" for col in MULTIPLE_COLUMNS if f"{col}_n_peers" in df.columns]
+    df["n_peers"] = df[peer_columns].max(axis=1) if peer_columns else np.nan
+    df["price_from_ev_ebitda"] = price_from_ebitda
+    df["price_from_ev_sales"] = price_from_sales
+    df["price_from_pe"] = price_from_pe
+    return df
+
+
+def build_combined_valuation(point_in_time_peers: bool = True) -> pd.DataFrame:
+    multiples = pd.read_parquet(config.MULTIPLES_FILE)
+    if "filed_date" not in multiples.columns:
+        # multiples.parquet régénéré par 05 à partir d'un financials.parquet
+        # antérieur à l'ajout de filed_date (04_recuperation_10k.py), ou
+        # jamais régénéré depuis (un run throttlé de 04 qui ne retélécharge
+        # rien laisse l'ancien schéma en place) : colonne absente plutôt que
+        # simplement vide. Créée à NaT ici pour ne pas planter -- complétée
+        # par repli plus bas, mais régénère financials.parquet
+        # (04 --force-refresh, puis 05) pour une date réelle.
+        logger.warning(
+            "%s n'a pas de colonne filed_date : relance 04_recuperation_10k.py "
+            "--force-refresh puis 05_calcul_multiples.py pour une date réelle. "
+            "Repli sur une approximation en attendant.", config.MULTIPLES_FILE,
+        )
+        multiples = multiples.copy()
+        multiples["filed_date"] = pd.NaT
+
+    multiples = _ensure_period_columns(multiples, str(config.MULTIPLES_FILE))
+
+    if not config.DCF_HISTORY_FILE.exists():
+        raise FileNotFoundError(f"{config.DCF_HISTORY_FILE} introuvable. Lance d'abord 07_calcul_dcf.py.")
+    dcf_history = pd.read_parquet(config.DCF_HISTORY_FILE)
+    dcf_history = _ensure_period_columns(dcf_history, str(config.DCF_HISTORY_FILE))
+    dcf_history = _normalize_fiscal_quarter(dcf_history)
+
+    # Composition point-in-time du groupe de pairs (voir l'en-tête de fichier
+    # et sector_history.py) : secteur d'époque d'abord, appartenance à
+    # l'indice ensuite. L'ordre compte -- le regroupement par secteur doit
+    # déjà porter les libellés d'époque quand les médianes sont calculées.
+    history = sector_history.load_universe_history() if point_in_time_peers else None
+    if point_in_time_peers:
+        multiples = apply_point_in_time_sectors(multiples)
+    else:
+        logger.warning(
+            "--no-point-in-time-peers : secteur ACTUEL appliqué rétroactivement et pairs "
+            "non restreints aux membres de l'indice d'alors. Comportement d'avant la "
+            "correction, à n'utiliser que pour chiffrer l'écart entre les deux."
+        )
+    membership = sector_history.MembershipIndex(history)
+    log_universe_coverage(multiples, history)
+
+    # La table par millésime ne sert plus qu'à la statistique de couverture :
+    # la valorisation, elle, passe par les médianes POINT-IN-TIME (S4), qui
+    # n'intègrent que les pairs déjà déposés à la filed_date de chaque ligne
+    # et membres de l'indice à cette date.
+    log_peer_coverage(compute_sector_year_multiples(multiples))
+    warn_if_delisted_missing(multiples)
+    df = compute_implied_valuations(multiples, membership=membership if membership else None)
+    df = _normalize_fiscal_quarter(df)
+
+    df = df.merge(
+        dcf_history[["symbol", *GROUP_COLUMNS[1:], "valuation_dcf_per_share", "filed_date"]].rename(
+            columns={"filed_date": "filed_date_dcf"}
+        ),
+        on=["symbol", *GROUP_COLUMNS[1:]], how="left",
+    )
+    # filed_date de 05 (financials) en priorité, repli sur celle de 07 (DCF) si
+    # absente -- les deux dérivent normalement de la même ligne financials,
+    # donc identiques en pratique ; l'une peut manquer si un cache est plus
+    # ancien que l'autre.
+    df["filed_date"] = pd.to_datetime(df["filed_date"], errors="coerce")
+    df["filed_date_dcf"] = pd.to_datetime(df["filed_date_dcf"], errors="coerce")
+    df["filed_date"] = df["filed_date"].fillna(df["filed_date_dcf"])
+    df = df.drop(columns=["filed_date_dcf"])
+
+    missing_filed = df["filed_date"].isna()
+    if missing_filed.any():
+        df.loc[missing_filed, "filed_date"] = pd.to_datetime(
+            df.loc[missing_filed, "year"].astype(int).map(lambda y: pd.Timestamp(year=y + 1, month=4, day=1))
+        )
+        logger.warning(
+            "%d/%d lignes sans filed_date exploitable : approximé à year+1-04-01 "
+            "(délai de dépôt SEC par défaut, ~%d jours après la clôture).",
+            missing_filed.sum(), len(df), DEFAULT_FILING_LAG_DAYS,
+        )
+
+    has_multiples = df["valuation_multiples_per_share"].notna()
+    df["valuation_theoretical_per_share"] = df["valuation_multiples_per_share"].where(
+        has_multiples, df["valuation_dcf_per_share"]
+    )
+    df["source"] = np.select(
+        [has_multiples, df["valuation_dcf_per_share"].notna()],
+        ["multiples", "dcf_fallback"],
+        default=None,
+    )
+
+    df = df.dropna(subset=["valuation_theoretical_per_share", "close"]).copy()
+    df["gap_pct"] = (df["valuation_theoretical_per_share"] - df["close"]) / df["close"] * 100
+
+    colonnes = [
+        "symbol", "sector", "period_type", "year", "fiscal_quarter", "filed_date", "close",
+        "valuation_multiples_per_share", "valuation_dcf_per_share", "valuation_theoretical_per_share",
+        "source", "gap_pct", "n_multiples_used", "n_peers",
+        "price_from_ev_ebitda", "price_from_ev_sales", "price_from_pe",
+    ]
+    # `sector` porte le secteur D'ÉPOQUE ; `sector_current` (celui
+    # d'aujourd'hui) est propagé pour que l'écart reste auditable en aval.
+    if "sector_current" in df.columns:
+        colonnes.insert(colonnes.index("sector") + 1, "sector_current")
+    return df[colonnes].sort_values(["symbol", "filed_date"]).reset_index(drop=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--no-point-in-time-peers", action="store_true",
+        help="Désactive la composition point-in-time du groupe de pairs (secteur d'époque "
+             "et appartenance à l'indice) : rétablit le comportement d'avant la correction, "
+             "pour chiffrer l'écart entre les deux.",
+    )
+    args = parser.parse_args()
+
+    if not config.MULTIPLES_FILE.exists():
+        logger.error("Fichier manquant: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
+        return
+    if not config.DCF_HISTORY_FILE.exists():
+        logger.error("Fichier manquant: %s. Lance d'abord 07_calcul_dcf.py.", config.DCF_HISTORY_FILE)
+        return
+
+    df = build_combined_valuation(point_in_time_peers=not args.no_point_in_time_peers)
+    if df.empty:
+        logger.error("Aucune valorisation combinée calculée. Vérifie les données d'entrée.")
+        return
+
+    config.VALORISATION_COMBINEE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(config.VALORISATION_COMBINEE_FILE, index=False, engine="pyarrow")
+
+    n_multiples = (df["source"] == "multiples").sum()
+    n_fallback = (df["source"] == "dcf_fallback").sum()
+    logger.info(
+        "Valorisation combinée sauvegardée : %s (%d lignes, %d entreprises ; "
+        "%d via multiples sectoriels, %d en repli DCF).",
+        config.VALORISATION_COMBINEE_FILE, len(df), df["symbol"].nunique(), n_multiples, n_fallback,
+    )
+
+
+if __name__ == "__main__":
+    main()

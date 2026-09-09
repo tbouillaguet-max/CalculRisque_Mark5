@@ -1,0 +1,1424 @@
+"""
+Configuration partagée par tous les scripts du pipeline.
+
+Objectif du pipeline (entreprises américaines uniquement) : on récupère
+d'abord les données de marché "de base" (cours + 10-K), on en dérive une
+valorisation théorique, et on ne va chercher les chaînes d'options (lent,
+rate-limité côté IBKR) que pour les entreprises où cette valorisation
+théorique s'écarte significativement du cours de bourse.
+
+    01_build_universe.py        -> univers S&P 500 (RIC, Instrument_Name, Country, Currency, Exchange)
+    02_categoriser_secteurs.py  -> ajoute une colonne "sector" à l'univers
+    03_recuperation_cours.py    -> cours de clôture de fin d'année via IBKR
+    04_recuperation_10k.py      -> données financières ANNUELLES (10-K) via l'API XBRL
+                                    companyfacts de la SEC
+    04b_recuperation_10q.py     -> données TRIMESTRIELLES (10-Q + 10-K), reconstruit un TTM
+                                    (somme glissante des 4 derniers trimestres) point-in-time,
+                                    voir sa docstring pour la distinction TTM vs trimestre brut
+    04c_recuperation_8k.py      -> événements matériels (8-K) entre deux trimestres TTM connus,
+                                    classifiés par LLM (Mistral) via sec_filings_text.py
+    05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03(b) + 04 + 04b
+    07b_validation_qualitative.py -> verdict LLM de cohérence qualitative (texte du 10-K/10-Q à sa
+                                    date de dépôt) vs l'écart de valorisation quantitatif (07/06b)
+    06_calcul_multiples_moyens.py -> moyennes/médianes des multiples par secteur
+    07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
+                                    calcule l'écart en % entre cours de bourse et valeur théorique
+    08_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks, UNIQUEMENT
+                                    pour les entreprises dont l'écart calculé en 07 dépasse
+                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue). IV/greeks en
+                                    priorité via Alpha Vantage (gratuit, ALPHAVANTAGE_API_KEY,
+                                    voir 08), Black-Scholes local en dernier repli. --av-backfill-dates
+                                    permet aussi de reconstituer un VRAI historique d'options passées.
+
+Backtest (voir README.md pour le détail) :
+    01b_historique_univers_sp500.py     -> univers point-in-time (actuels + radiés)
+    03b_recuperation_cours_quotidiens.py -> cours quotidiens (IBKR + repli Stooq)
+    06b_calcul_valorisation_combinee.py -> valorisation combinée (multiples par année
+                                    en priorité, DCF en repli), signal de la stratégie options
+    09_backtest.py              -> backtest actions (écart DCF)
+    10_backtest_options.py      -> backtest options (call/put, dimensionné par delta)
+    11_optimize_options_stops.py -> grid-search stop-loss/take-profit sur ce moteur
+    12_analyse_put_call.py      -> décomposition CALL/PUT d'un run sauvegardé
+    13_diagnostic_friction.py   -> plan 2x2 thèse / friction / churn
+    11b_optimize_rebalance_threshold.py -> grid-search sur ε (rebalancement sur dépôt SEC)
+
+Tous les scripts lisent/écrivent dans des sous-dossiers de BASE_DIR, avec un
+schéma de colonnes commun défini ci-dessous, pour que les scripts puissent
+s'enchaîner sans transformation manuelle entre les deux.
+"""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Optional
+
+# ----------------------------------------------------------------------------
+# Arborescence de sortie (unique, partagée par tous les scripts)
+# ----------------------------------------------------------------------------
+# Change BASE_DIR si besoin (ex: vers un disque dédié). Tout le reste est
+# calculé automatiquement à partir de cette seule variable.
+BASE_DIR = Path("./data")
+
+DIR_UNIVERSE = BASE_DIR / "universe"
+DIR_PRICES = BASE_DIR / "prices"
+DIR_OPTIONS = BASE_DIR / "options"
+DIR_OPTIONS_HISTORY = DIR_OPTIONS / "history"          # archive d'un snapshot par run de 04 (voir plus bas)
+DIR_FINANCIALS = BASE_DIR / "financials"
+DIR_MULTIPLES = BASE_DIR / "multiples"
+DIR_DCF = BASE_DIR / "dcf"
+DIR_BACKTEST = BASE_DIR / "backtest"
+
+UNIVERSE_FILE = DIR_UNIVERSE / "sp500_universe.csv"          # sortie de 01, entrée de 02/03/04
+PRICES_FILE = DIR_PRICES / "year_end_prices.parquet"          # sortie de 03
+OPTIONS_FILE = DIR_OPTIONS / "option_chains.parquet"          # sortie de 04 : DERNIER snapshot uniquement
+FINANCIALS_FILE = DIR_FINANCIALS / "financials.parquet"       # sortie consolidée de 05
+
+# Sortie de 04b_recuperation_10q.py (10-Q + reconstruction TTM, voir sa
+# docstring) : FINANCIALS_QUARTERLY_FILE garde CHAQUE trimestre discret
+# (utile pour audit/debug de la discrétisation) ; FINANCIALS_TTM_FILE garde
+# les lignes TTM glissantes (somme des flux sur 4 trimestres, dernière valeur
+# connue pour les postes de bilan) réellement consommées par 05/06b/07 en
+# plus de FINANCIALS_FILE (annuel, 10-K seul, inchangé).
+FINANCIALS_QUARTERLY_FILE = DIR_FINANCIALS / "financials_quarterly.parquet"
+FINANCIALS_TTM_FILE = DIR_FINANCIALS / "financials_ttm.parquet"
+
+# Fenêtre de tolérance (jours) pour associer à une ligne financière (annuelle
+# ou TTM) le dernier cours de clôture QUOTIDIEN connu à sa filed_date (05/07,
+# via DAILY_PRICES_FILE -- 03b_recuperation_cours_quotidiens.py). Au-delà,
+# repli sur le cours de clôture ANNUEL (PRICES_FILE, 03) le plus proche.
+DAILY_PRICE_ASOF_TOLERANCE_DAYS = 10
+MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
+MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
+DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
+
+# Sortie de 07b_validation_qualitative.py : verdict LLM (Mistral) de
+# cohérence qualitative entre le signal quantitatif (DCF_HISTORY_FILE /
+# VALORISATION_COMBINEE_FILE) et le texte du 10-K/10-Q DE CE DÉPÔT PRÉCIS
+# (jamais un filing plus récent -- contrainte anti-anticipation, voir sa
+# docstring), une ligne par (symbol, period_type, fiscal_year, fiscal_quarter).
+QUALITATIVE_VALIDATION_FILE = DIR_DCF / "validation_qualitative.parquet"
+
+# Sortie de 04c_recuperation_8k.py : événements matériels détectés dans les
+# 8-K déposés entre deux trimestres TTM connus (rachats d'actions, guidance,
+# départ de dirigeant, procédure judiciaire, M&A...), classifiés par le même
+# module LLM point-in-time que 07b (sec_filings_text.py).
+MATERIAL_EVENTS_8K_FILE = DIR_FINANCIALS / "material_events_8k.parquet"
+
+# ----------------------------------------------------------------------------
+# Backtest (voir 01b/03b/09 et le package backtest/)
+# ----------------------------------------------------------------------------
+# Univers point-in-time : composants ACTUELS + historiquement radiés, avec
+# leurs dates d'entrée/sortie de l'indice, pour permettre un backtest sans
+# biais de survivance (01b_historique_univers_sp500.py).
+UNIVERSE_HISTORY_FILE = DIR_UNIVERSE / "sp500_universe_history.parquet"  # sortie de 01b : spans d'appartenance
+UNIVERSE_FULL_FILE = DIR_UNIVERSE / "sp500_universe_full.csv"            # sortie de 01b : superset actuels+radiés, entrée de 03b/04
+
+
+def default_universe_file():
+    """Univers par défaut de TOUS les collecteurs (03b, 04, 04b, 04c) :
+    l'univers point-in-time de 01b s'il existe, sinon l'univers actuel de 01.
+
+    POURQUOI C'EST PARTAGÉ. 03b appliquait déjà cette règle, mais 04/04b/04c
+    retombaient en dur sur UNIVERSE_FILE -- l'univers ACTUEL. Le pipeline
+    produisait donc, sans rien signaler, un jeu de données asymétrique : les
+    COURS des entreprises radiées étaient là (donc dans l'indice de référence
+    équipondéré du backtest), mais pas leurs FONDAMENTAUX, donc pas leurs
+    signaux. La stratégie ne pouvait choisir que parmi des survivantes pendant
+    que son repère portait l'indice entier, et l'alpha mesuré était surestimé
+    sans qu'aucun avertissement ne le dise. L'univers point-in-time du moteur
+    n'y changeait rien : il RESTREINT les candidates, il ne crée pas les
+    fondamentaux manquants.
+
+    Le surcoût est borné : 04/04b/04c ignorent tout ticker déjà en cache
+    (should_skip), donc seules les radiées réellement absentes sont
+    interrogées."""
+    return UNIVERSE_FULL_FILE if UNIVERSE_FULL_FILE.exists() else UNIVERSE_FILE
+
+# Cours quotidiens (contrairement à PRICES_FILE qui ne garde que la clôture
+# de fin d'année) : nécessaires pour un backtest à granularité journalière.
+DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b
+
+# Écart de valorisation DCF pour CHAQUE exercice historique (pas seulement le
+# dernier comme DCF_FILE), avec la date de dépôt SEC (filed_date) de chaque
+# exercice pour savoir à partir de quand un signal est réellement disponible
+# (le 10-K de l'exercice N est déposé ~2-3 mois après sa clôture : l'utiliser
+# dès le 31/12 de l'exercice N serait du look-ahead bias).
+DCF_HISTORY_FILE = DIR_DCF / "dcf_historique.parquet"         # sortie de 07 (en plus de DCF_FILE)
+
+# Valorisation théorique combinée (multiples sectoriels PAR ANNÉE en priorité,
+# DCF en repli quand les multiples sont indisponibles), pour CHAQUE exercice
+# historique -- signal utilisé par la stratégie options (voir
+# backtest/strategies/valuation_gap_options.py), distincte de DCF_HISTORY_FILE
+# (utilisée par la stratégie actions, DCF seul, inchangée).
+VALORISATION_COMBINEE_FILE = DIR_MULTIPLES / "valorisation_combinee_historique.parquet"  # sortie de 06b
+
+DIR_BACKTEST_OPTIONS = BASE_DIR / "backtest_options"  # sortie de 10_backtest_options.py
+
+# ----------------------------------------------------------------------------
+# Journal d'exécution du pipeline (run_pipeline_quarterly.py)
+# ----------------------------------------------------------------------------
+# Un sous-dossier par run, contenant report.json (statut/durée/tentatives de
+# chaque étape) et un fichier de log par étape. Lu par la page Streamlit
+# "Pipeline" pour montrer l'état du pipeline sans ouvrir les logs à la main,
+# et par --resume pour repartir des étapes qui restent à faire.
+DIR_PIPELINE_RUNS = BASE_DIR / "pipeline_runs"
+PIPELINE_RUN_REPORT_NAME = "report.json"
+
+for d in (
+    DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS,
+    DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST, DIR_BACKTEST_OPTIONS, DIR_PIPELINE_RUNS,
+):
+    d.mkdir(parents=True, exist_ok=True)
+
+# ----------------------------------------------------------------------------
+# Schéma de colonnes canonique (utilisé par TOUS les scripts en aval)
+# ----------------------------------------------------------------------------
+# symbol           : ticker IBKR / SEC, ex "AAPL"
+# company_name     : nom de l'entreprise
+# sector           : secteur (catégorisé par 02)
+# year             : année (int)
+# close            : cours de clôture de fin d'année (03)
+# shares_outstanding, revenue, ebitda, ebit, net_income, capex, da,
+# working_capital, net_debt, cash, tax_rate, interest_expense : (05)
+#
+# C'est ce schéma qui remplace les anciens noms mixtes FR/EN
+# ("CA", "Nombre d'action", "Dette net", "Cash et Cash Equivalents", ...)
+# qui empêchaient les scripts de se lire les uns les autres.
+
+# ----------------------------------------------------------------------------
+# Univers : entreprises américaines uniquement
+# ----------------------------------------------------------------------------
+# Mapping "Exchange" (tel que présent dans le fichier d'univers) -> exchange
+# IBKR pour le contrat ACTION sous-jacent. On ne garde QUE les places US.
+EXCHANGE_MAP: dict[str, str] = {
+    "NYSE": "NYSE",
+    "New York Stock Exchange": "NYSE",
+    "Nasdaq": "NASDAQ",
+    "NASDAQ": "NASDAQ",
+    "Nasdaq Global Select": "NASDAQ",
+    "Nasdaq NMS - Global Market": "NASDAQ",
+    "Nasdaq NMS - Global Select Market": "NASDAQ",
+    "NYSE American": "AMEX",
+    "NYSE MKT LLC": "AMEX",
+    "NYSE Arca": "ARCA",
+    "Cboe BZX": "BATS",
+}
+# Toute valeur d'Exchange absente de ce mapping est routée en direct via
+# SMART (voir resolve_stock_contract dans les scripts 03/04) plutôt que
+# d'être ignorée : contrairement à l'univers Europe multi-place d'origine,
+# l'univers US est homogène et SMART route correctement vers NYSE/NASDAQ/AMEX.
+DEFAULT_EXCHANGE = "SMART"
+
+# Overrides ticker Wikipedia/RIC -> symbole IBKR, pour les classes d'actions
+# où IBKR utilise un espace au lieu d'un point (ex: BRK.B -> "BRK B").
+# Complétez au besoin si un ticker se résout mal.
+SYMBOL_OVERRIDES: dict[str, str] = {
+    "BRK.B": "BRK B",
+    "BF.B": "BF B",
+}
+
+CURRENCY = "USD"
+COUNTRY = "United States"
+
+# Taux sans risque constant utilisé par 08_recuperation_options.py pour le
+# pricing Black-Scholes de repli (estimate_iv_and_greeks) quand IBKR ne
+# renvoie pas de modelGreeks. Référencé mais jamais défini auparavant (le
+# script plantait à l'import dès qu'un greek devait être estimé
+# localement) ; approximation du taux 3 mois US, à ajuster si besoin.
+RISK_FREE_RATE = 0.04
+
+# Taux sans risque PAR ANNÉE (rendement du Treasury 3 mois, moyenne annuelle).
+#
+# Un taux constant à 4% sur 2010-2026 est faux des deux côtés : le taux réel
+# est allé de ~0,05% (2011-2015, après la crise) à ~5,3% (2023-2024). Sur une
+# option à 9 mois, l'écart déplace la prime de plusieurs pour cent, et dans un
+# sens systématique par période -- il surévaluait les calls du début de
+# l'historique et sous-évaluait ceux de la fin. La même courbe sert de taux
+# sans risque aux métriques (Sharpe, Sortino), où un taux de 4% appliqué à
+# 2012 fabriquait une prime de risque négative sur une année pourtant positive.
+#
+# SOURCES : moyennes annuelles du 3-Month Treasury Bill (séries FRED DTB3 /
+# TB3MS), arrondies au dixième de point. Elles n'ont PAS pu être re-vérifiées
+# automatiquement dans l'environnement de rédaction (accès sortant bloqué) --
+# recoupe-les si un chiffre te paraît douteux : https://fred.stlouisfed.org/series/TB3MS
+# Une année absente de la table retombe sur RISK_FREE_RATE ci-dessus.
+RISK_FREE_RATE_BY_YEAR: dict[int, float] = {
+    2005: 0.0322, 2006: 0.0482, 2007: 0.0444, 2008: 0.0137, 2009: 0.0015,
+    2010: 0.0014, 2011: 0.0005, 2012: 0.0009, 2013: 0.0006, 2014: 0.0003,
+    2015: 0.0005, 2016: 0.0032, 2017: 0.0093, 2018: 0.0194, 2019: 0.0206,
+    2020: 0.0037, 2021: 0.0004, 2022: 0.0202, 2023: 0.0515, 2024: 0.0521,
+    2025: 0.0430, 2026: 0.0400,
+}
+
+
+def risk_free_rate_for(year: Optional[int] = None) -> float:
+    """Taux sans risque MOYEN de l'année demandée, avec repli sur la constante
+    RISK_FREE_RATE (années hors table, ou appelant qui n'a pas de date sous
+    la main -- le pricing de 08_recuperation_options.py, par exemple, ne
+    valorise que des contrats du jour).
+
+    RÉSERVÉ AUX MESURES EX-POST (Sharpe, Sortino, intérêts effectivement
+    perçus sur le cash) : la moyenne d'une année n'est connue qu'une fois
+    l'année terminée. Pour une DÉCISION prise en cours d'année -- actualiser
+    un DCF, pricer une option -- c'est risk_free_rate_known_at qu'il faut,
+    sans quoi on actualise avec un chiffre qui n'existe pas encore."""
+    if year is None:
+        return RISK_FREE_RATE
+    return RISK_FREE_RATE_BY_YEAR.get(int(year), RISK_FREE_RATE)
+
+
+def risk_free_rate_known_at(date_or_year=None) -> float:
+    """Taux sans risque CONNU à cette date, donc la moyenne de l'année civile
+    PRÉCÉDENTE -- même discipline que inflation_known_at, et pour la même
+    raison.
+
+    POURQUOI CE N'EST PAS UN DÉTAIL. RISK_FREE_RATE_BY_YEAR porte des
+    MOYENNES annuelles (3-Month T-Bill). Actualiser un 10-K déposé en février
+    2020 au taux "2020" revient à utiliser 0,37% -- une moyenne écrasée par
+    l'effondrement de mars 2020, que personne ne connaissait en février, où le
+    T-Bill cotait encore ~1,55%. Et le biais n'est pas centré : les années où
+    la moyenne s'écarte le plus du taux du début d'année sont les années de
+    crise, où elle s'effondre en cours de route. Un WACC trop bas gonfle la
+    valeur théorique, donc l'écart, donc le nombre de signaux d'achat -- juste
+    avant un krach. Le backtest s'en trouvait flatté exactement là où il
+    fallait qu'il ne le soit pas.
+
+    Le décalage d'un an sous-estime le taux dans un cycle de hausse et le
+    surestime dans un cycle de baisse ; c'est le prix d'une table annuelle. La
+    seule façon de faire mieux serait une courbe quotidienne (FRED DTB3), que
+    le pipeline ne collecte pas."""
+    if date_or_year is None:
+        return RISK_FREE_RATE
+    if isinstance(date_or_year, (int, float)) and not isinstance(date_or_year, bool):
+        annee = int(date_or_year)
+    else:
+        import pandas as pd  # local : garde config.py importable sans pandas
+
+        timestamp = pd.Timestamp(date_or_year)
+        if pd.isna(timestamp):
+            return RISK_FREE_RATE
+        annee = timestamp.year
+    return RISK_FREE_RATE_BY_YEAR.get(annee - 1, RISK_FREE_RATE)
+
+
+# Rendement du dividende par SECTEUR, utilisé par le pricing Black-Scholes du
+# backtest (backtest/options_pricing.py, paramètre `q`).
+#
+# Black-Scholes sans dividende surévalue les CALLS et sous-évalue les PUTS,
+# systématiquement -- et d'autant plus que le rendement est élevé, donc
+# précisément sur les secteurs qu'un signal "value" sélectionne (utilities,
+# télécoms, pétrole, banques). Le biais n'est donc pas aléatoire : il pousse la
+# stratégie à surpayer ses calls sur exactement les titres qu'elle achète.
+#
+# Un rendement PAR TITRE et PAR DATE serait meilleur, mais le pipeline ne
+# collecte aucune donnée de dividende (03/03b demandent whatToShow="TRADES" à
+# IBKR, cf. la section "Biais et limites connus" du README) : ces moyennes
+# sectorielles sont une approximation assumée, pas une mesure. Ordres de
+# grandeur usuels du marché US.
+SECTOR_DIVIDEND_YIELD: dict[str, float] = {
+    "Technologie": 0.008,
+    "Santé": 0.017,
+    "Agro-alimentaire et boissons": 0.028,
+    "Produits ménagers et de soin personnel": 0.025,
+    "Services aux collectivités": 0.035,
+    "Banques": 0.030,
+    "Assurance": 0.022,
+    "Services financiers": 0.020,
+    "Immobilier": 0.040,
+    "Pétrole et gaz": 0.035,
+    "Biens et services industriels": 0.018,
+    "Bâtiment et matériaux de construction": 0.015,
+    "Matières premières": 0.020,
+    "Chimie": 0.022,
+    "Medias": 0.012,
+    "Télécommunications": 0.045,
+    "Distribution": 0.015,
+    "Automobiles et équipementiers": 0.020,
+    "Voyage et loisirs": 0.012,
+    "_default": 0.018,
+}
+
+
+def dividend_yield_for(sector) -> float:
+    """Rendement du dividende retenu pour un secteur (repli "_default")."""
+    return SECTOR_DIVIDEND_YIELD.get(
+        sector if isinstance(sector, str) else "", SECTOR_DIVIDEND_YIELD["_default"],
+    )
+
+# ----------------------------------------------------------------------------
+# Filtre de valorisation (déclenche la récupération des options en 08)
+# ----------------------------------------------------------------------------
+# 07_calcul_dcf.py calcule pour chaque entreprise l'écart en % entre son
+# cours de bourse et sa valeur théorique (DCF). 08_recuperation_options.py ne
+# récupère les chaînes d'options que pour les entreprises dont cet écart
+# dépasse ce seuil, en valeur absolue : la récupération d'options via IBKR
+# est lente et rate-limitée, inutile de la lancer sur tout l'univers si seule
+# une fraction des entreprises montre un écart de valorisation significatif.
+VALUATION_GAP_THRESHOLD_PCT = 20.0
+
+# ----------------------------------------------------------------------------
+# Paramètres par défaut du backtest (voir backtest/strategies/valuation_gap.py)
+# ----------------------------------------------------------------------------
+# Réutilise VALUATION_GAP_THRESHOLD_PCT comme seuil d'entrée par défaut (même
+# logique que 08 : une sous-évaluation de moins de 20% n'est pas jugée
+# significative). Ajustable via --entry-threshold-pct sur 09_backtest.py.
+BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
+BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
+BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
+
+# Plafond de concentration : part maximale du portefeuille pour UNE ligne,
+# quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
+# de l'écart ; sans plafond, un écart aberrant (valeur théorique proche de
+# zéro -> plusieurs milliers de %) capte à lui seul l'essentiel du capital.
+# Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
+# concentration du portefeuille. 0 ou None le désactive.
+BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
+
+# Plafond de poids CUMULÉ par secteur (stratégie valuation_gap_sector_neutral).
+# Le plafond par position ne borne rien à ce niveau : vingt technos à 4%
+# chacune font 80% du portefeuille sur un seul secteur sans qu'aucune ligne ne
+# dépasse son plafond individuel. 0 ou None le désactive.
+BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT = 30.0
+
+# Seuils de valuation_gap_sector_neutral. Ils NE SE LISENT PAS comme
+# BACKTEST_ENTRY_THRESHOLD_PCT : le premier porte sur l'écart À LA MÉDIANE DU
+# SECTEUR (10 points d'excès sur ses pairs est bien plus sélectif que 10%
+# d'écart au cours), le second est le garde-fou absolu qui empêche d'acheter
+# la "moins pire" d'un secteur entièrement survalorisé.
+BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 10.0
+BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
+
+# Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
+# 12 derniers mois (dernier mois exclu, cf. PricePanel.momentum_12_1) n'est
+# plus éligible à une NOUVELLE entrée, même si son écart de valorisation est
+# large. C'est le garde-fou classique de la "value trap" : un écart qui
+# s'élargit parce que le marché intègre une dégradation que les derniers
+# états financiers publiés ne montrent pas encore.
+# None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
+BACKTEST_MOMENTUM_MIN_PCT = -10.0
+# Capital simulé au départ des backtests (actions et options : voir
+# OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
+# portefeuille selon qu'on l'investit en actions ou en options).
+BACKTEST_INITIAL_CAPITAL = 1_000_000.0
+BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
+BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
+
+# Un signal DCF (10-K annuel) n'est considéré comme une base valable pour une
+# NOUVELLE entrée que s'il a été publié il y a moins de ce nombre de jours ;
+# au-delà, il est traité comme périmé (pas de nouveau 10-K depuis plus d'un
+# an = donnée trop ancienne pour justifier un achat aujourd'hui). > 365 pour
+# tolérer le glissement habituel de quelques semaines de la date de dépôt
+# d'une année sur l'autre. N'affecte PAS les positions déjà ouvertes (elles
+# restent gelées jusqu'à stop-loss/take-profit, voir backtest/engine.py).
+# Indice de référence auquel 09/10 comparent la stratégie (metrics.py). Doit
+# être un symbole présent dans DAILY_PRICES_FILE (03b) : à défaut, un indice
+# ÉQUIPONDÉRÉ de l'univers point-in-time est reconstruit à la volée, repère
+# utile mais différent du S&P 500 pondéré (voir
+# backtest/data_loader.build_benchmark_series).
+BENCHMARK_SYMBOL = "SPY"
+
+BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
+
+# Durée de vie d'un signal selon le type de période qui l'a produit : un TTM
+# trimestriel (04b) est remplacé par un nouveau ~90 jours plus tard, alors
+# qu'un exercice annuel (10-K) reste la dernière information publiée pendant
+# ~12 mois. Garder 400 jours pour les deux laissait un signal trimestriel
+# actif bien après avoir été démenti par le trimestre suivant.
+# BACKTEST_SIGNAL_MAX_AGE_DAYS reste le repli quand le period_type est inconnu.
+BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD = {"FY": 270, "TTM": 120}
+
+# Verdicts de 07b_validation_qualitative.py qui DISQUALIFIENT un signal dans
+# les backtests (voir backtest/data_loader.apply_qualitative_gate). Vide ->
+# filtre désactivé. "non_evalue" ne doit PAS y figurer : c'est la valeur prise
+# par toutes les périodes quand MISTRAL_API_KEY n'est pas définie.
+QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
+
+# ----------------------------------------------------------------------------
+# Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)
+# ----------------------------------------------------------------------------
+# Reprend le même seuil d'entrée que 08 (écart significatif = ±20%), mais ici
+# directionnel : call si sous-évalué, put si survalué (voir
+# backtest/strategies/valuation_gap_options.py).
+OPTIONS_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
+
+# Contrat visé. STRIKE_BAND_PCT reprend la valeur de 08_recuperation_options.py
+# (dupliquée ici plutôt qu'importée : 08 charge ib_insync au niveau module, une
+# dépendance dont le backtest n'a pas besoin pour son mode simulé) ; garde les
+# deux synchronisées si tu changes l'une des deux. MIN_DAYS_TO_EXPIRY côté 08
+# est un PLANCHER de collecte (au moins 9 mois), pas une cible : les échéances
+# 2 ans visées ici sont donc bien dans ce qu'il archive.
+#
+# Échéance cible à l'entrée : 2 ans, comme valuation_gap_multiples_options. Une
+# convergence vers la valeur théorique demande des trimestres, pas des
+# semaines ; un contrat 9 mois obligeait à avoir raison ET vite, et faisait
+# subir l'accélération de la perte de valeur temps en fin de vie.
+OPTIONS_TARGET_TENOR_DAYS = 730
+# Point de décision, à 9 mois de l'échéance : la position est réexaminée à
+# l'aune du signal courant. Écart toujours au-dessus du seuil d'entrée -> le
+# contrat est roulé sur une nouvelle échéance pleine, à exposition inchangée ;
+# écart repassé sous le seuil (ou retourné de sens) -> la position est
+# clôturée. On ne détient donc jamais un contrat sur sa dernière année de vie,
+# là où la valeur temps s'érode le plus vite.
+OPTIONS_ROLL_WHEN_DAYS_LEFT = 270
+OPTIONS_STRIKE_BAND_PCT = 0.30      # bande de strikes considérée autour du spot (ATM y compris)
+OPTIONS_CONTRACT_MULTIPLIER = 100   # 1 contrat = 100 actions sous-jacentes (convention US)
+
+# Base de mesure des stop-loss/take-profit : "underlying" -> variation du COURS
+# DU SOUS-JACENT (comme la stratégie actions), "premium" -> variation de la
+# prime de l'option.
+#
+# Le sous-jacent est retenu par défaut depuis le passage des entrées à 2 ans.
+# Adossés à la prime, les seuils étaient atteints par la seule érosion de la
+# valeur temps : une option ATM à 2 ans perd de l'ordre de 20% de sa prime en
+# ~15 mois à cours STRICTEMENT INCHANGÉ -- un stop à -20% sortait donc des
+# positions dont la thèse n'avait pas bougé, avant que la convergence visée ait
+# eu le temps de se produire. L'effet de levier jouait dans le même sens : sur
+# la prime, -20% correspond à une baisse du titre de quelques points seulement.
+# Mesurés sur le cours, les seuils décrivent bien le scénario voulu ("le titre
+# a baissé de 20%" / "le titre a monté de 80%"). --stop-basis premium rétablit
+# l'ancienne base.
+OPTIONS_STOP_BASIS = "underlying"
+
+# Seuils, appliqués à la base ci-dessus et ORIENTÉS dans le sens de la position :
+# pour un PUT, "le titre monte de 20%" est la perte et "le titre baisse de 80%"
+# le gain (voir options_engine._position_move_pct). Encadrement asymétrique
+# assumé : on coupe vite une thèse qui se dégrade, on laisse courir celle qui
+# marche -- un take-profit à +80% du sous-jacent est un mouvement rare sur 2
+# ans, c'est bien l'intention (la sortie normale d'une position gagnante est le
+# réexamen à 9 mois, pas le take-profit).
+OPTIONS_STOP_LOSS_PCT = -20.0
+OPTIONS_TAKE_PROFIT_PCT = 80.0
+# Même capital que le backtest actions. Cette valeur n'est PAS neutre pour la
+# stratégie options depuis le passage aux contrats entiers
+# (OPTIONS_WHOLE_CONTRACTS) : un contrat vaut 100 x la prime, soit ~1 000$ pour
+# une option à 10$, et une position visée plus petite que cela n'est tout
+# simplement pas prenable. Mesuré sur 20 positions simultanées : à 100 000$,
+# 41% des positions visées tombaient sous le contrat unique et étaient
+# abandonnées, et celles qui passaient étaient déformées de ~80% par l'arrondi
+# -- le backtest mesurait alors la stratégie bridée par la taille minimale,
+# pas la stratégie. À 1 000 000$, plus aucune position n'est perdue et l'écart
+# d'arrondi médian tombe à ~4%. Le nombre de positions n'étant plus plafonné,
+# ce seuil se déplace avec le nombre de candidates retenues : plus elles sont
+# nombreuses, plus chacune est petite, et plus le capital doit être élevé pour
+# que l'arrondi au contrat entier reste négligeable.
+OPTIONS_INITIAL_CAPITAL = 1_000_000.0
+
+# Coûts par contrat (pas en bps du notionnel comme les actions : une option a
+# un notionnel qui ne reflète pas son coût de transaction réel). ~0.65$/contrat
+# est l'ordre de grandeur usuel des courtiers US ; le slippage est exprimé en %
+# de la prime (les spreads bid/ask sur options sont larges, surtout hors ATM),
+# payé aux DEUX bouts (prime majorée à l'achat, minorée à la vente, cf.
+# options_engine._record_costs) -- 5% aller-retour était trop pénalisant pour
+# des options suffisamment liquides pour être tradées en pratique ; 2,5%
+# reste conservateur sans écraser la thèse sous la seule friction.
+OPTIONS_COMMISSION_PER_CONTRACT = 0.65
+OPTIONS_SLIPPAGE_PCT_OF_PREMIUM = 2.5
+
+# Minimum FACTURÉ PAR ORDRE (pas par contrat) : IBKR applique un taux par
+# contrat mais jamais moins de 1,00$ par ordre. Un ordre d'un seul contrat
+# coûte donc 1,00$ -- et une stratégie qui multiplie les petits ordres paie
+# nettement plus que "nb_contrats x taux". Modéliser la commission comme un
+# simple taux par contrat sous-estimait donc structurellement les frais.
+# Ce minimum porte sur la COMMISSION seule ; les frais tiers ci-dessous
+# s'ajoutent par-dessus.
+OPTIONS_COMMISSION_MIN_PER_ORDER = 1.0
+
+# Grille dégressive IBKR (options US), relevée sur la tarification officielle.
+# Le taux dépend du VOLUME MENSUEL cumulé en contrats ET du niveau de PRIME.
+#   (volume_mensuel_max, ((prime_max, taux), ...))
+# volume_mensuel_max=None -> dernier palier ; prime_max=None -> "toutes les
+# primes au-dessus". Une prime STRICTEMENT inférieure à prime_max prend ce taux.
+#
+# Note : contrairement aux actions, cette grille n'a PAS de plafond en % de la
+# valeur négociée -- vérifié sur les exemples officiels (5 contrats à 0,03$ de
+# prime = 15$ de valeur, facturés 1,25$, soit 8,3% de la valeur).
+OPTIONS_COMMISSION_TIERS = (
+    (10_000,  ((0.05, 0.25), (0.10, 0.50), (None, 0.65))),
+    (50_000,  ((0.05, 0.25), (None, 0.50))),
+    (100_000, ((None, 0.25),)),
+    (None,    ((None, 0.15),)),
+)
+
+# Frais tiers, facturés EN PLUS de la commission (non soumis au minimum par
+# ordre). Par contrat, des deux côtés (achat comme vente).
+OPTIONS_FEE_ORF_PER_CONTRACT = 0.02295   # Options Regulatory Fee
+OPTIONS_FEE_CAT_PER_CONTRACT = 0.0003    # FINRA Consolidated Audit Trail
+OPTIONS_FEE_OCC_PER_CONTRACT = 0.025     # compensation OCC
+# À la VENTE uniquement (frais réglementaires sur les cessions).
+OPTIONS_FEE_FINRA_TAF_PER_CONTRACT = 0.00329   # FINRA Trading Activity Fee
+OPTIONS_FEE_SEC_PCT_OF_SALE = 0.0000206        # x valeur de la vente
+
+# Part MINIMALE du portefeuille investie en primes, en % du NAV. En dessous,
+# le moteur renforce les positions déjà ouvertes (au prorata de leur taille)
+# pour remettre le capital au travail plutôt que de le laisser dormir.
+#
+# CE RÉGLAGE PILOTE UN ARBITRAGE À TROIS TERMES -- cash, theta, levier :
+#   - trop BAS : le capital dort, et le rendement du portefeuille est celui
+#     d'une petite poche investie noyée dans du cash non rémunéré ;
+#   - trop HAUT : c'est la totalité du capital qui paie la perte de valeur
+#     temps (theta) tous les jours, et surtout le LEVIER explose. Le moteur
+#     dimensionne en exposition NOTIONNELLE delta-équivalente (nb_contrats =
+#     budget / (|delta| x spot x multiplicateur)), ce qui vise une exposition
+#     delta d'environ 1x le NAV. Or la prime d'une option ATM à 9 mois ne vaut
+#     que ~8 à 12% du spot : forcer 90% du NAV en primes revenait donc à
+#     porter une exposition delta de l'ordre de 8 à 10x le NAV -- cause
+#     structurelle des drawdowns extrêmes observés, et annulation pure et
+#     simple du dimensionnement par delta.
+#
+# DÉSACTIVÉ (0) DEPUIS L'AUDIT — le plancher était une MARTINGALE SUR LES
+# PERDANTS, et de loin la première cause de perte du moteur.
+#
+# Le raisonnement à trois termes ci-dessus reste juste, mais il manque le
+# terme décisif : le plancher s'exprime en PRIMES DÉCAISSÉES, or une prime
+# BAISSE quand la thèse échoue. Le plancher se trouve donc violé précisément
+# quand la position perd — et le moteur rachète. Pire, moins l'option vaut
+# cher, plus un dollar achète de contrats : le renforcement ACCÉLÈRE à mesure
+# que la thèse se dégrade. Une position gagnante, elle, voit sa prime monter,
+# repasse au-dessus du plancher et n'est jamais renforcée. Le mécanisme ne
+# moyenne donc QU'À LA BAISSE.
+#
+# Le plafond de delta notionnel ci-dessous ne pouvait pas l'arrêter : une
+# option très hors de la monnaie a un delta minuscule, si bien que des
+# milliers de contrats pèsent peu de notionnel delta tout en absorbant tout le
+# capital. Le plafond est structurellement incapable de mordre là où le
+# plancher est le plus agressif.
+#
+# MESURÉ (un CALL, sous-jacent -47% sur 900 jours, même signal, même chemin) :
+#     plancher à 25% -> NAV  437 074 $, jusqu'à 2 253 contrats détenus
+#     plancher à  0  -> NAV  976 766 $, jusqu'à    26 contrats détenus
+# soit une perte de 56% au lieu de 2,3%, uniquement à cause du plancher.
+#
+# Le mécanisme reste implémenté et réglable (--min-deployment-pct) pour
+# rejouer un run ancien, mais il n'agit plus par défaut : le dimensionnement
+# par delta décide seul de la taille des positions.
+OPTIONS_MIN_DEPLOYMENT_PCT = 0.0
+
+# Exposition NOTIONNELLE delta-équivalente maximale du portefeuille d'options,
+# en % du NAV : somme sur les positions de |delta| x spot x contrats x
+# multiplicateur. C'est la mesure honnête du levier -- combien de dollars de
+# sous-jacent le portefeuille suit réellement, par opposition au montant de
+# primes décaissé, qui n'en est qu'une fraction.
+#
+# 100% = le portefeuille bouge comme s'il détenait son NAV en actions. Au-delà
+# de ce plafond, le redéploiement du cash oisif s'arrête, même si la part
+# investie en primes reste sous OPTIONS_MIN_DEPLOYMENT_PCT : c'est le plafond
+# qui prime, le plancher n'étant qu'une préférence. 0 ou None le désactive
+# (comportement d'avant : levier non borné).
+#
+# PORTÉE (corrigée depuis l'audit). Le plafond n'était vérifié QUE dans
+# _deploy_idle_cash : ni le dimensionnement principal (_open_or_resize) ni la
+# dérive du delta avec le sous-jacent (gamma) ne le voyaient passer, et rien
+# ne réduisait jamais l'exposition -- 281% de delta notionnel observés sur un
+# run pour un plafond déclaré à 100%. Il est désormais appliqué :
+#   1. à l'ORDRE, dans _open_or_resize (avant même la contrainte de cash) ;
+#   2. à la POSITION, par une passe de dé-levier quotidienne qui réduit les
+#      lignes au prorata quand le portefeuille dépasse le plafond
+#      (OPTIONS_DELEVER_TOLERANCE_PCT ci-dessous évite de vendre pour trois
+#      contrats à chaque oscillation du marché).
+# 0 ou None désactive les deux.
+OPTIONS_MAX_DELTA_NOTIONAL_PCT = 100.0
+
+# Marge de tolérance avant qu'un dépassement du plafond ci-dessus déclenche
+# une vente. Sans elle, le gamma ferait osciller le portefeuille autour du
+# plafond et le moteur vendrait quelques contrats presque chaque jour, en
+# payant plein tarif de friction -- exactement le churn que la refonte du
+# rebalancement a supprimé ailleurs. À 10%, on ne dé-lève qu'au-delà de 110%
+# du NAV, et on ramène alors à 100% pile. 0 dé-lève au moindre dépassement.
+OPTIONS_DELEVER_TOLERANCE_PCT = 10.0
+
+# Optimisation de taille au regard des frais.
+#
+# Le minimum PAR ORDRE fait qu'un tout petit ordre paie un tarif par contrat
+# bien supérieur au tarif affiché : à 0,65$/contrat, 1 contrat coûte 1,00$
+# (soit 1,00$/contrat) alors que 2 contrats coûtent 1,30$ (0,65$/contrat).
+# Monter à la taille où le minimum cesse de mordre améliore donc le coût
+# unitaire -- mais au prix d'une exposition en plus, et l'arithmétique est
+# brutale : +100% d'exposition (1 -> 2 contrats) pour économiser 0,35$, jusqu'à
+# +600% au palier 0,15$/contrat. Cette remontée n'est donc appliquée que si
+# l'écart à l'exposition VISÉE reste sous la tolérance ci-dessous. 0 la
+# désactive complètement.
+OPTIONS_FEE_BUMP_MAX_EXTRA_PCT = 20.0
+
+# Garde-fou inverse, et de loin le plus rentable : un ordre d'ENTRÉE ou de
+# renforcement dont les frais dépassent ce pourcentage de sa propre valeur
+# est purement abandonné -- il détruit plus de valeur qu'il n'en apporte.
+# Ne s'applique JAMAIS aux sorties (stop-loss, take-profit, expiration,
+# roulement) : une position doit pouvoir être fermée quel qu'en soit le coût.
+# 0 ou None désactive le garde-fou.
+OPTIONS_MAX_FEE_PCT_OF_TRADE = 1.0
+
+# Les options se négocient par contrats ENTIERS. Le moteur dimensionnait en
+# contrats fractionnaires (0,931 contrat...), ce qui n'existe pas et fausse
+# doublement les frais : la commission par contrat était appliquée au prorata,
+# et le minimum par ordre n'existait pas. False rétablit l'ancien
+# comportement fractionnaire (utile seulement pour comparer).
+OPTIONS_WHOLE_CONTRACTS = True
+
+# Fenêtre de tolérance (en jours) pour rattacher un signal à un VRAI snapshot
+# archivé par 08_recuperation_options.py (data/options/history/) plutôt que
+# de simuler par Black-Scholes -- au-delà, le snapshot est jugé trop éloigné
+# de la date du signal pour être représentatif.
+OPTIONS_REAL_SNAPSHOT_TOLERANCE_DAYS = 14
+
+# Fenêtre (en jours de cotation) de la volatilité réalisée utilisée comme
+# proxy de la volatilité implicite pour le pricing Black-Scholes simulé,
+# quand aucun snapshot réel n'est disponible (voir backtest/options_pricing.py).
+OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
+
+# --------------------------------------------------------------------------- #
+# Stratégie « espérance de gain » (valuation_gap_expected_value_options)
+# --------------------------------------------------------------------------- #
+#
+# Cette stratégie choisit son strike en maximisant le TAUX DE CROISSANCE
+# LOG-OPTIMAL (Kelly) du contrat, au lieu de le poser ad hoc comme les deux
+# autres (ATM, ou mi-chemin cours/valeur théorique). Voir
+# backtest/expected_value.py pour les formules et backtest/strategies/
+# valuation_gap_expected_value_options.py pour l'articulation avec le signal.
+
+# Part du chemin vers la valeur théorique que la stratégie suppose parcourue à
+# l'échéance : mu = fraction x ln(V/S0) / T.
+#
+# 1.0 supposerait que le cours atteint EXACTEMENT sa valeur théorique à
+# l'échéance -- hypothèse que rien n'étaye, et qui transformerait chaque écart
+# de valorisation en gain certain. 0.5 ne suppose que la moitié du chemin :
+# c'est la même hypothèse implicite que valuation_gap_multiples_options, qui
+# place son strike à mi-chemin entre cours et valeur théorique, rendue ici
+# EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
+OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
+
+# Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
+# de S0·exp(-N·sigma·racine(T)) à S0·exp(+N·sigma·racine(T)), par pas de
+# PAS·sigma·racine(T).
+#
+# Adaptative par construction : la largeur suit la volatilité et la maturité,
+# donc la grille couvre toujours la même portion de la distribution du
+# sous-jacent. Une grille en pourcentage fixe du spot serait trop large sur un
+# titre calme à trois mois et trop étroite sur un titre nerveux à deux ans --
+# dans les deux cas le strike optimal se retrouverait sur un bord de grille,
+# c'est-à-dire non optimal.
+OPTIONS_EV_STRIKE_GRID_N_SIGMA = 3.0
+OPTIONS_EV_STRIKE_GRID_STEP_SIGMA = 0.25
+
+# Nombre de nœuds de la quadrature de Gauss-Legendre qui évalue le taux de
+# croissance de Kelly (pas de primitive analytique).
+#
+# La quadrature ne porte que sur la région LUCRATIVE du payoff, l'atome de
+# perte totale étant traité en forme fermée : l'intégrande y est analytique, et
+# Gauss-Legendre y converge géométriquement. Mesuré : l'écart entre 64 et 512
+# nœuds est inférieur à 1e-12 sur le taux de croissance, et 128 suffit
+# largement. Le coût est de toute façon marginal -- les nœuds sont mis en
+# cache et la sélection ne balaie que quelques dizaines de strikes par ligne.
+#
+# Une quadrature et non un Monte-Carlo : le bruit d'échantillonnage se
+# transmettrait au CHOIX du strike, qui changerait d'un run à l'autre sans
+# qu'aucune donnée n'ait bougé.
+OPTIONS_EV_QUADRATURE_NODES = 128
+
+# Volatilité de repli quand l'historique de cours est trop court pour estimer
+# une volatilité réalisée (titre récemment introduit, ou début de backtest).
+#
+# Lue à DEUX endroits qui doivent impérativement s'accorder : le pricing
+# d'entrée du moteur (options_engine._select_contract) et la sélection de
+# strike de la stratégie « espérance de gain ». Si la stratégie écartait ces
+# lignes au lieu de se replier, elle introduirait un biais de sélection vers
+# les seuls titres à long historique -- alors que le moteur, lui, aurait
+# parfaitement su ouvrir la position.
+OPTIONS_FALLBACK_VOL = 0.30
+
+# ----------------------------------------------------------------------------
+# Volatilité COTÉE : ce que le marché fait payer, et non ce que le titre a fait
+# ----------------------------------------------------------------------------
+# POURQUOI CES DEUX CONSTANTES EXISTENT. Faute de surface de volatilité
+# historique, le moteur ouvrait ses positions simulées au prix Black-Scholes
+# calculé sur la volatilité RÉALISÉE du titre. Or on n'achète jamais une option
+# à la réalisée : on l'achète à l'IMPLICITE cotée, qui en diffère de deux
+# façons, toutes deux systématiques et toutes deux au détriment de l'acheteur.
+#
+#   1. UN NIVEAU plus haut que la réalisée (prime de risque de variance). Elle
+#      est bien documentée sur l'indice ; sur titres individuels elle est plus
+#      FAIBLE, et c'est un point favorable à une stratégie qui, comme ici, ne
+#      traite que des noms individuels (Driessen, Maenhout & Vilkov, Journal of
+#      Finance, 2009 : la grosse prime de l'indice est essentiellement une
+#      prime de risque de corrélation). D'où un écart volontairement modeste.
+#
+#   2. UNE PENTE en fonction du strike (skew). À maturité égale, les strikes
+#      BAS se paient plus cher que les strikes hauts -- effet d'une pression
+#      d'achat structurelle sur la protection (Bollen & Whaley, Journal of
+#      Finance, 2004). C'est une propriété du SOUS-JACENT, pas du sens du
+#      contrat : par parité call-put, un call et un put de même strike et même
+#      échéance partagent la même implicite. La fonction ne prend donc pas
+#      d'option_type, et c'est voulu.
+#
+# CE QUE ÇA CHANGE POUR LA STRATÉGIE. Le strike visé est à mi-chemin vers la
+# valeur théorique : une thèse baissière (PUT) vise donc un strike SOUS le
+# cours, du côté cher du skew, et une thèse haussière (CALL) un strike au-
+# DESSUS, du côté bon marché. La jambe put était ainsi la plus sous-facturée du
+# backtest, alors que l'écart en log qui la sélectionne est, lui, symétrique.
+#
+# CE SONT DES HYPOTHÈSES, PAS DES MESURES. Elles remplacent une hypothèse bien
+# pire (écart nul, skew nul), mais elles restent à calibrer sur les snapshots
+# réels dès qu'il y en a assez -- `python mesure_slippage_options.py` et les
+# archives de 08_recuperation_options.py sont là pour ça. Les mettre à 0
+# reproduit exactement le comportement d'avant.
+
+# Écart implicite - réalisée à la monnaie, en POINTS de volatilité (0,02 = +2
+# points : une réalisée de 28% se cote 30%). Volontairement modeste, cf. le
+# point 1 ci-dessus.
+OPTIONS_IMPLIED_VOL_SPREAD = 0.02
+
+# Pente du skew, en points de volatilité par ÉCART-TYPE de log-moneyness
+# (z = ln(K/S) / (sigma·racine(T))). Normaliser par sigma·racine(T) plutôt que
+# par un pourcentage du spot rend la pente cohérente d'une maturité et d'une
+# volatilité à l'autre : à 2 ans sur un titre nerveux, +10% de strike est un
+# tout petit déplacement dans la distribution, à 3 mois sur un titre calme
+# c'en est un grand. Positive = les strikes bas coûtent plus cher.
+#
+# APPLIQUÉE AUX SEULS STRIKES SOUS LA MONNAIE, délibérément : au-dessus, la
+# volatilité cotée reste au niveau ATM. Un skew réel décroît aussi du côté
+# haut, mais le reproduire face à une loi de S_T lognormale à volatilité unique
+# fabriquerait un edge de bord de grille sans rapport avec la thèse -- voir le
+# raisonnement complet dans options_pricing.quoted_implied_vol.
+OPTIONS_VOL_SKEW_SLOPE = 0.025
+
+# Bornes de la volatilité cotée. Le skew est une approximation LINÉAIRE d'une
+# courbe qui s'aplatit dans les ailes : extrapolée à 5 ou 6 écarts-types, elle
+# produirait des volatilités absurdes, voire négatives côté strikes hauts.
+OPTIONS_QUOTED_VOL_MIN = 0.05
+OPTIONS_QUOTED_VOL_MAX = 2.00
+
+# Filtre de micro-trades, à DEUX points d'application :
+#   1. Redimensionnement sur dépôt SEC (_open_or_resize) : second filet,
+#      APRÈS le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD ci-dessous) --
+#      un redimensionnement qui passe ε mais reste minuscule en taille de
+#      contrats (ex: NAV qui a un peu bougé, sans changement de conviction)
+#      ne mérite pas non plus l'aller-retour de frais.
+#   2. Redéploiement du cash oisif (_deploy_idle_cash) : appelé CHAQUE jour
+#      de bourse, sans mémoire d'un renfort récent -- sans ce filtre, une
+#      position à peine sous le plancher de déploiement se fait renforcer
+#      d'un ou deux contrats CHAQUE JOUR, indéfiniment, payant plein tarif de
+#      slippage (OPTIONS_SLIPPAGE_PCT_OF_PREMIUM, aux DEUX bouts) et de
+#      commission minimum à chaque fois -- assez, cumulé sur des années de
+#      backtest, pour consommer tout le capital initial en pure friction,
+#      sans rapport avec la performance de la thèse.
+# Dans les deux cas : une position déjà ouverte n'est resize QUE si le
+# changement dépasse ce pourcentage de ses contrats actuels ; en dessous,
+# elle reste gelée à sa taille actuelle (une NOUVELLE position n'est jamais
+# concernée). None ou 0 désactive le filtre (tout changement, même infime,
+# déclenche un ordre).
+OPTIONS_MIN_RESIZE_RELATIVE_PCT = 15.0
+
+# Seuil ε (en points de log(V/P), cf. OPTIONS_MULTIPLES_GAP_BASIS="log") du
+# filtre de CHURN sur le mécanisme de rebalancement SUR DÉPÔT SEC
+# (options_engine.OptionsBacktestEngine._rebalance_on_signals) : un nouveau
+# dépôt (10-K/10-Q/8-K) sur une entreprise DÉJÀ EN POSITION ne redimensionne
+# cette position QUE si |log(V_nouveau/P_du_jour) - last_rebalance_log_gap|
+# dépasse ε -- où last_rebalance_log_gap est l'écart en log au moment du
+# DERNIER TRADE RÉEL sur cette position (pas du dernier signal connu).
+# En dessous, known_signals est mis à jour (les calculs futurs utilisent la
+# nouvelle valorisation théorique) mais aucun ordre n'est généré et
+# last_rebalance_log_gap ne bouge pas -- le seuil du prochain événement
+# continue de se mesurer depuis le dernier trade, pour qu'une dérive lente
+# qui ne franchit jamais ε d'un coup s'accumule correctement au fil des
+# dépôts plutôt que d'être remise à zéro à chaque publication ignorée.
+#
+# Un NOUVEAU candidat (pas encore en position) s'ouvre toujours SANS ce
+# test -- il n'y a pas de trade antérieur auquel comparer. Le mécanisme
+# JOURNALIER (daily_rebalance=True, jours sans nouveau dépôt) n'est, lui,
+# jamais concerné par ε : il n'ouvre que des positions neuves et ne
+# redimensionne jamais l'existant (voir la docstring d'options_engine.py).
+#
+# 0.15 ~= un rapport théorique/cours qui a bougé d'un facteur e^0.15 = 1.16
+# (16%) depuis le dernier trade. 0 désactive le filtre (redimensionne dès
+# que le signal a le moindre effet, comportement historique).
+OPTIONS_REBALANCE_LOG_GAP_THRESHOLD = 0.15
+
+# ----------------------------------------------------------------------------
+# Stratégie options "multiples" (backtest/strategies/valuation_gap_multiples_options.py)
+# ----------------------------------------------------------------------------
+# Variante LONG TERME de la stratégie options. L'échéance 2 ans, le roulement à
+# 9 mois et les stops mesurés sur le cours du sous-jacent sont désormais le
+# comportement par défaut du moteur (OPTIONS_TARGET_TENOR_DAYS,
+# OPTIONS_ROLL_WHEN_DAYS_LEFT, OPTIONS_STOP_BASIS) : elle ne s'en distingue
+# plus. Ce qui la sépare de valuation_gap_options (ci-dessus) tient à quatre
+# points, tous voulus :
+#   1. signal = multiples sectoriels SEULS (les lignes en repli DCF de 06b sont
+#      écartées) ;
+#   2. écart mesuré en LOG, symétrique (voir OPTIONS_MULTIPLES_GAP_BASIS) ;
+#   3. strike à mi-chemin entre valeur théorique et cours, pas ATM (pari sur une
+#      convergence progressive, pas sur un mouvement immédiat) ;
+#   4. stop-loss plus resserré (-25% contre -20%), prise de gain à une FRACTION
+#      DU CHEMIN vers la valeur théorique au lieu d'un seuil fixe (voir
+#      OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION), et écart refermé vendu au
+#      rebalancement suivant au lieu d'attendre le réexamen de roulement.
+# Seuil exprimé en POINTS DE LOG (100 x ln(V/P)), pas en pourcentage d'écart :
+# 18,23 = 100 x ln(1,20), soit un cours à 120% de la valeur théorique côté put,
+# et à 1/1,20 = 83,3% côté call. Voir OPTIONS_MULTIPLES_GAP_BASIS pour pourquoi
+# l'unité a changé.
+OPTIONS_MULTIPLES_ENTRY_THRESHOLD_PCT = math.log(1.20) * 100
+
+# HYSTÉRÉSIS : le seuil de SORTIE vaut cette fraction du seuil d'entrée.
+#
+# Sans elle, entrée et sortie partagent le même seuil, réévalué chaque jour
+# avec le cours du jour (daily_rebalance) : une position s'ouvre à
+# |écart| >= 18,23 et se ferme à |écart| < 18,23. Un titre qui oscille autour
+# du seuil déclenche donc des allers-retours complets, chacun payant deux fois
+# le slippage (OPTIONS_SLIPPAGE_PCT_OF_PREMIUM, 2,5% à l'achat ET à la vente),
+# deux commissions minimum, et surtout ABANDONNANT toute la valeur temps déjà
+# payée sur un contrat à 2 ans.
+#
+# Le filtre ε (OPTIONS_REBALANCE_LOG_GAP_THRESHOLD) et
+# OPTIONS_MIN_RESIZE_RELATIVE_PCT protègent tous les deux le
+# REDIMENSIONNEMENT et lui seul -- jamais la décision d'ouvrir ou de fermer,
+# qui est pourtant la plus chère des deux.
+#
+# À 0,70, une position entrée à 18,23 points de log n'est vendue qu'une fois
+# l'écart repassé sous 12,76 (un rapport théorique/cours de 1,136 au lieu de
+# 1,20). C'est cohérent avec la thèse : une convergence de 30% n'est pas une
+# raison de solder un pari à deux ans -- c'est même le début de ce qu'on
+# attendait. 1,0 rétablit l'ancien comportement (aucune hystérésis).
+OPTIONS_EXIT_THRESHOLD_RATIO = 0.70
+
+# Base de calcul de l'écart.
+#
+# "log" (défaut) -> 100 x ln(théorique / cours). SYMÉTRIQUE par construction :
+#   "moitié prix" et "double prix" donnent la même conviction au signe près
+#   (ln(2) = -ln(0,5)), et le seuil filtre les deux sens à identité.
+#
+# Les deux conventions historiques ci-dessous sont conservées pour pouvoir
+# rejouer un run antérieur, mais elles sont toutes les deux ASYMÉTRIQUES -- en
+# miroir l'une de l'autre, pas l'une plus que l'autre :
+#
+#   "theoretical" -> (théorique - cours)/théorique. Borné à +100% côté call
+#       (le cours ne descend pas sous zéro), NON borné côté put.
+#   "close"       -> (théorique - cours)/cours. Borné à -100% côté put,
+#       NON borné côté call.
+#
+# L'asymétrie ne portait pas que sur le classement : elle déformait la
+# SÉLECTION. À seuil 20% en base "theoretical", un call exigeait un cours à
+# <=80% de la théorique (ln = 0,223) là où un put se contentait de >=120%
+# (ln = 0,182) -- le put était structurellement plus facile à qualifier, et
+# recevait en prime une conviction plus élevée du côté non borné. Le livre
+# penchait donc vers le put par pure convention de calcul, pas par signal.
+OPTIONS_MULTIPLES_GAP_BASIS = "log"
+
+# STOP-LOSS appliqué au COURS DU SOUS-JACENT (comme OPTIONS_STOP_LOSS_PCT
+# depuis le passage aux entrées 2 ans, cf. OPTIONS_STOP_BASIS), et orienté dans
+# le sens de la position : pour un PUT, "le titre monte de 25%" est la perte
+# (voir options_engine._position_move_pct). Plus resserré que celui de
+# valuation_gap_options : le strike hors de la monnaie rend la thèse plus
+# fragile à un mouvement adverse.
+OPTIONS_MULTIPLES_STOP_LOSS_PCT = -25.0
+
+# TAKE-PROFIT INERTE pour cette stratégie : visant une valeur théorique, elle
+# prend ses gains à une fraction du chemin parcouru vers celle-ci
+# (OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION), pas à un seuil fixe. Conservé
+# pour le cas où l'on remettrait la fraction de convergence à 0, ce qui
+# rétablit le seuil fixe partout.
+OPTIONS_MULTIPLES_TAKE_PROFIT_PCT = 30.0
+
+# Échéance visée à l'entrée, et seuil de roulement : à 9 mois de l'échéance, la
+# position est clôturée et rouverte sur une nouvelle échéance 2 ans (au strike
+# recalculé avec la valorisation théorique la plus récente), tant que l'écart
+# reste au-dessus du seuil d'entrée. Évite de subir l'accélération de la perte
+# de valeur temps sur la dernière année de vie du contrat.
+OPTIONS_MULTIPLES_TENOR_DAYS = 730
+OPTIONS_MULTIPLES_ROLL_WHEN_DAYS_LEFT = 270
+
+# Plafond appliqué à l'écart QUAND IL SERT À DIMENSIONNER une position (pas
+# quand il sert à sélectionner : le classement reste fait sur l'écart brut).
+# En base "log", 100 points de log = un rapport de e^1 = 2,72 : au-delà de
+# 2,72x de sous- ou survalorisation, toutes les lignes reçoivent la même
+# conviction. Le plafond mord donc SYMÉTRIQUEMENT dans les deux sens, là où
+# en base "theoretical" il ne bornait en pratique que le côté put (le côté
+# call était déjà borné à +100% par construction). None ou 0 le désactive.
+OPTIONS_MULTIPLES_WEIGHT_CAP_PCT = 100.0
+
+# Fraction du chemin vers la valeur théorique à partir de laquelle une
+# position est prise en gain, POUR LES STRATÉGIES QUI VISENT UNE CONVERGENCE
+# (celles qui passent un strike_reference_price -- valuation_gap_multiples_options
+# aujourd'hui). Les autres (valuation_gap_options, ATM) continuent d'utiliser
+# OPTIONS_TAKE_PROFIT_PCT.
+#
+# POURQUOI un take-profit relatif. Un seuil fixe en % du sous-jacent n'est pas
+# atteignable de la même façon des deux côtés, par pure géométrie : une
+# position entrée au seuil (cours à 120% de la théorique) converge
+# complètement en -16,7% de cours, alors qu'un call entré au seuil (cours à
+# 83,3%) converge en +20,0%. Un take-profit fixe à +25% était donc ATTEIGNABLE
+# côté call et exigeait un DÉPASSEMENT de la cible côté put -- le take-profit
+# du put ne se déclenchait quasiment jamais, et la jambe ne savait pas prendre
+# ses gains.
+#
+# À 0,80, un put entré à P = 1,20 V sort à P = 1,04 V (-13,3% de cours) et un
+# call entré à P = 0,83 V sort à P = 0,96 V (+20,0% de cours) : atteignable des
+# deux côtés, et proportionnel à l'écart réellement constaté à l'entrée.
+# 0 ou None désactive le mécanisme (retour au seuil fixe pour tout le monde).
+OPTIONS_TAKE_PROFIT_CONVERGENCE_FRACTION = 0.80
+
+# Montant maximal DÉCAISSÉ PAR ORDRE D'ACHAT (prime x contrats x multiplicateur,
+# frais inclus). Plafond par ORDRE, pas par position : une ligne peut dépasser
+# ce montant en cumulant plusieurs renforcements sur des jours différents --
+# c'est BACKTEST_MAX_WEIGHT_PER_POSITION_PCT qui borne la taille d'une position.
+# Ne s'applique jamais aux VENTES : plafonner une sortie interdirait de
+# liquider une position devenue grosse.
+#
+# EXPRIMÉ EN % DU NAV, et non plus en dollars absolus. Un plafond fixe à
+# 15 000 $ était calibré sur un capital de 1 000 000 $ sans le dire, et ne
+# suivait ni la croissance ni la baisse du portefeuille. Tant que le plancher
+# de primes (OPTIONS_MIN_DEPLOYMENT_PCT) reconstruisait les positions jour
+# après jour, ce sous-dimensionnement se rattrapait tout seul et restait
+# invisible ; le plancher désactivé, il devient la contrainte qui MORD :
+# l'ouverture visée par le dimensionnement par delta était ramenée à 1/25e de
+# sa taille (mesuré : 200 contrats visés, 8 exécutés), et plus rien ne venait
+# combler l'écart avant le trimestre suivant.
+#
+# CALIBRATION. Une position légitime au poids maximal vaut
+# BACKTEST_MAX_WEIGHT_PER_POSITION_PCT (20%) du NAV en notionnel delta, soit
+# ~2 à 6% du NAV en prime selon la monnaie et l'échéance. À 10%, le plafond ne
+# bloque donc jamais un ordre légitime, mais coupe encore un ordre qui
+# engagerait la moitié du portefeuille d'un coup -- ce pour quoi il existe.
+# 0 ou None le désactive.
+OPTIONS_MAX_TRADE_PCT_OF_NAV = 10.0
+
+# Plafond ABSOLU additionnel, en dollars, appliqué en plus du précédent (le
+# plus contraignant des deux gagne). Désactivé par défaut : il n'a de sens que
+# si une contrainte de courtier ou de liquidité impose un montant fixe,
+# indépendant de la taille du portefeuille.
+OPTIONS_MAX_TRADE_DOLLAR = 0.0
+
+# DELTA MINIMAL POUR DIMENSIONNER UN ACHAT.
+#
+# Le moteur convertit une exposition $ visée en contrats par
+# `nb = target_dollar / (|delta| x spot x multiplicateur)`. Cette expression
+# DIVERGE quand le delta tend vers zéro : à delta 0,01 elle attribue cent fois
+# plus de contrats qu'à delta 1,0, pour la même exposition notionnelle
+# affichée. Le seul garde-fou était `abs(delta) < 1e-6`, qui protège d'un
+# OverflowError mais pas de l'absurdité économique.
+#
+# CE QUE ÇA COÛTE. Sans stop-loss, les positions perdantes survivent et
+# dérivent loin hors de la monnaie ; leur delta et leur prime tendent vers 0,
+# et chaque renforcement leur attribue un nombre de contrats colossal. Mesuré
+# sur deux runs identiques à un paramètre près (--stop-loss-pct -1000) :
+# commissions x26 (17 910 $ -> 470 888 $) pendant que le slippage BAISSE. La
+# commission est proportionnelle au NOMBRE DE CONTRATS, le slippage à la
+# VALEUR des primes : le volume de contrats avait explosé sans que la valeur
+# engagée bouge.
+#
+# POURQUOI LES PLAFONDS EXISTANTS N'Y SUFFISENT PAS. Le plafond par ordre est
+# en DOLLARS : sur une option à 0,02 $ de prime, 10% d'un NAV de 1 M$ autorise
+# 50 000 contrats. Et le plafond de LEVIER a exactement la même forme que le
+# dimensionnement (`remaining / (|delta| x spot x mult)`) : il diverge donc
+# lui aussi quand le delta s'effondre, et n'oppose aucune résistance.
+#
+# CALIBRATION. Une entrée ATM à 2 ans a un delta de ~0,55. Une position doit
+# avoir beaucoup dérivé pour tomber sous 0,15 : le plancher ne mord que sur
+# les cas pathologiques, jamais sur une thèse encore vivante.
+#
+# NE S'APPLIQUE QU'AUX ACHATS. Une position sous le plancher doit rester
+# VENDABLE -- par stop-loss, perte de signal, roulement, expiration ou
+# réduction. Un plancher qui bloquerait aussi les sorties rendrait
+# invendable exactement la position qu'il faut pouvoir solder.
+OPTIONS_MIN_DELTA_FOR_SIZING = 0.15
+
+# INTÉRÊTS SUR LE CASH OISIF.
+#
+# Cette stratégie porte en moyenne 74% de cash (le dimensionnement par delta
+# n'engage qu'une prime, soit une fraction de l'exposition). Ne pas rémunérer
+# ce cash pénalise le portefeuille par construction, et pour une raison qui
+# n'a rien à voir avec la thèse : sur 2015-2026, à des taux allés jusqu'à
+# 5,3%, l'écart cumulé se compte en dizaines de points de NAV.
+#
+# C'est aussi ce biais qui rendait OPTIONS_MIN_DEPLOYMENT_PCT tentant : le
+# plancher de primes ne faisait que compenser un manque à gagner artificiel,
+# en payant frais et slippage pour le faire.
+#
+# Capitalisation sur les jours CALENDAIRES écoulés (base 365) au taux
+# config.risk_free_rate_for(année) : un week-end rapporte, comme sur un compte
+# réel. False rétablit le comportement d'avant (cash stérile) pour rejouer un
+# run ancien.
+OPTIONS_CREDIT_IDLE_CASH = True
+
+# DURÉE DE DÉTENTION MINIMALE avant une sortie sur perte de signal.
+#
+# Les contrats sont achetés à 730 jours d'échéance, mais la durée de détention
+# médiane d'une sortie `signal_lost` est de 79 jours -- avec un minimum
+# mesuré à UN jour. Tous motifs confondus, la moyenne est de 193 jours : la
+# stratégie consomme 26% de l'optionalité qu'elle achète, et jette le reste.
+#
+# La cause est structurelle : une position est fermée dès que son écart
+# repasse sous le seuil qui a servi à ENTRER, et ce test tourne chaque jour de
+# bourse contre un prix qui bouge chaque jour. Un titre qui oscille autour du
+# seuil est acheté et revendu en boucle -- un contrôleur bang-bang.
+#
+# Ne s'applique JAMAIS aux motifs stop_loss, take_profit, roll, expiry ni
+# data_gap : un garde-fou de risque ou une échéance ne se négocie pas.
+# 0 désactive la contrainte (comportement historique).
+OPTIONS_MIN_HOLDING_DAYS = 0
+
+
+# ----------------------------------------------------------------------------
+# Hypothèses DCF par SECTEUR (07_calcul_dcf.py)
+# ----------------------------------------------------------------------------
+# Un WACC unique pour toutes les entreprises est un biais sectoriel, pas un
+# signal : 10% surestime le coût du capital d'une utility régulée (dette bon
+# marché, flux stables) et le sous-estime pour une techno. Toutes les valeurs
+# stables ressortaient donc "sous-évaluées" en permanence.
+#
+# Les clés sont les secteurs tels que 02_categoriser_secteurs.py les écrit
+# (SECTEURS, en français) -- PAS les libellés GICS anglais : une clé qui ne
+# correspond à rien retomberait silencieusement sur "_default" et le
+# paramétrage sectoriel n'aurait aucun effet. Ordres de grandeur usuels
+# (Damodaran, secteur US), à ajuster si tu as mieux.
+SECTOR_DCF_PARAMS: dict[str, dict] = {
+    "Technologie":                          {"wacc": 0.100, "fcf_growth": 0.07, "terminal_growth": 0.030},
+    "Santé":                                {"wacc": 0.090, "fcf_growth": 0.06, "terminal_growth": 0.025},
+    "Agro-alimentaire et boissons":         {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Produits ménagers et de soin personnel": {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Services aux collectivités":           {"wacc": 0.065, "fcf_growth": 0.02, "terminal_growth": 0.015},
+    "Banques":                              {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Assurance":                            {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Services financiers":                  {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Immobilier":                           {"wacc": 0.070, "fcf_growth": 0.03, "terminal_growth": 0.020},
+    "Pétrole et gaz":                       {"wacc": 0.100, "fcf_growth": 0.03, "terminal_growth": 0.015},
+    "Biens et services industriels":        {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Bâtiment et matériaux de construction": {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Matières premières":                   {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Chimie":                               {"wacc": 0.090, "fcf_growth": 0.04, "terminal_growth": 0.020},
+    "Medias":                               {"wacc": 0.090, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Télécommunications":                   {"wacc": 0.090, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Distribution":                         {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Automobiles et équipementiers":        {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    "Voyage et loisirs":                    {"wacc": 0.095, "fcf_growth": 0.05, "terminal_growth": 0.025},
+    # Secteur inconnu, "indetermine" (02) ou absent de l'univers.
+    "_default":                             {"wacc": 0.100, "fcf_growth": 0.05, "terminal_growth": 0.020},
+}
+
+# Taux sans risque auquel les WACC ci-dessus ont été calibrés. Les valeurs de
+# SECTOR_DCF_PARAMS décrivent un régime de taux "normal" (~4%, la valeur de
+# RISK_FREE_RATE) : c'est de ce point d'ancrage qu'on extrait la PRIME DE
+# RISQUE sectorielle, seule composante réellement propre au secteur.
+WACC_CALIBRATION_RISK_FREE_RATE = 0.04
+
+# Faut-il indexer le WACC sur la courbe de taux de l'année valorisée ?
+#
+# POURQUOI. Un WACC figé de 2010 à 2026 est un pari de taux non voulu, et
+# systématiquement à contretemps. Le dépôt connaît pourtant la courbe réelle
+# (RISK_FREE_RATE_BY_YEAR, de 0,05% à 5,3%), et s'en sert déjà pour pricer les
+# options et calculer le Sharpe -- mais pas pour actualiser les flux, alors
+# que le taux est le PREMIER déterminant d'un DCF :
+#
+#   2020-2021 (taux ~0%)  WACC 10% trop HAUT -> valeur théorique SOUS-estimée
+#                                            -> excès de PUT au pire moment
+#   2023-2024 (taux ~5%)  WACC 10% trop BAS  -> valeur théorique SUR-estimée
+#                                            -> excès de CALL
+#
+# COMMENT. wacc(secteur, année) = taux sans risque de l'année + prime de
+# risque du secteur, la prime étant celle implicite dans SECTOR_DCF_PARAMS
+# (wacc calibré - WACC_CALIBRATION_RISK_FREE_RATE). Une utility garde donc
+# ses 2,5 points de prime au-dessus du sans-risque, une techno ses 6 points,
+# quelle que soit l'année -- c'est bien la prime qui est sectorielle, pas le
+# niveau absolu.
+#
+# GARDE-FOU. calculer_terminal_value exige taux_actualisation >
+# taux_croissance_terminal (sinon la valeur terminale est infinie ou
+# négative). En 2011-2015 le sans-risque tombe à 0,05% : le WACC d'une
+# utility descendrait à 3,05% pour une croissance terminale de 1,5%, ce qui
+# passe, mais la marge devient mince et la valeur terminale explose. D'où le
+# plancher ci-dessous, appliqué APRÈS l'indexation.
+#
+# False rétablit exactement le comportement d'avant (WACC figé).
+DCF_WACC_FOLLOWS_RATE_CURVE = True
+
+# Plancher d'écart entre le WACC et la croissance terminale. En dessous, la
+# valeur terminale (FCF x (1+g) / (wacc - g)) devient si sensible au
+# dénominateur qu'elle cesse d'être une estimation -- à 0,5 point d'écart,
+# elle vaut 200 fois le FCF terminal.
+DCF_MIN_WACC_MINUS_TERMINAL_GROWTH = 0.03
+
+
+def sector_dcf_params(sector, year: Optional[int] = None, point_in_time: bool = True) -> dict:
+    """Hypothèses DCF du secteur, WACC indexé sur la courbe de taux de
+    `year` quand DCF_WACC_FOLLOWS_RATE_CURVE est actif (voir ci-dessus).
+
+    `year=None` (appelant sans date) -> WACC calibré tel quel, comportement
+    historique. Le résultat est un dict neuf : les tables de config ne sont
+    jamais mutées.
+
+    `point_in_time=True` (défaut) retient le taux CONNU à cette date, soit la
+    moyenne de l'année précédente : actualiser un dépôt de février 2020 avec
+    la moyenne 2020, écrasée par le krach de mars, est un look-ahead (voir
+    risk_free_rate_known_at). False rétablit le taux contemporain, pour
+    reproduire un run antérieur ou pour un usage ex-post."""
+    params = SECTOR_DCF_PARAMS.get(
+        sector if isinstance(sector, str) else "", SECTOR_DCF_PARAMS["_default"],
+    )
+    if not DCF_WACC_FOLLOWS_RATE_CURVE or year is None:
+        return dict(params)
+
+    risk_premium = params["wacc"] - WACC_CALIBRATION_RISK_FREE_RATE
+    taux = risk_free_rate_known_at(year) if point_in_time else risk_free_rate_for(year)
+    wacc = taux + risk_premium
+    # Le plancher porte sur l'ÉCART au taux terminal, pas sur le WACC lui-même :
+    # c'est cet écart qui pilote la valeur terminale.
+    wacc = max(wacc, params["terminal_growth"] + DCF_MIN_WACC_MINUS_TERMINAL_GROWTH)
+    return {**params, "wacc": wacc}
+
+
+# Secteurs pour lesquels un DCF de type FCFF n'a PAS de sens, et que
+# 07_calcul_dcf.py écarte donc explicitement.
+#
+# Le FCFF part de l'EBIT et traite la dette comme un financement à retrancher
+# en fin de calcul. Pour une banque ou un assureur, la dette est un INTRANT DU
+# MÉTIER (les dépôts et les provisions techniques financent l'actif) et l'EBIT
+# n'est pas une mesure opérationnelle pertinente : les valoriser ainsi produit
+# un chiffre qui a l'air d'un DCF sans en être un. Pour une foncière, l'essentiel
+# du résultat est absorbé par des amortissements sans contrepartie de trésorerie
+# et le capex se confond avec l'acquisition d'actifs -- le FCFF n'y décrit rien
+# non plus.
+#
+# Jusqu'ici, il suffisait qu'OperatingIncomeLoss soit tagué pour qu'un chiffre
+# sorte quand même. Ces entreprises ne perdent rien au change :
+# 06b_calcul_valorisation_combinee.py les valorise déjà par les multiples
+# sectoriels que SECTOR_MULTIPLES juge pertinents pour elles (P/E pour les
+# financières, EV/EBITDA pour l'immobilier) -- et les multiples, eux, n'ont pas
+# besoin de l'EBIT.
+#
+# Libellés de 02_categoriser_secteurs.py (français), comme SECTOR_DCF_PARAMS.
+# "Services financiers" N'Y FIGURE PLUS, et c'est le point du découpage fin
+# de GICS_SUB_INDUSTRY_TO_SECTEUR : tant que ce libellé désignait l'intégralité
+# de GICS "Financials", l'exclure retirait du DCF 76 entreprises d'un coup, dont
+# une vingtaine auxquelles la critique du FCFF ne s'applique pas du tout --
+# Visa et Mastercard (péages à 65% de marge, capex négligeable), S&P Global,
+# Moody's, MSCI, FactSet, les opérateurs de marchés (CME, ICE, Nasdaq, Cboe) et
+# les COURTIERS d'assurance (Aon, Marsh, Gallagher, Brown & Brown), qui
+# encaissent des commissions sans porter le moindre risque au bilan. Le libellé
+# ne désigne plus que ces métiers-là ; les prêteurs partent en "Banques" et les
+# porteurs de risque en "Assurance".
+SECTORS_SANS_DCF: tuple = ("Banques", "Assurance", "Immobilier")
+
+# ----------------------------------------------------------------------------
+# Découpage FIN de GICS "Financials" (02_categoriser_secteurs.py)
+# ----------------------------------------------------------------------------
+# GICS_TO_SECTEUR (02) mappe les 11 secteurs GICS un pour un, si bien que tout
+# "Financials" atterrissait dans "Services financiers" -- un seul bucket pour
+# JPMorgan, Visa et Aon. Les clés "Banques" et "Assurance" de
+# SECTOR_DCF_PARAMS n'étaient donc JAMAIS produites (8 des 19 clés de la table
+# étaient mortes), et SECTORS_SANS_DCF excluait les trois métiers d'un bloc.
+#
+# LE CRITÈRE EST ÉCONOMIQUE, PAS TAXONOMIQUE : le FCFF décrit-il l'entreprise ?
+#
+#   - Prêteur (banque, financement à la consommation, crédit hypothécaire,
+#     courtage/banque d'affaires, gestion d'actifs et banque dépositaire) : le
+#     bilan est l'outil de production, les intérêts SONT le chiffre d'affaires
+#     et la dette n'est pas un financement à retrancher. FCFF invalide.
+#   - Porteur de risque (vie, dommages, réassurance, multiligne) : provisions
+#     techniques et float dominent les flux. FCFF invalide.
+#   - Encaisseur de commissions (paiements, opérateurs de marchés et données,
+#     courtiers d'assurance) : marges élevées, capex faible, aucun risque porté
+#     au bilan. FCFF parfaitement valide -- c'est même le cas d'école.
+#
+# Les holdings multi-secteurs (Berkshire) partent en "Assurance" : leur coeur
+# est un assureur, et leur bilan consolidé rend l'EBIT inexploitable.
+#
+# La sous-industrie vient de Wikipedia via 01_build_universe.py. Elle n'est PAS
+# disponible pour les entreprises radiées (absentes de la table des membres
+# actuels) : celles-là retombent sur le mapping par secteur, donc sur
+# "Services financiers". C'est une couverture imparfaite, journalisée par 02.
+GICS_SUB_INDUSTRY_TO_SECTEUR: dict[str, str] = {
+    # --- Prêteurs et intermédiaires de bilan -> Banques -------------------
+    "Diversified Banks": "Banques",
+    "Regional Banks": "Banques",
+    "Commercial & Residential Mortgage Finance": "Banques",
+    "Consumer Finance": "Banques",
+    "Investment Banking & Brokerage": "Banques",
+    "Asset Management & Custody Banks": "Banques",
+    "Diversified Capital Markets": "Banques",
+    "Diversified Financial Services": "Banques",
+    # --- Porteurs de risque -> Assurance ---------------------------------
+    "Life & Health Insurance": "Assurance",
+    "Property & Casualty Insurance": "Assurance",
+    "Multi-line Insurance": "Assurance",
+    "Reinsurance": "Assurance",
+    "Multi-Sector Holdings": "Assurance",
+    # --- Commissions, sans risque de bilan -> Services financiers ---------
+    "Transaction & Payment Processing Services": "Services financiers",
+    "Data Processing & Outsourced Services": "Services financiers",
+    "Financial Exchanges & Data": "Services financiers",
+    "Insurance Brokers": "Services financiers",
+}
+
+# ----------------------------------------------------------------------------
+# Multiples pertinents par SECTEUR (06b_calcul_valorisation_combinee.py)
+# ----------------------------------------------------------------------------
+# Appliquer les trois mêmes multiples à tous les secteurs mélange des mesures
+# qui n'ont pas de sens partout : une banque n'a pas d'EBITDA ni de chiffre
+# d'affaires comparable à celui d'un industriel (structure de bilan
+# différente), et le P/E d'une foncière est écrasé par les amortissements.
+# Mêmes clés que SECTOR_DCF_PARAMS (libellés de 02, en français).
+SECTOR_MULTIPLES: dict[str, list] = {
+    "Banques": ["P/E"],
+    "Assurance": ["P/E"],
+    "Services financiers": ["P/E"],
+    "Immobilier": ["EV/EBITDA"],
+    "Services aux collectivités": ["EV/EBITDA", "EV/Sales"],
+    "_default": ["EV/EBITDA", "EV/Sales", "P/E"],
+}
+
+# Bornes de plausibilité appliquées AVANT l'agrégation sectorielle : une
+# entreprise sortant d'une perte affiche un P/E à plusieurs centaines de x et
+# déforme la médiane du secteur, surtout sur un groupe de quelques pairs.
+#
+# LES BORNES BASSES NE SONT PLUS À ZÉRO, et c'est la contrepartie de
+# l'agrégation par moyenne harmonique (cf. SECTOR_MULTIPLE_AGGREGATOR).
+# Agréger des multiples par leur moyenne harmonique revient à moyenner des
+# RENDEMENTS (1/multiple) : un multiple minuscule y devient un rendement
+# gigantesque, et un seul suffit à tirer toute l'agrégation. Là où la médiane
+# ignorait une valeur aberrante par le bas, la moyenne harmonique s'y expose.
+#
+# Les valeurs retenues n'écartent que ce qui est presque certainement une
+# erreur d'extraction pour une société de l'indice, jamais une valorisation
+# réelle : une entreprise du S&P 500 ne vaut pas moins d'une année d'EBITDA
+# (EV/EBITDA < 1), et n'a pas un P/E sous 1. Le plancher d'EV/Sales est plus
+# bas parce que la distribution y est réellement plus étalée -- distributeurs
+# et négociants traitent légitimement à 0,1-0,2 x le chiffre d'affaires.
+MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
+    "EV/EBITDA": (1.0, 50.0),
+    "EV/Sales": (0.05, 20.0),
+    "P/E": (1.0, 60.0),
+}
+
+# ----------------------------------------------------------------------------
+# Agrégation des multiples sectoriels
+# ----------------------------------------------------------------------------
+# "harmonic" (défaut) ou "median" (comportement historique, conservé pour
+# rejouer un run ancien -- même logique que OPTIONS_MULTIPLES_GAP_BASIS).
+#
+# POURQUOI LA MOYENNE HARMONIQUE. Un multiple est un RATIO, et la grandeur qu'on
+# veut vraiment moyenner est son inverse : le rendement. La moyenne harmonique
+# des P/E d'un secteur, c'est l'inverse du rendement bénéficiaire moyen -- une
+# quantité qui a un sens économique, là où la moyenne des P/E n'en a pas (elle
+# est mécaniquement tirée vers le haut par les multiples élevés, dont
+# l'amplitude n'est pas bornée alors que celle des multiples bas l'est).
+#
+# Baker & Ruback (Harvard, 1999, « Estimating Industry Multiples ») montrent
+# que sous une structure d'erreur MULTIPLICATIVE -- celle qui convient à un
+# ratio -- l'estimateur de variance minimale du multiple d'un secteur est la
+# moyenne harmonique, et que la moyenne arithmétique est biaisée à la hausse.
+#
+# La médiane, elle, n'est pas fausse : c'est un choix robuste raisonnable, et
+# c'est de loin le meilleur des deux estimateurs naïfs. Le passage à la moyenne
+# harmonique est donc un RAFFINEMENT, pas un correctif -- à A/B tester, ce que
+# ce réglage permet de faire sans toucher au code.
+SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
+
+# ----------------------------------------------------------------------------
+# Combinaison des valeurs implicites des trois multiples
+# ----------------------------------------------------------------------------
+# "tiers" (défaut) ou "flat" (comportement historique : médiane des trois).
+#
+# LE DÉFAUT DE LA MÉDIANE À TROIS VOIX. Elle traite EV/EBITDA, P/E et EV/Sales
+# comme également informatifs. Ils ne le sont pas : Liu, Nissim & Thomas
+# (Journal of Accounting Research, 2002, « Equity Valuation Using Multiples »)
+# mesurent la précision relative des multiples et trouvent que les multiples de
+# RÉSULTATS dominent nettement, et que les multiples de CHIFFRE D'AFFAIRES sont
+# les moins précis, de loin. Or dans une médiane à trois, quand EV/EBITDA et
+# P/E divergent, c'est EV/Sales -- le moins fiable -- qui tranche.
+#
+# Le mode "tiers" range donc les multiples par fiabilité et n'utilise que le
+# MEILLEUR RANG DISPONIBLE : les multiples de résultats quand il y en a,
+# EV/Sales seulement à défaut. Ce n'est pas une pondération mais une hiérarchie,
+# et c'est ce qui règle réellement le problème -- pondérer laisserait EV/Sales
+# départager dès qu'il tombe entre les deux autres.
+#
+# Le repli fonctionne tout seul là où il doit : une entreprise en perte n'a pas
+# de P/E exploitable (filtré en amont) et souvent pas d'EBITDA positif non plus
+# -- c'est précisément le cas où un multiple de chiffre d'affaires est la seule
+# valorisation possible, et le rang 2 le fournit.
+MULTIPLE_COMBINATION = "tiers"
+
+# Rang de fiabilité (1 = le plus fiable). Cf. MULTIPLE_COMBINATION.
+MULTIPLE_RELIABILITY_TIERS: dict[str, int] = {
+    "P/E": 1,
+    "EV/EBITDA": 1,
+    "EV/Sales": 2,
+}
+
+
+def to_ib_symbol(ric: str) -> str:
+    """Convertit un RIC de l'univers vers le symbole IBKR utilisé comme
+    colonne 'symbol' canonique dans TOUS les fichiers du pipeline (cours,
+    options, financials). Centralisé ici (au lieu d'être dupliqué dans
+    03/04/05) pour garantir que les trois scripts produisent exactement le
+    même format de symbole et que les jointures sur 'symbol' fonctionnent
+    pour les tickers à classes d'actions (ex: "BRK.B" -> "BRK B").
+    """
+    return SYMBOL_OVERRIDES.get(ric, ric.split(".")[0])
+
+
+# ----------------------------------------------------------------------------
+# Inflation (ajustement des écarts de valorisation)
+# ----------------------------------------------------------------------------
+# Inflation annuelle US (CPI-U, moyenne annuelle), en %.
+#
+# SOURCES : 2020-2025 recoupés en ligne (macrotrends, usinflationcalculator) ;
+# les années antérieures viennent des moyennes annuelles BLS bien établies mais
+# n'ont PAS pu être re-vérifiées automatiquement (bls.gov et les agrégateurs
+# renvoient 403 aux requêtes automatisées). Recoupe-les si un chiffre te paraît
+# douteux : https://www.bls.gov/cpi/ -> "Historical CPI-U".
+INFLATION_BY_YEAR: dict[int, float] = {
+    2005: 3.39, 2006: 3.23, 2007: 2.85, 2008: 3.84, 2009: -0.36,
+    2010: 1.64, 2011: 3.16, 2012: 2.07, 2013: 1.46, 2014: 1.62,
+    2015: 0.12, 2016: 1.26, 2017: 2.13, 2018: 2.44, 2019: 1.81,
+    2020: 1.23, 2021: 4.70, 2022: 8.00, 2023: 4.12, 2024: 2.95,
+    2025: 2.70,
+}
+# Année absente de la table (avant 2005, ou plus récente que la dernière mise
+# à jour) : valeur de repli, proche de la cible de la Fed.
+INFLATION_DEFAULT_PCT = 2.0
+
+# Ajuste l'écart de valorisation de l'inflation ANTICIPÉE sur l'horizon de
+# convergence de la stratégie. Voir backtest/strategies/base.inflation_adjusted_gap
+# pour le raisonnement : la valeur théorique est une grandeur NOMINALE, elle
+# inflate donc avec le temps, et la convergence se fait vers cette valeur
+# inflatée -- ce qui aide une position acheteuse et pénalise une vendeuse.
+INFLATION_ADJUST_GAP = True
+
+# Horizon de convergence retenu pour la stratégie ACTIONS (les stratégies
+# options utilisent leur propre échéance de contrat, qui est leur horizon réel).
+INFLATION_HORIZON_YEARS_STOCKS = 1.0
+
+
+def inflation_known_at(date) -> float:
+    """Inflation annuelle (en %) CONNUE à cette date, donc celle de l'année
+    civile PRÉCÉDENTE : la moyenne annuelle d'une année n'est publiée qu'une
+    fois l'année terminée. Utiliser l'inflation de l'année en cours
+    introduirait un look-ahead -- exactement le biais que tout le reste du
+    pipeline s'attache à éviter."""
+    import pandas as pd  # local : garde config.py importable sans pandas
+
+    timestamp = pd.Timestamp(date)
+    if pd.isna(timestamp):
+        return INFLATION_DEFAULT_PCT
+    return INFLATION_BY_YEAR.get(timestamp.year - 1, INFLATION_DEFAULT_PCT)
+
+
+def to_naive_day(values):
+    """Normalise une colonne de dates en datetime64[us] naïf, tronqué au jour.
+
+    À utiliser des DEUX côtés de toute jointure sur une date, pour la même
+    raison que to_ib_symbol pour les jointures sur 'symbol' : les fichiers du
+    pipeline ne stockent pas tous leurs dates de la même façon. 03b écrit des
+    datetime.date (stockés en date32 dans le Parquet, relus en
+    datetime64[s]), alors que 'filed_date' est une chaîne "YYYY-MM-DD" venant
+    de la SEC (04/04b), parsée en datetime64[us] par pandas >= 3.
+
+    pandas.merge_asof exige des clés STRICTEMENT du même dtype et refuse ce
+    mélange de résolutions ("MergeError: incompatible merge keys ... must be
+    the same type"), là où un merge classique le tolère silencieusement.
+    """
+    import pandas as pd  # local : garde config.py importable sans pandas
+
+    series = pd.to_datetime(pd.Series(values), errors="coerce")
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        series = series.dt.tz_convert("UTC").dt.tz_localize(None)
+    return series.dt.normalize().astype("datetime64[us]")
