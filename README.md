@@ -34,19 +34,33 @@ pèse 1,1 Mo.
 ### Mise en place
 
 ```bash
-# 1. installer git-lfs (une fois par machine)
-sudo apt install git-lfs        # ou : brew install git-lfs
+# 1. vérifier que git-lfs est là (une fois par machine)
+git lfs version
 
-# 2. diagnostiquer et chiffrer AVANT de pousser
-make lfs
+# 2. diagnostiquer et chiffrer AVANT de pousser -- ne modifie rien
+python setup_lfs.py
 
 # 3. activer LFS et indexer data/
-make lfs-apply
+python setup_lfs.py --apply
 git commit -m "Donnees du pipeline"
 git push
 ```
 
-`make lfs` (`setup_lfs.py`) ne modifie rien : il vérifie que git-lfs est là,
+Si `git lfs version` répond `'lfs' is not a git command`, il faut l'installer :
+
+| | |
+|---|---|
+| **Windows** | Déjà inclus dans Git for Windows en principe. Sinon, réinstalle-le depuis [git-scm.com](https://git-scm.com/download/win) en cochant *Git LFS*, ou prends l'installeur sur [git-lfs.com](https://git-lfs.com). |
+| **macOS** | `brew install git-lfs` |
+| **Debian/Ubuntu** | `sudo apt install git-lfs` |
+
+`make lfs` et `make lfs-apply` sont des raccourcis vers ces deux commandes,
+pour les machines qui ont `make` — ce qui n'est **pas** le cas de Git Bash sous
+Windows, d'où l'invocation directe ci-dessus. Sous Windows, `python` est aussi
+le bon nom de l'interpréteur (`python3` n'existe généralement pas) ; le
+`Makefile` le prend en compte avec `make PYTHON=python lfs`.
+
+`setup_lfs.py` sans argument ne modifie rien : il vérifie que git-lfs est là,
 demande **à git lui-même** (`git check-attr`) quels fichiers sont réellement
 couverts par les motifs de `.gitattributes`, puis chiffre le volume par
 sous-dossier et le compare au palier gratuit GitHub. Exemple de sortie :
@@ -111,10 +125,19 @@ echo "data/options/history/" >> .gitignore
 
 git-lfs doit y être installé **avant** le clone. Sans lui, `git clone` ne
 récupère que les pointeurs, et pandas échoue à ouvrir les parquet avec une
-erreur peu parlante. Si le mal est fait :
+erreur peu parlante. Si le mal est fait, installe git-lfs (tableau plus haut)
+puis rattrape le contenu sans recloner :
 
 ```bash
-sudo apt install git-lfs && git lfs pull
+git lfs pull
+```
+
+Et **clone le dépôt** plutôt que de télécharger le ZIP de GitHub : un ZIP ne
+contient ni l'historique git ni le contenu LFS (juste les pointeurs), et ne
+peut rien pousser.
+
+```bash
+git clone https://github.com/tbouillaguet-max/CalculRisque_Mark5.git
 ```
 
 ## Mise à jour quotidienne (`run_pipeline_daily.py`)
