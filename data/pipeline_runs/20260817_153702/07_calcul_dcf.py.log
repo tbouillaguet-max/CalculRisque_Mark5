@@ -1,0 +1,1378 @@
+2026-08-17 22:48:28,123 [INFO] Association des cours : 37481 lignes au total -- 36853 au cours quotidien (03b), 11 en repli sur la clôture annuelle antérieure (03), 617 sans cours.
+2026-08-17 22:48:28,377 [WARNING] Variation de BFR indisponible pour A (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,400 [WARNING] Variation de BFR indisponible pour ABBV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,400 [WARNING] Variation de BFR indisponible pour ABBV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,400 [WARNING] Variation de BFR indisponible pour ABBV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,406 [WARNING] Variation de BFR indisponible pour ABNB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,408 [WARNING] Variation de BFR indisponible pour ABT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,417 [WARNING] Variation de BFR indisponible pour ACN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,417 [WARNING] Variation de BFR indisponible pour ACN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,417 [WARNING] Variation de BFR indisponible pour ACN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,421 [WARNING] Variation de BFR indisponible pour ADBE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,421 [WARNING] Variation de BFR indisponible pour ADBE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,435 [WARNING] Variation de BFR indisponible pour ADM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,441 [WARNING] Variation de BFR indisponible pour ADP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,441 [WARNING] Variation de BFR indisponible pour ADP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,442 [WARNING] Variation de BFR indisponible pour ADP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,449 [WARNING] Variation de BFR indisponible pour ADSK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,449 [WARNING] Variation de BFR indisponible pour ADSK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,456 [WARNING] Variation de BFR indisponible pour AEE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,456 [WARNING] Variation de BFR indisponible pour AEE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,466 [WARNING] Variation de BFR indisponible pour AES (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,479 [WARNING] Variation de BFR indisponible pour AKAM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,479 [WARNING] Variation de BFR indisponible pour AKAM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,486 [WARNING] Variation de BFR indisponible pour ALB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,493 [WARNING] Variation de BFR indisponible pour ALGN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,493 [WARNING] Variation de BFR indisponible pour ALGN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,502 [WARNING] Variation de BFR indisponible pour ALLE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,502 [WARNING] Variation de BFR indisponible pour ALLE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,502 [WARNING] Variation de BFR indisponible pour ALLE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,515 [WARNING] Variation de BFR indisponible pour AMCR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,515 [WARNING] Variation de BFR indisponible pour AMCR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,522 [WARNING] Variation de BFR indisponible pour AME (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,522 [WARNING] Variation de BFR indisponible pour AME (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,530 [WARNING] Variation de BFR indisponible pour AMGN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,530 [WARNING] Variation de BFR indisponible pour AMGN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,541 [WARNING] Variation de BFR indisponible pour AMZN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,547 [WARNING] Variation de BFR indisponible pour ANET (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,548 [WARNING] Variation de BFR indisponible pour ANET (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,548 [WARNING] Variation de BFR indisponible pour ANET (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,554 [WARNING] Variation de BFR indisponible pour AOS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,567 [WARNING] Variation de BFR indisponible pour APH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,567 [WARNING] Variation de BFR indisponible pour APH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,575 [WARNING] Variation de BFR indisponible pour APP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,575 [WARNING] Variation de BFR indisponible pour APP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,575 [WARNING] Variation de BFR indisponible pour APP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,577 [WARNING] Variation de BFR indisponible pour APTV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,577 [WARNING] Variation de BFR indisponible pour APTV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,577 [WARNING] Variation de BFR indisponible pour APTV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,586 [WARNING] Variation de BFR indisponible pour ATO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,586 [WARNING] Variation de BFR indisponible pour ATO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,592 [WARNING] Variation de BFR indisponible pour AVGO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,595 [WARNING] Variation de BFR indisponible pour AVY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,602 [WARNING] Variation de BFR indisponible pour AWK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,613 [WARNING] Variation de BFR indisponible pour AZO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,614 [WARNING] Variation de BFR indisponible pour AZO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,614 [WARNING] Variation de BFR indisponible pour AZO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,620 [WARNING] Variation de BFR indisponible pour BA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,621 [WARNING] Variation de BFR indisponible pour BA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,629 [WARNING] Variation de BFR indisponible pour BALL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,629 [WARNING] Variation de BFR indisponible pour BALL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,644 [WARNING] Variation de BFR indisponible pour BBY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,645 [WARNING] Variation de BFR indisponible pour BBY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,663 [WARNING] Variation de BFR indisponible pour BG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,663 [WARNING] Variation de BFR indisponible pour BG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,665 [WARNING] Variation de BFR indisponible pour BIIB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,673 [WARNING] Variation de BFR indisponible pour BKNG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,674 [WARNING] Variation de BFR indisponible pour BKNG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,690 [WARNING] Variation de BFR indisponible pour BMY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,714 [WARNING] Variation de BFR indisponible pour BR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,715 [WARNING] Variation de BFR indisponible pour BR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,716 [WARNING] Variation de BFR indisponible pour BR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,716 [WARNING] Variation de BFR indisponible pour BR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,740 [WARNING] Variation de BFR indisponible pour CAH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,741 [WARNING] Variation de BFR indisponible pour CAH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,741 [WARNING] Variation de BFR indisponible pour CAH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,747 [WARNING] Variation de BFR indisponible pour CARR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,747 [WARNING] Variation de BFR indisponible pour CARR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,747 [WARNING] Variation de BFR indisponible pour CARR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,754 [WARNING] Variation de BFR indisponible pour CASY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,755 [WARNING] Variation de BFR indisponible pour CASY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,755 [WARNING] Variation de BFR indisponible pour CASY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,765 [WARNING] Variation de BFR indisponible pour CAT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,795 [WARNING] Variation de BFR indisponible pour CCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,795 [WARNING] Variation de BFR indisponible pour CCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,831 [WARNING] Variation de BFR indisponible pour CEG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,831 [WARNING] Variation de BFR indisponible pour CEG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,835 [WARNING] Variation de BFR indisponible pour CF (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,835 [WARNING] Variation de BFR indisponible pour CF (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,857 [WARNING] Variation de BFR indisponible pour CHD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,875 [WARNING] Variation de BFR indisponible pour CHRW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,875 [WARNING] Variation de BFR indisponible pour CHRW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,894 [WARNING] Variation de BFR indisponible pour CHTR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,894 [WARNING] Variation de BFR indisponible pour CHTR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,898 [WARNING] Variation de BFR indisponible pour CI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,899 [WARNING] Variation de BFR indisponible pour CI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,899 [WARNING] Variation de BFR indisponible pour CI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,902 [WARNING] Variation de BFR indisponible pour CIEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,919 [WARNING] Variation de BFR indisponible pour CL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,919 [WARNING] Variation de BFR indisponible pour CL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,939 [WARNING] Variation de BFR indisponible pour CLX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,954 [WARNING] Variation de BFR indisponible pour CMCSA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,972 [WARNING] Variation de BFR indisponible pour CMG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,986 [WARNING] Variation de BFR indisponible pour CMI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:28,999 [WARNING] Variation de BFR indisponible pour CMS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,005 [WARNING] Variation de BFR indisponible pour CNC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,006 [WARNING] Variation de BFR indisponible pour CNC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,006 [WARNING] Variation de BFR indisponible pour CNC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,012 [WARNING] Variation de BFR indisponible pour CNP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,012 [WARNING] Variation de BFR indisponible pour CNP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,019 [WARNING] Variation de BFR indisponible pour COHR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,020 [WARNING] Variation de BFR indisponible pour COHR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,040 [WARNING] Variation de BFR indisponible pour COST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,041 [WARNING] Variation de BFR indisponible pour COST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,041 [WARNING] Variation de BFR indisponible pour COST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,058 [WARNING] Variation de BFR indisponible pour CPRT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,058 [WARNING] Variation de BFR indisponible pour CPRT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,058 [WARNING] Variation de BFR indisponible pour CPRT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,058 [WARNING] Variation de BFR indisponible pour CPRT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,066 [WARNING] Variation de BFR indisponible pour CRH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,066 [WARNING] Variation de BFR indisponible pour CRH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,067 [WARNING] Variation de BFR indisponible pour CRL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,074 [WARNING] Variation de BFR indisponible pour CRM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,074 [WARNING] Variation de BFR indisponible pour CRM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,075 [WARNING] Variation de BFR indisponible pour CRM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,081 [WARNING] Variation de BFR indisponible pour CSCO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,081 [WARNING] Variation de BFR indisponible pour CSCO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,107 [WARNING] Variation de BFR indisponible pour CTAS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,107 [WARNING] Variation de BFR indisponible pour CTAS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,114 [WARNING] Variation de BFR indisponible pour CTSH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,126 [WARNING] Variation de BFR indisponible pour CVS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,133 [WARNING] Variation de BFR indisponible pour CVX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,134 [WARNING] Variation de BFR indisponible pour CVX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,134 [WARNING] Variation de BFR indisponible pour CVX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,141 [WARNING] Variation de BFR indisponible pour D (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,141 [WARNING] Variation de BFR indisponible pour D (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,141 [WARNING] Variation de BFR indisponible pour D (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,146 [WARNING] Variation de BFR indisponible pour DAL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,146 [WARNING] Variation de BFR indisponible pour DAL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,153 [WARNING] Variation de BFR indisponible pour DD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,162 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,163 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,163 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,163 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,164 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,164 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,164 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,165 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,165 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,165 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,166 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,166 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,167 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,167 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,167 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,168 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,168 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,169 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,169 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,169 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,170 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,170 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,170 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,171 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,171 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,171 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,172 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,172 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,173 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,173 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,173 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,174 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,174 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,174 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,175 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,175 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,176 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,176 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,176 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,177 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,177 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,177 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,178 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,178 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,178 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,179 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,179 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,180 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,180 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,180 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,181 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,181 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,181 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,182 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,182 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,182 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,183 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,183 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,183 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,184 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,184 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,185 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,185 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,185 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,186 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,186 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,186 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,187 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,187 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,187 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,188 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,188 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,189 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,189 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,189 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,190 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,190 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,190 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,191 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,191 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,191 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,192 [WARNING] Variation de BFR indisponible pour DE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,192 [WARNING] Variation de BFR indisponible pour DECK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,193 [WARNING] Variation de BFR indisponible pour DECK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,193 [WARNING] Variation de BFR indisponible pour DECK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,213 [WARNING] Variation de BFR indisponible pour DG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,214 [WARNING] Variation de BFR indisponible pour DG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,214 [WARNING] Variation de BFR indisponible pour DG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,225 [WARNING] Variation de BFR indisponible pour DGX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,233 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,233 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,233 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,234 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,234 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,234 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,234 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,234 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,235 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,235 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,235 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,235 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,236 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,236 [WARNING] Variation de BFR indisponible pour DHI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,237 [WARNING] Variation de BFR indisponible pour DHR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,237 [WARNING] Variation de BFR indisponible pour DHR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,245 [WARNING] Variation de BFR indisponible pour DIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,245 [WARNING] Variation de BFR indisponible pour DIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,257 [WARNING] Variation de BFR indisponible pour DLTR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,257 [WARNING] Variation de BFR indisponible pour DLTR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,258 [WARNING] Variation de BFR indisponible pour DLTR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,279 [WARNING] Variation de BFR indisponible pour DOV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,297 [WARNING] Variation de BFR indisponible pour DOW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,304 [WARNING] Variation de BFR indisponible pour DPZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,305 [WARNING] Variation de BFR indisponible pour DPZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,305 [WARNING] Variation de BFR indisponible pour DPZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,322 [WARNING] Variation de BFR indisponible pour DRI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,339 [WARNING] Variation de BFR indisponible pour DTE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,348 [WARNING] Variation de BFR indisponible pour DUK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,353 [WARNING] Variation de BFR indisponible pour DVA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,360 [WARNING] Variation de BFR indisponible pour DVN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,374 [WARNING] Variation de BFR indisponible pour EBAY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,374 [WARNING] Variation de BFR indisponible pour EBAY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,384 [WARNING] Variation de BFR indisponible pour ECL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,401 [WARNING] Variation de BFR indisponible pour ED (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,401 [WARNING] Variation de BFR indisponible pour ED (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,417 [WARNING] Variation de BFR indisponible pour EFX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,418 [WARNING] Variation de BFR indisponible pour EFX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,418 [WARNING] Variation de BFR indisponible pour EFX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,428 [WARNING] Variation de BFR indisponible pour EIX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,428 [WARNING] Variation de BFR indisponible pour EIX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,433 [WARNING] Variation de BFR indisponible pour EL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,433 [WARNING] Variation de BFR indisponible pour EL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,433 [WARNING] Variation de BFR indisponible pour EL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,436 [WARNING] Variation de BFR indisponible pour ELV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,444 [WARNING] Variation de BFR indisponible pour EME (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,444 [WARNING] Variation de BFR indisponible pour EME (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,457 [WARNING] Variation de BFR indisponible pour EOG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,457 [WARNING] Variation de BFR indisponible pour EOG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,468 [WARNING] Variation de BFR indisponible pour EQT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,468 [WARNING] Variation de BFR indisponible pour EQT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,475 [WARNING] Variation de BFR indisponible pour ES (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,475 [WARNING] Variation de BFR indisponible pour ES (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,481 [WARNING] Variation de BFR indisponible pour ETN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,484 [WARNING] Variation de BFR indisponible pour ETR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,491 [WARNING] Variation de BFR indisponible pour EVRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,491 [WARNING] Variation de BFR indisponible pour EVRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,494 [WARNING] Variation de BFR indisponible pour EW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,494 [WARNING] Variation de BFR indisponible pour EW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,494 [WARNING] Variation de BFR indisponible pour EW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,495 [WARNING] Variation de BFR indisponible pour EW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,509 [WARNING] Variation de BFR indisponible pour EXC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,509 [WARNING] Variation de BFR indisponible pour EXC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,523 [WARNING] Variation de BFR indisponible pour EXPD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,530 [WARNING] Variation de BFR indisponible pour EXPE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,531 [WARNING] Variation de BFR indisponible pour EXPE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,537 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,538 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,538 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,538 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,538 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,539 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,540 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,541 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,541 [WARNING] Variation de BFR indisponible pour F (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,543 [WARNING] Variation de BFR indisponible pour FANG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,543 [WARNING] Variation de BFR indisponible pour FANG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,548 [WARNING] Variation de BFR indisponible pour FAST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,549 [WARNING] Variation de BFR indisponible pour FAST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,556 [WARNING] Variation de BFR indisponible pour FCX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,556 [WARNING] Variation de BFR indisponible pour FCX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,565 [WARNING] Variation de BFR indisponible pour FDX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,565 [WARNING] Variation de BFR indisponible pour FDX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,565 [WARNING] Variation de BFR indisponible pour FDX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,570 [WARNING] Variation de BFR indisponible pour FDXF (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,570 [WARNING] Variation de BFR indisponible pour FDXF (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,571 [WARNING] Variation de BFR indisponible pour FE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,571 [WARNING] Variation de BFR indisponible pour FE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,571 [WARNING] Variation de BFR indisponible pour FE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,583 [WARNING] Variation de BFR indisponible pour FERG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,584 [WARNING] Variation de BFR indisponible pour FERG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,584 [WARNING] Variation de BFR indisponible pour FERG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,585 [WARNING] Variation de BFR indisponible pour FFIV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,586 [WARNING] Variation de BFR indisponible pour FFIV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,604 [WARNING] Variation de BFR indisponible pour FICO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,620 [WARNING] Variation de BFR indisponible pour FIX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,620 [WARNING] Variation de BFR indisponible pour FIX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,633 [WARNING] Variation de BFR indisponible pour FOX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,633 [WARNING] Variation de BFR indisponible pour FOX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,635 [WARNING] Variation de BFR indisponible pour FOXA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,635 [WARNING] Variation de BFR indisponible pour FOXA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,639 [WARNING] Variation de BFR indisponible pour FSLR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,644 [WARNING] Variation de BFR indisponible pour FTNT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,644 [WARNING] Variation de BFR indisponible pour FTNT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,644 [WARNING] Variation de BFR indisponible pour FTNT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,650 [WARNING] Variation de BFR indisponible pour FTV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,650 [WARNING] Variation de BFR indisponible pour FTV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,654 [WARNING] Variation de BFR indisponible pour GD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,664 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,664 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,664 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,664 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,664 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,665 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,665 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,665 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,665 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,665 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,666 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,667 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,667 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,668 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,668 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,668 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,669 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,669 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,670 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,670 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,670 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,671 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,671 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,672 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,672 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,673 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,673 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,673 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,674 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,674 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,674 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,675 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,675 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,676 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,676 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,676 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,677 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,677 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,677 [WARNING] Variation de BFR indisponible pour GE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,683 [WARNING] Variation de BFR indisponible pour GEHC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,684 [WARNING] Variation de BFR indisponible pour GEHC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,684 [WARNING] Variation de BFR indisponible pour GEHC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,687 [WARNING] Variation de BFR indisponible pour GEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,687 [WARNING] Variation de BFR indisponible pour GEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,704 [WARNING] Variation de BFR indisponible pour GEV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,706 [WARNING] Variation de BFR indisponible pour GILD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,706 [WARNING] Variation de BFR indisponible pour GILD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,706 [WARNING] Variation de BFR indisponible pour GILD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,724 [WARNING] Variation de BFR indisponible pour GIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,725 [WARNING] Variation de BFR indisponible pour GIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,751 [WARNING] Variation de BFR indisponible pour GLW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,764 [WARNING] Variation de BFR indisponible pour GM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,765 [WARNING] Variation de BFR indisponible pour GM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,765 [WARNING] Variation de BFR indisponible pour GM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,777 [WARNING] Variation de BFR indisponible pour GNRC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,778 [WARNING] Variation de BFR indisponible pour GNRC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,790 [WARNING] Variation de BFR indisponible pour GOOG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,790 [WARNING] Variation de BFR indisponible pour GOOG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,795 [WARNING] Variation de BFR indisponible pour GOOGL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,795 [WARNING] Variation de BFR indisponible pour GOOGL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,799 [WARNING] Variation de BFR indisponible pour GPC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,800 [WARNING] Variation de BFR indisponible pour GPC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,800 [WARNING] Variation de BFR indisponible pour GPC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,825 [WARNING] Variation de BFR indisponible pour GRMN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,826 [WARNING] Variation de BFR indisponible pour GRMN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,851 [WARNING] Variation de BFR indisponible pour GWW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,868 [WARNING] Variation de BFR indisponible pour HAL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,879 [WARNING] Variation de BFR indisponible pour HAS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,895 [WARNING] Variation de BFR indisponible pour HD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,895 [WARNING] Variation de BFR indisponible pour HD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,905 [WARNING] Variation de BFR indisponible pour HII (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,911 [WARNING] Variation de BFR indisponible pour HLT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,911 [WARNING] Variation de BFR indisponible pour HLT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,912 [WARNING] Variation de BFR indisponible pour HLT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,912 [WARNING] Variation de BFR indisponible pour HLT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,923 [WARNING] Variation de BFR indisponible pour HPE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,924 [WARNING] Variation de BFR indisponible pour HPE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,938 [WARNING] Variation de BFR indisponible pour HSIC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,938 [WARNING] Variation de BFR indisponible pour HSIC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,947 [WARNING] Variation de BFR indisponible pour HSY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,953 [WARNING] Variation de BFR indisponible pour HUBB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,953 [WARNING] Variation de BFR indisponible pour HUBB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,959 [WARNING] Variation de BFR indisponible pour HUM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,959 [WARNING] Variation de BFR indisponible pour HUM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,959 [WARNING] Variation de BFR indisponible pour HUM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,975 [WARNING] Variation de BFR indisponible pour IBM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,975 [WARNING] Variation de BFR indisponible pour IBM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,985 [WARNING] Variation de BFR indisponible pour IDXX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,985 [WARNING] Variation de BFR indisponible pour IDXX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,991 [WARNING] Variation de BFR indisponible pour IEX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:29,998 [WARNING] Variation de BFR indisponible pour IFF (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,008 [WARNING] Variation de BFR indisponible pour INTC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,015 [WARNING] Variation de BFR indisponible pour INTU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,015 [WARNING] Variation de BFR indisponible pour INTU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,022 [WARNING] Variation de BFR indisponible pour IP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,028 [WARNING] Variation de BFR indisponible pour IQV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,028 [WARNING] Variation de BFR indisponible pour IQV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,029 [WARNING] Variation de BFR indisponible pour IQV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,034 [WARNING] Variation de BFR indisponible pour IR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,034 [WARNING] Variation de BFR indisponible pour IR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,040 [WARNING] Variation de BFR indisponible pour ISRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,040 [WARNING] Variation de BFR indisponible pour ISRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,047 [WARNING] Variation de BFR indisponible pour IT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,054 [WARNING] Variation de BFR indisponible pour ITW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,054 [WARNING] Variation de BFR indisponible pour ITW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,054 [WARNING] Variation de BFR indisponible pour ITW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,080 [WARNING] Variation de BFR indisponible pour JBHT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,080 [WARNING] Variation de BFR indisponible pour JBHT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,085 [WARNING] Variation de BFR indisponible pour JBL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,098 [WARNING] Variation de BFR indisponible pour JNJ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,099 [WARNING] Variation de BFR indisponible pour JNJ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,109 [WARNING] Variation de BFR indisponible pour KDP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,109 [WARNING] Variation de BFR indisponible pour KDP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,124 [WARNING] Variation de BFR indisponible pour KEYS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,124 [WARNING] Variation de BFR indisponible pour KEYS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,124 [WARNING] Variation de BFR indisponible pour KEYS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,136 [WARNING] Variation de BFR indisponible pour KHC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,156 [WARNING] Variation de BFR indisponible pour KLAC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,156 [WARNING] Variation de BFR indisponible pour KLAC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,165 [WARNING] Variation de BFR indisponible pour KMB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,166 [WARNING] Variation de BFR indisponible pour KMB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,174 [WARNING] Variation de BFR indisponible pour KMI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,177 [WARNING] Variation de BFR indisponible pour KMI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,178 [WARNING] Variation de BFR indisponible pour KMI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,181 [WARNING] Variation de BFR indisponible pour KO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,188 [WARNING] Variation de BFR indisponible pour KR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,188 [WARNING] Variation de BFR indisponible pour KR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,193 [WARNING] Variation de BFR indisponible pour KVUE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,193 [WARNING] Variation de BFR indisponible pour KVUE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,202 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,202 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,203 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,204 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,204 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,204 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,204 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,204 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,205 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,205 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,205 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,206 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,206 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,206 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,207 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,207 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,207 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,207 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,208 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,208 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,208 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,209 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,209 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,209 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,210 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,211 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LEN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,212 [WARNING] Variation de BFR indisponible pour LH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,213 [WARNING] Variation de BFR indisponible pour LH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,220 [WARNING] Variation de BFR indisponible pour LHX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,220 [WARNING] Variation de BFR indisponible pour LHX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,220 [WARNING] Variation de BFR indisponible pour LHX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,235 [WARNING] Variation de BFR indisponible pour LII (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,252 [WARNING] Variation de BFR indisponible pour LIN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,253 [WARNING] Variation de BFR indisponible pour LIN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,261 [WARNING] Variation de BFR indisponible pour LITE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,262 [WARNING] Variation de BFR indisponible pour LITE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,288 [WARNING] Variation de BFR indisponible pour LMT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,289 [WARNING] Variation de BFR indisponible pour LMT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,295 [WARNING] Variation de BFR indisponible pour LNT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,295 [WARNING] Variation de BFR indisponible pour LNT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,310 [WARNING] Variation de BFR indisponible pour LOW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,311 [WARNING] Variation de BFR indisponible pour LOW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,311 [WARNING] Variation de BFR indisponible pour LOW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,312 [WARNING] Variation de BFR indisponible pour LOW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,346 [WARNING] Variation de BFR indisponible pour LULU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,346 [WARNING] Variation de BFR indisponible pour LULU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,347 [WARNING] Variation de BFR indisponible pour LULU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,361 [WARNING] Variation de BFR indisponible pour LUV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,362 [WARNING] Variation de BFR indisponible pour LUV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,375 [WARNING] Variation de BFR indisponible pour LVS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,376 [WARNING] Variation de BFR indisponible pour LVS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,392 [WARNING] Variation de BFR indisponible pour LYB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,411 [WARNING] Variation de BFR indisponible pour MAS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,418 [WARNING] Variation de BFR indisponible pour MCD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,424 [WARNING] Variation de BFR indisponible pour MCHP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,425 [WARNING] Variation de BFR indisponible pour MCHP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,425 [WARNING] Variation de BFR indisponible pour MCHP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,431 [WARNING] Variation de BFR indisponible pour MCK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,432 [WARNING] Variation de BFR indisponible pour MCK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,441 [WARNING] Variation de BFR indisponible pour MDLZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,449 [WARNING] Variation de BFR indisponible pour MDT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,449 [WARNING] Variation de BFR indisponible pour MDT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,449 [WARNING] Variation de BFR indisponible pour MDT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,456 [WARNING] Variation de BFR indisponible pour META (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,457 [WARNING] Variation de BFR indisponible pour META (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,457 [WARNING] Variation de BFR indisponible pour META (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,465 [WARNING] Variation de BFR indisponible pour MKC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,466 [WARNING] Variation de BFR indisponible pour MKC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,469 [WARNING] Variation de BFR indisponible pour MLM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,469 [WARNING] Variation de BFR indisponible pour MLM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,476 [WARNING] Variation de BFR indisponible pour MMM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,476 [WARNING] Variation de BFR indisponible pour MMM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,494 [WARNING] Variation de BFR indisponible pour MO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,495 [WARNING] Variation de BFR indisponible pour MO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,511 [WARNING] Variation de BFR indisponible pour MOS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,511 [WARNING] Variation de BFR indisponible pour MOS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,524 [WARNING] Variation de BFR indisponible pour MPC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,524 [WARNING] Variation de BFR indisponible pour MPC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,538 [WARNING] Variation de BFR indisponible pour MPWR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,598 [WARNING] Variation de BFR indisponible pour MSFT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,599 [WARNING] Variation de BFR indisponible pour MSFT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,599 [WARNING] Variation de BFR indisponible pour MSFT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,615 [WARNING] Variation de BFR indisponible pour MTD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,615 [WARNING] Variation de BFR indisponible pour MTD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,615 [WARNING] Variation de BFR indisponible pour MTD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,622 [WARNING] Variation de BFR indisponible pour MU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,623 [WARNING] Variation de BFR indisponible pour MU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,623 [WARNING] Variation de BFR indisponible pour MU (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,636 [WARNING] Variation de BFR indisponible pour NCLH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,636 [WARNING] Variation de BFR indisponible pour NCLH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,643 [WARNING] Variation de BFR indisponible pour NDSN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,657 [WARNING] Variation de BFR indisponible pour NEM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,662 [WARNING] Variation de BFR indisponible pour NFLX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,662 [WARNING] Variation de BFR indisponible pour NFLX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,669 [WARNING] Variation de BFR indisponible pour NI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,669 [WARNING] Variation de BFR indisponible pour NI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,673 [WARNING] Variation de BFR indisponible pour NKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,673 [WARNING] Variation de BFR indisponible pour NKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,673 [WARNING] Variation de BFR indisponible pour NKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,673 [WARNING] Variation de BFR indisponible pour NKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,678 [WARNING] Variation de BFR indisponible pour NOC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,689 [WARNING] Variation de BFR indisponible pour NRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,689 [WARNING] Variation de BFR indisponible pour NRG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,694 [WARNING] Variation de BFR indisponible pour NSC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,694 [WARNING] Variation de BFR indisponible pour NSC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,700 [WARNING] Variation de BFR indisponible pour NTAP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,700 [WARNING] Variation de BFR indisponible pour NTAP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,714 [WARNING] Variation de BFR indisponible pour NVDA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,720 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,720 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,720 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,721 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,721 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,722 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,722 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,722 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,722 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,722 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,723 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,724 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,725 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,726 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,727 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,728 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,729 [WARNING] Variation de BFR indisponible pour NVR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,729 [WARNING] Variation de BFR indisponible pour NWS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,732 [WARNING] Variation de BFR indisponible pour NWSA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,735 [WARNING] Variation de BFR indisponible pour NXPI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,736 [WARNING] Variation de BFR indisponible pour NXPI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,752 [WARNING] Variation de BFR indisponible pour OKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,752 [WARNING] Variation de BFR indisponible pour OKE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,758 [WARNING] Variation de BFR indisponible pour OMC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,758 [WARNING] Variation de BFR indisponible pour OMC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,773 [WARNING] Variation de BFR indisponible pour ORCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,773 [WARNING] Variation de BFR indisponible pour ORCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,780 [WARNING] Variation de BFR indisponible pour ORLY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,780 [WARNING] Variation de BFR indisponible pour ORLY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,780 [WARNING] Variation de BFR indisponible pour ORLY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,786 [WARNING] Variation de BFR indisponible pour OTIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,786 [WARNING] Variation de BFR indisponible pour OTIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,786 [WARNING] Variation de BFR indisponible pour OTIS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,790 [WARNING] Variation de BFR indisponible pour OXY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,791 [WARNING] Variation de BFR indisponible pour OXY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,791 [WARNING] Variation de BFR indisponible pour OXY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,791 [WARNING] Variation de BFR indisponible pour OXY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,797 [WARNING] Variation de BFR indisponible pour PANW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,800 [WARNING] Variation de BFR indisponible pour PAYX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,800 [WARNING] Variation de BFR indisponible pour PAYX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,808 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,809 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,809 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,809 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,809 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,810 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,811 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,812 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,813 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,813 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,813 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,813 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,813 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,814 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,815 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,815 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,815 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,815 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,815 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,816 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,816 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,816 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,816 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,816 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,817 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,818 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,819 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,819 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,820 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,820 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,820 [WARNING] Variation de BFR indisponible pour PCAR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,821 [WARNING] Variation de BFR indisponible pour PCG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,822 [WARNING] Variation de BFR indisponible pour PCG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,822 [WARNING] Variation de BFR indisponible pour PCG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,825 [WARNING] Variation de BFR indisponible pour PEG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,825 [WARNING] Variation de BFR indisponible pour PEG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,843 [WARNING] Variation de BFR indisponible pour PG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,843 [WARNING] Variation de BFR indisponible pour PG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,843 [WARNING] Variation de BFR indisponible pour PG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,853 [WARNING] Variation de BFR indisponible pour PH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,853 [WARNING] Variation de BFR indisponible pour PH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,853 [WARNING] Variation de BFR indisponible pour PH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,861 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,862 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,862 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,862 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,862 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,863 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,863 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,863 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,864 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,864 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,864 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,865 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,865 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,865 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,865 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,866 [WARNING] Variation de BFR indisponible pour PHM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,866 [WARNING] Variation de BFR indisponible pour PKG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,877 [WARNING] Variation de BFR indisponible pour PM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,877 [WARNING] Variation de BFR indisponible pour PM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,907 [WARNING] Variation de BFR indisponible pour PNR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,926 [WARNING] Variation de BFR indisponible pour PNW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,953 [WARNING] Variation de BFR indisponible pour PPL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,953 [WARNING] Variation de BFR indisponible pour PPL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,968 [WARNING] Variation de BFR indisponible pour PSKY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,975 [WARNING] Variation de BFR indisponible pour PTC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,975 [WARNING] Variation de BFR indisponible pour PTC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,982 [WARNING] Variation de BFR indisponible pour PWR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,983 [WARNING] Variation de BFR indisponible pour PWR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,991 [WARNING] Variation de BFR indisponible pour Q (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,992 [WARNING] Variation de BFR indisponible pour Q (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,999 [WARNING] Variation de BFR indisponible pour RCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:30,999 [WARNING] Variation de BFR indisponible pour RCL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,014 [WARNING] Variation de BFR indisponible pour RL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,014 [WARNING] Variation de BFR indisponible pour RL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,018 [WARNING] Variation de BFR indisponible pour RMD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,018 [WARNING] Variation de BFR indisponible pour RMD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,018 [WARNING] Variation de BFR indisponible pour RMD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,026 [WARNING] Variation de BFR indisponible pour ROK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,037 [WARNING] Variation de BFR indisponible pour ROP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,037 [WARNING] Variation de BFR indisponible pour ROP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,037 [WARNING] Variation de BFR indisponible pour ROP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,045 [WARNING] Variation de BFR indisponible pour ROST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,045 [WARNING] Variation de BFR indisponible pour ROST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,045 [WARNING] Variation de BFR indisponible pour ROST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,051 [WARNING] Variation de BFR indisponible pour RSG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,052 [WARNING] Variation de BFR indisponible pour RSG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,052 [WARNING] Variation de BFR indisponible pour RSG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,059 [WARNING] Variation de BFR indisponible pour RTX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,067 [WARNING] Variation de BFR indisponible pour RVTY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,093 [WARNING] Variation de BFR indisponible pour SJM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,093 [WARNING] Variation de BFR indisponible pour SJM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,093 [WARNING] Variation de BFR indisponible pour SJM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,093 [WARNING] Variation de BFR indisponible pour SJM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,111 [WARNING] Variation de BFR indisponible pour SMCI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,112 [WARNING] Variation de BFR indisponible pour SMCI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,112 [WARNING] Variation de BFR indisponible pour SMCI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,121 [WARNING] Variation de BFR indisponible pour SNA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,129 [WARNING] Variation de BFR indisponible pour SNPS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,129 [WARNING] Variation de BFR indisponible pour SNPS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,136 [WARNING] Variation de BFR indisponible pour SO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,136 [WARNING] Variation de BFR indisponible pour SO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,138 [WARNING] Variation de BFR indisponible pour SO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,138 [WARNING] Variation de BFR indisponible pour SO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,142 [WARNING] Variation de BFR indisponible pour SOLV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,142 [WARNING] Variation de BFR indisponible pour SOLV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,142 [WARNING] Variation de BFR indisponible pour SOLV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,148 [WARNING] Variation de BFR indisponible pour SRE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,148 [WARNING] Variation de BFR indisponible pour SRE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,152 [WARNING] Variation de BFR indisponible pour STE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,153 [WARNING] Variation de BFR indisponible pour STE (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,156 [WARNING] Variation de BFR indisponible pour STLD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,165 [WARNING] Variation de BFR indisponible pour STX (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,174 [WARNING] Variation de BFR indisponible pour STZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,184 [WARNING] Variation de BFR indisponible pour SW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,184 [WARNING] Variation de BFR indisponible pour SW (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,186 [WARNING] Variation de BFR indisponible pour SWK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,187 [WARNING] Variation de BFR indisponible pour SWK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,202 [WARNING] Variation de BFR indisponible pour SWKS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,203 [WARNING] Variation de BFR indisponible pour SWKS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,221 [WARNING] Variation de BFR indisponible pour SYK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,229 [WARNING] Variation de BFR indisponible pour SYY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,229 [WARNING] Variation de BFR indisponible pour SYY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,229 [WARNING] Variation de BFR indisponible pour SYY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,236 [WARNING] Variation de BFR indisponible pour T (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,236 [WARNING] Variation de BFR indisponible pour T (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,244 [WARNING] Variation de BFR indisponible pour TAP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,244 [WARNING] Variation de BFR indisponible pour TAP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,247 [WARNING] Variation de BFR indisponible pour TDG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,248 [WARNING] Variation de BFR indisponible pour TDG (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,255 [WARNING] Variation de BFR indisponible pour TDY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,256 [WARNING] Variation de BFR indisponible pour TDY (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,262 [WARNING] Variation de BFR indisponible pour TECH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,262 [WARNING] Variation de BFR indisponible pour TECH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,263 [WARNING] Variation de BFR indisponible pour TECH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,285 [WARNING] Variation de BFR indisponible pour TGT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,286 [WARNING] Variation de BFR indisponible pour TGT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,299 [WARNING] Variation de BFR indisponible pour TKO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,299 [WARNING] Variation de BFR indisponible pour TKO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,299 [WARNING] Variation de BFR indisponible pour TKO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,300 [WARNING] Variation de BFR indisponible pour TMO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,308 [WARNING] Variation de BFR indisponible pour TMUS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,308 [WARNING] Variation de BFR indisponible pour TMUS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,314 [WARNING] Variation de BFR indisponible pour TPL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,314 [WARNING] Variation de BFR indisponible pour TPL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,317 [WARNING] Variation de BFR indisponible pour TPR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,317 [WARNING] Variation de BFR indisponible pour TPR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,317 [WARNING] Variation de BFR indisponible pour TPR (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,329 [WARNING] Variation de BFR indisponible pour TRGP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,330 [WARNING] Variation de BFR indisponible pour TRGP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,331 [WARNING] Variation de BFR indisponible pour TRGP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,343 [WARNING] Variation de BFR indisponible pour TRMB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,343 [WARNING] Variation de BFR indisponible pour TRMB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,377 [WARNING] Variation de BFR indisponible pour TSCO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,378 [WARNING] Variation de BFR indisponible pour TSCO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,378 [WARNING] Variation de BFR indisponible pour TSCO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,403 [WARNING] Variation de BFR indisponible pour TSN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,407 [WARNING] Variation de BFR indisponible pour TT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,415 [WARNING] Variation de BFR indisponible pour TTD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,415 [WARNING] Variation de BFR indisponible pour TTD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,417 [WARNING] Variation de BFR indisponible pour TTWO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,428 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,429 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,429 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,429 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,429 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,429 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,430 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,430 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,430 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,430 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,430 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,431 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,432 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,433 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,434 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,435 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,435 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,435 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,435 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,435 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,436 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,436 [WARNING] Variation de BFR indisponible pour TXT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,437 [WARNING] Variation de BFR indisponible pour TYL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,438 [WARNING] Variation de BFR indisponible pour TYL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,452 [WARNING] Variation de BFR indisponible pour UHS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,452 [WARNING] Variation de BFR indisponible pour UHS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,456 [WARNING] Variation de BFR indisponible pour ULTA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,456 [WARNING] Variation de BFR indisponible pour ULTA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,457 [WARNING] Variation de BFR indisponible pour ULTA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,457 [WARNING] Variation de BFR indisponible pour ULTA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,462 [WARNING] Variation de BFR indisponible pour UNH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,462 [WARNING] Variation de BFR indisponible pour UNH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,470 [WARNING] Variation de BFR indisponible pour UNP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,470 [WARNING] Variation de BFR indisponible pour UNP (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,476 [WARNING] Variation de BFR indisponible pour UPS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,477 [WARNING] Variation de BFR indisponible pour UPS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,477 [WARNING] Variation de BFR indisponible pour UPS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,480 [WARNING] Variation de BFR indisponible pour URI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,481 [WARNING] Variation de BFR indisponible pour URI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,481 [WARNING] Variation de BFR indisponible pour URI (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,494 [WARNING] Variation de BFR indisponible pour VEEV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,494 [WARNING] Variation de BFR indisponible pour VEEV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,494 [WARNING] Variation de BFR indisponible pour VEEV (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,499 [WARNING] Variation de BFR indisponible pour VLO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,499 [WARNING] Variation de BFR indisponible pour VLO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,506 [WARNING] Variation de BFR indisponible pour VLTO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,507 [WARNING] Variation de BFR indisponible pour VLTO (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,507 [WARNING] Variation de BFR indisponible pour VMC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,508 [WARNING] Variation de BFR indisponible pour VMC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,513 [WARNING] Variation de BFR indisponible pour VRSK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,513 [WARNING] Variation de BFR indisponible pour VRSK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,513 [WARNING] Variation de BFR indisponible pour VRSK (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,541 [WARNING] Variation de BFR indisponible pour VTRS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,541 [WARNING] Variation de BFR indisponible pour VTRS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,543 [WARNING] Variation de BFR indisponible pour VZ (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,550 [WARNING] Variation de BFR indisponible pour WAB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,556 [WARNING] Variation de BFR indisponible pour WAT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,557 [WARNING] Variation de BFR indisponible pour WAT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,564 [WARNING] Variation de BFR indisponible pour WBD (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,575 [WARNING] Variation de BFR indisponible pour WEC (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,585 [WARNING] Variation de BFR indisponible pour WM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,585 [WARNING] Variation de BFR indisponible pour WM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,592 [WARNING] Variation de BFR indisponible pour WMB (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,597 [WARNING] Variation de BFR indisponible pour WMT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,598 [WARNING] Variation de BFR indisponible pour WMT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,598 [WARNING] Variation de BFR indisponible pour WMT (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,607 [WARNING] Variation de BFR indisponible pour WSM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,614 [WARNING] Variation de BFR indisponible pour WST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,614 [WARNING] Variation de BFR indisponible pour WST (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,625 [WARNING] Variation de BFR indisponible pour WYNN (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,632 [WARNING] Variation de BFR indisponible pour XYL (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,639 [WARNING] Variation de BFR indisponible pour YUM (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,646 [WARNING] Variation de BFR indisponible pour ZBH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,646 [WARNING] Variation de BFR indisponible pour ZBH (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,653 [WARNING] Variation de BFR indisponible pour ZBRA (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,660 [WARNING] Variation de BFR indisponible pour ZTS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,660 [WARNING] Variation de BFR indisponible pour ZTS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,660 [WARNING] Variation de BFR indisponible pour ZTS (un seul exercice dans l'historique) : traitée comme 0 dans le calcul du FCF.
+2026-08-17 22:48:31,678 [INFO] --- 18472/36864 lignes écartées du DCF (18392 calculées) ---
+2026-08-17 22:48:31,678 [INFO]   secteur sans DCF (FCFF non pertinent)        8196 (22.2%)
+2026-08-17 22:48:31,678 [INFO]   FCF <= 0                                     3822 (10.4%)
+2026-08-17 22:48:31,678 [INFO]   EBIT manquant                                2241 ( 6.1%)
+2026-08-17 22:48:31,678 [INFO]   EBIT negatif ou nul                          2192 ( 5.9%)
+2026-08-17 22:48:31,678 [INFO]   nombre d'actions manquant                    2021 ( 5.5%)
+2026-08-17 22:48:31,678 [WARNING] 2241 lignes sans EBIT : ces entreprises ne taguent ni OperatingIncomeLoss ni aucun des postes permettant de le reconstruire (résultat avant impôt, marge brute, coûts totaux -- cf. 04_recuperation_10k.py::_reconstruct_ebit). Vérifie le résumé de couverture affiché en fin de run de 04 ; si le taux y est bas, c'est l'extraction qu'il faut compléter, pas ce script.
+2026-08-17 22:48:31,678 [INFO] 8196 ligne(s) écartées du DCF, secteur non valorisable par un FCFF (config.SECTORS_SANS_DCF) : Immobilier (2454), Services financiers (5742). Ces entreprises restent valorisées par 06b_calcul_valorisation_combinee.py via les multiples sectoriels.
+2026-08-17 22:48:31,678 [WARNING] D&A absente pour 102 entreprise(s) (aucun tag XBRL DepreciationDepletionAndAmortization ni DepreciationAmortizationAndAccretionNet) : traitée comme 0, le DCF de ces entreprises est donc CONSERVATEUR (FCF, valeur terminale et valeur par action sous-estimés d'autant, écart de valorisation biaisé vers 'survalorisée'). A, ABNB, ACN, AEP, AMD, AOS, APH, BBY, BIIB, BLDR, BR, BSX, CIEN, CL, CNC...
+2026-08-17 22:48:31,804 [INFO] Historique DCF (tous exercices, pour le backtest) sauvegardé : data\dcf\dcf_historique.parquet (18392 lignes, 374 entreprises).
+2026-08-17 22:48:32,711 [INFO] Résultats DCF sauvegardés : data\dcf\resultats_dcf.xlsx
+2026-08-17 22:48:32,711 [INFO] Résumé des résultats DCF:
+2026-08-17 22:48:32,714 [INFO] A (Santé): Valeur DCF/action = 70.61$, Cours = 135.98$, Écart = -48.1%
+2026-08-17 22:48:32,714 [INFO] AAPL (Technologie): Valeur DCF/action = 115.97$, Cours = 308.91$, Écart = -62.5%
+2026-08-17 22:48:32,714 [INFO] ABBV (Santé): Valeur DCF/action = 79.03$, Cours = 245.10$, Écart = -67.8%
+2026-08-17 22:48:32,714 [INFO] ABT (Santé): Valeur DCF/action = 46.17$, Cours = 91.33$, Écart = -49.4%
+2026-08-17 22:48:32,714 [INFO] ACN (Technologie): Valeur DCF/action = 33.54$, Cours = 45.05$, Écart = -25.6%
+2026-08-17 22:48:32,714 [INFO] ADBE (Technologie): Valeur DCF/action = 302.20$, Cours = 206.36$, Écart = 46.4%
+2026-08-17 22:48:32,714 [INFO] ADI (Technologie): Valeur DCF/action = 93.58$, Cours = 398.05$, Écart = -76.5%
+2026-08-17 22:48:32,714 [INFO] ADM (Agro-alimentaire et boissons): Valeur DCF/action = 116.92$, Cours = 79.87$, Écart = 46.4%
+2026-08-17 22:48:32,715 [INFO] ADP (Biens et services industriels): Valeur DCF/action = nan$, Cours = 270.09$, Écart = n/a
+2026-08-17 22:48:32,715 [INFO] ADSK (Technologie): Valeur DCF/action = 74.91$, Cours = 231.31$, Écart = -67.6%
+2026-08-17 22:48:32,715 [INFO] AEE (Services aux collectivités): Valeur DCF/action = -13.06$, Cours = 83.76$, Écart = -115.6%
+2026-08-17 22:48:32,715 [INFO] AEP (Services aux collectivités): Valeur DCF/action = nan$, Cours = 137.04$, Écart = n/a
+2026-08-17 22:48:32,715 [INFO] AES (Services aux collectivités): Valeur DCF/action = 15.79$, Cours = 11.22$, Écart = 40.7%
+2026-08-17 22:48:32,715 [INFO] AKAM (Technologie): Valeur DCF/action = 70.84$, Cours = 110.54$, Écart = -35.9%
+2026-08-17 22:48:32,715 [INFO] ALB (Matières premières): Valeur DCF/action = -17.54$, Cours = 58.55$, Écart = -130.0%
+2026-08-17 22:48:32,715 [INFO] ALGN (Santé): Valeur DCF/action = 128.51$, Cours = 174.83$, Écart = -26.5%
+2026-08-17 22:48:32,715 [INFO] ALLE (Biens et services industriels): Valeur DCF/action = 110.02$, Cours = 154.57$, Écart = -28.8%
+2026-08-17 22:48:32,715 [INFO] AMAT (Technologie): Valeur DCF/action = 121.17$, Cours = 427.36$, Écart = -71.6%
+2026-08-17 22:48:32,715 [INFO] AMCR (Matières premières): Valeur DCF/action = 29.63$, Cours = 39.92$, Écart = -25.8%
+2026-08-17 22:48:32,715 [INFO] AMD (Technologie): Valeur DCF/action = 83.10$, Cours = 200.19$, Écart = -58.5%
+2026-08-17 22:48:32,715 [INFO] AME (Biens et services industriels): Valeur DCF/action = 114.61$, Cours = 254.05$, Écart = -54.9%
+2026-08-17 22:48:32,716 [INFO] AMGN (Santé): Valeur DCF/action = 263.33$, Cours = 407.83$, Écart = -35.4%
+2026-08-17 22:48:32,716 [INFO] AMZN (Distribution): Valeur DCF/action = 21.41$, Cours = 271.58$, Écart = -92.1%
+2026-08-17 22:48:32,716 [INFO] ANET (Technologie): Valeur DCF/action = 33.35$, Cours = 197.31$, Écart = -83.1%
+2026-08-17 22:48:32,716 [INFO] AOS (Biens et services industriels): Valeur DCF/action = 25.05$, Cours = 48.02$, Écart = -47.8%
+2026-08-17 22:48:32,716 [INFO] APA (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 36.53$, Écart = n/a
+2026-08-17 22:48:32,716 [INFO] APD (Matières premières): Valeur DCF/action = 82.55$, Cours = 328.88$, Écart = -74.9%
+2026-08-17 22:48:32,716 [INFO] APH (Technologie): Valeur DCF/action = 52.25$, Cours = 160.70$, Écart = -67.5%
+2026-08-17 22:48:32,716 [INFO] APP (Technologie): Valeur DCF/action = nan$, Cours = 417.80$, Écart = n/a
+2026-08-17 22:48:32,716 [INFO] APTV (Distribution): Valeur DCF/action = nan$, Cours = 47.72$, Écart = n/a
+2026-08-17 22:48:32,716 [INFO] ATO (Services aux collectivités): Valeur DCF/action = 59.29$, Cours = 96.40$, Écart = -38.5%
+2026-08-17 22:48:32,716 [INFO] AVGO (Technologie): Valeur DCF/action = 71.07$, Cours = 392.16$, Écart = -81.9%
+2026-08-17 22:48:32,716 [INFO] AVY (Matières premières): Valeur DCF/action = 133.45$, Cours = 173.30$, Écart = -23.0%
+2026-08-17 22:48:32,716 [INFO] AWK (Services aux collectivités): Valeur DCF/action = 14.10$, Cours = 127.86$, Écart = -89.0%
+2026-08-17 22:48:32,717 [INFO] AXON (Biens et services industriels): Valeur DCF/action = -8.03$, Cours = 522.46$, Écart = -101.5%
+2026-08-17 22:48:32,717 [INFO] AZO (Distribution): Valeur DCF/action = 1750.94$, Cours = 3116.30$, Écart = -43.8%
+2026-08-17 22:48:32,717 [INFO] BA (Biens et services industriels): Valeur DCF/action = 156.59$, Cours = 233.72$, Écart = -33.0%
+2026-08-17 22:48:32,717 [INFO] BALL (Matières premières): Valeur DCF/action = 41.25$, Cours = 63.75$, Écart = -35.3%
+2026-08-17 22:48:32,717 [INFO] BAX (Santé): Valeur DCF/action = nan$, Cours = 26.75$, Écart = n/a
+2026-08-17 22:48:32,717 [INFO] BBY (Distribution): Valeur DCF/action = 106.38$, Cours = 71.54$, Écart = 48.7%
+2026-08-17 22:48:32,717 [INFO] BDX (Santé): Valeur DCF/action = 152.07$, Cours = 177.07$, Écart = -14.1%
+2026-08-17 22:48:32,717 [INFO] BG (Agro-alimentaire et boissons): Valeur DCF/action = -49.19$, Cours = 126.31$, Écart = -138.9%
+2026-08-17 22:48:32,717 [INFO] BIIB (Santé): Valeur DCF/action = 722.80$, Cours = 201.18$, Écart = 259.3%
+2026-08-17 22:48:32,717 [INFO] BKNG (Distribution): Valeur DCF/action = 115.41$, Cours = 194.27$, Écart = -40.6%
+2026-08-17 22:48:32,717 [INFO] BKR (Pétrole et gaz): Valeur DCF/action = 27.51$, Cours = 60.59$, Écart = -54.6%
+2026-08-17 22:48:32,718 [INFO] BLDR (Biens et services industriels): Valeur DCF/action = 213.79$, Cours = 66.01$, Écart = 223.9%
+2026-08-17 22:48:32,718 [INFO] BMY (Santé): Valeur DCF/action = 238.81$, Cours = 64.86$, Écart = 268.2%
+2026-08-17 22:48:32,718 [INFO] BR (Biens et services industriels): Valeur DCF/action = 146.35$, Cours = 168.41$, Écart = -13.1%
+2026-08-17 22:48:32,718 [INFO] BSX (Santé): Valeur DCF/action = 37.05$, Cours = 48.43$, Écart = -23.5%
+2026-08-17 22:48:32,718 [INFO] CAH (Santé): Valeur DCF/action = 105.21$, Cours = 227.18$, Écart = -53.7%
+2026-08-17 22:48:32,718 [INFO] CARR (Biens et services industriels): Valeur DCF/action = 57.47$, Cours = 67.17$, Écart = -14.4%
+2026-08-17 22:48:32,718 [INFO] CASY (Agro-alimentaire et boissons): Valeur DCF/action = 814.77$, Cours = 142.60$, Écart = 471.4%
+2026-08-17 22:48:32,718 [INFO] CAT (Biens et services industriels): Valeur DCF/action = 329.66$, Cours = 871.08$, Écart = -62.2%
+2026-08-17 22:48:32,719 [INFO] CCL (Distribution): Valeur DCF/action = 25.18$, Cours = 29.07$, Écart = -13.4%
+2026-08-17 22:48:32,719 [INFO] CDNS (Technologie): Valeur DCF/action = 74.73$, Cours = 340.94$, Écart = -78.1%
+2026-08-17 22:48:32,719 [INFO] CDW (Technologie): Valeur DCF/action = 153.53$, Cours = 140.10$, Écart = 9.6%
+2026-08-17 22:48:32,719 [INFO] CEG (Services aux collectivités): Valeur DCF/action = -6.91$, Cours = 261.10$, Écart = -102.6%
+2026-08-17 22:48:32,720 [INFO] CF (Matières premières): Valeur DCF/action = 198.92$, Cours = 116.73$, Écart = 70.4%
+2026-08-17 22:48:32,720 [INFO] CHD (Agro-alimentaire et boissons): Valeur DCF/action = 61.77$, Cours = 98.81$, Écart = -37.5%
+2026-08-17 22:48:32,720 [INFO] CHRW (Biens et services industriels): Valeur DCF/action = 67.22$, Cours = 147.73$, Écart = -54.5%
+2026-08-17 22:48:32,720 [INFO] CHTR (Medias): Valeur DCF/action = -122.24$, Cours = 324.46$, Écart = -137.7%
+2026-08-17 22:48:32,721 [INFO] CI (Santé): Valeur DCF/action = nan$, Cours = 287.66$, Écart = n/a
+2026-08-17 22:48:32,721 [INFO] CIEN (Technologie): Valeur DCF/action = 30.26$, Cours = 535.63$, Écart = -94.3%
+2026-08-17 22:48:32,721 [INFO] CL (Agro-alimentaire et boissons): Valeur DCF/action = 84.03$, Cours = 91.30$, Écart = -8.0%
+2026-08-17 22:48:32,721 [INFO] CLX (Agro-alimentaire et boissons): Valeur DCF/action = 88.50$, Cours = 96.44$, Écart = -8.2%
+2026-08-17 22:48:32,722 [INFO] CMCSA (Medias): Valeur DCF/action = 108.74$, Cours = 13.96$, Écart = 678.9%
+2026-08-17 22:48:32,722 [INFO] CMG (Distribution): Valeur DCF/action = 12.35$, Cours = 37.22$, Écart = -66.8%
+2026-08-17 22:48:32,722 [INFO] CMI (Biens et services industriels): Valeur DCF/action = 198.48$, Cours = 635.96$, Écart = -68.8%
+2026-08-17 22:48:32,722 [INFO] CMS (Services aux collectivités): Valeur DCF/action = nan$, Cours = 74.37$, Écart = n/a
+2026-08-17 22:48:32,723 [INFO] CNC (Santé): Valeur DCF/action = 55.89$, Cours = 63.91$, Écart = -12.5%
+2026-08-17 22:48:32,723 [INFO] CNP (Services aux collectivités): Valeur DCF/action = 47.39$, Cours = 30.82$, Écart = 53.8%
+2026-08-17 22:48:32,723 [INFO] COHR (Technologie): Valeur DCF/action = 18.35$, Cours = 93.40$, Écart = -80.4%
+2026-08-17 22:48:32,723 [INFO] COO (Santé): Valeur DCF/action = 25.13$, Cours = 67.34$, Écart = -62.7%
+2026-08-17 22:48:32,724 [INFO] COP (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 116.76$, Écart = n/a
+2026-08-17 22:48:32,724 [INFO] COR (Santé): Valeur DCF/action = 270.20$, Cours = 317.22$, Écart = -14.8%
+2026-08-17 22:48:32,724 [INFO] COST (Agro-alimentaire et boissons): Valeur DCF/action = 214.05$, Cours = 961.83$, Écart = -77.7%
+2026-08-17 22:48:32,724 [INFO] CPRT (Biens et services industriels): Valeur DCF/action = 15.05$, Cours = 32.77$, Écart = -54.1%
+2026-08-17 22:48:32,725 [INFO] CRH (Matières premières): Valeur DCF/action = -10.17$, Cours = 96.00$, Écart = -110.6%
+2026-08-17 22:48:32,725 [INFO] CRL (Santé): Valeur DCF/action = 195.09$, Cours = 260.72$, Écart = -25.2%
+2026-08-17 22:48:32,725 [INFO] CRM (Technologie): Valeur DCF/action = 403.40$, Cours = 176.17$, Écart = 129.0%
+2026-08-17 22:48:32,726 [INFO] CSCO (Technologie): Valeur DCF/action = 45.68$, Cours = 115.38$, Écart = -60.4%
+2026-08-17 22:48:32,726 [INFO] CSX (Biens et services industriels): Valeur DCF/action = 24.08$, Cours = 49.93$, Écart = -51.8%
+2026-08-17 22:48:32,726 [INFO] CTAS (Biens et services industriels): Valeur DCF/action = 69.18$, Cours = 170.28$, Écart = -59.4%
+2026-08-17 22:48:32,726 [INFO] CTSH (Technologie): Valeur DCF/action = 90.46$, Cours = 54.70$, Écart = 65.4%
+2026-08-17 22:48:32,727 [INFO] CTVA (Matières premières): Valeur DCF/action = 18.15$, Cours = 78.71$, Écart = -76.9%
+2026-08-17 22:48:32,727 [INFO] CVS (Santé): Valeur DCF/action = 173.00$, Cours = 99.12$, Écart = 74.5%
+2026-08-17 22:48:32,727 [INFO] CVX (Pétrole et gaz): Valeur DCF/action = 133.98$, Cours = 189.23$, Écart = -29.2%
+2026-08-17 22:48:32,727 [INFO] D (Services aux collectivités): Valeur DCF/action = nan$, Cours = 63.94$, Écart = n/a
+2026-08-17 22:48:32,727 [INFO] DAL (Biens et services industriels): Valeur DCF/action = nan$, Cours = 87.39$, Écart = n/a
+2026-08-17 22:48:32,728 [INFO] DD (Matières premières): Valeur DCF/action = 486.13$, Cours = 152.61$, Écart = 218.5%
+2026-08-17 22:48:32,728 [INFO] DE (Biens et services industriels): Valeur DCF/action = 639.18$, Cours = 539.00$, Écart = 18.6%
+2026-08-17 22:48:32,728 [INFO] DECK (Distribution): Valeur DCF/action = 101.55$, Cours = 99.69$, Écart = 1.9%
+2026-08-17 22:48:32,728 [INFO] DELL (Technologie): Valeur DCF/action = 211.35$, Cours = 156.54$, Écart = 35.0%
+2026-08-17 22:48:32,728 [INFO] DG (Agro-alimentaire et boissons): Valeur DCF/action = 153.82$, Cours = 106.27$, Écart = 44.7%
+2026-08-17 22:48:32,729 [INFO] DGX (Santé): Valeur DCF/action = 140.99$, Cours = 227.90$, Écart = -38.1%
+2026-08-17 22:48:32,729 [INFO] DHI (Distribution): Valeur DCF/action = 12.39$, Cours = 54.82$, Écart = -77.4%
+2026-08-17 22:48:32,729 [INFO] DHR (Santé): Valeur DCF/action = 66.06$, Cours = 179.01$, Écart = -63.1%
+2026-08-17 22:48:32,729 [INFO] DIS (Medias): Valeur DCF/action = 102.32$, Cours = 101.76$, Écart = 0.6%
+2026-08-17 22:48:32,730 [INFO] DLTR (Agro-alimentaire et boissons): Valeur DCF/action = 131.17$, Cours = 113.00$, Écart = 16.1%
+2026-08-17 22:48:32,730 [INFO] DOV (Biens et services industriels): Valeur DCF/action = 134.29$, Cours = 197.80$, Écart = -32.1%
+2026-08-17 22:48:32,730 [INFO] DOW (Matières premières): Valeur DCF/action = 18.53$, Cours = 38.66$, Écart = -52.1%
+2026-08-17 22:48:32,730 [INFO] DPZ (Distribution): Valeur DCF/action = 330.45$, Cours = 328.97$, Écart = 0.5%
+2026-08-17 22:48:32,730 [INFO] DRI (Distribution): Valeur DCF/action = 113.34$, Cours = 196.31$, Écart = -42.3%
+2026-08-17 22:48:32,731 [INFO] DTE (Services aux collectivités): Valeur DCF/action = nan$, Cours = 151.69$, Écart = n/a
+2026-08-17 22:48:32,731 [INFO] DUK (Services aux collectivités): Valeur DCF/action = -100.89$, Cours = 127.58$, Écart = -179.1%
+2026-08-17 22:48:32,731 [INFO] DVA (Santé): Valeur DCF/action = 372.18$, Cours = 227.99$, Écart = 63.2%
+2026-08-17 22:48:32,731 [INFO] DVN (Pétrole et gaz): Valeur DCF/action = 29.26$, Cours = 42.09$, Écart = -30.5%
+2026-08-17 22:48:32,731 [INFO] DXCM (Santé): Valeur DCF/action = 20.99$, Cours = 74.54$, Écart = -71.8%
+2026-08-17 22:48:32,732 [INFO] EA (nan): Valeur DCF/action = nan$, Cours = 200.22$, Écart = n/a
+2026-08-17 22:48:32,732 [INFO] EBAY (Distribution): Valeur DCF/action = 52.96$, Cours = 110.14$, Écart = -51.9%
+2026-08-17 22:48:32,732 [INFO] ECL (Matières premières): Valeur DCF/action = 75.98$, Cours = 283.46$, Écart = -73.2%
+2026-08-17 22:48:32,732 [INFO] ED (Services aux collectivités): Valeur DCF/action = nan$, Cours = 106.39$, Écart = n/a
+2026-08-17 22:48:32,733 [INFO] EFX (Biens et services industriels): Valeur DCF/action = 66.86$, Cours = 173.00$, Écart = -61.4%
+2026-08-17 22:48:32,733 [INFO] EIX (Services aux collectivités): Valeur DCF/action = 22.55$, Cours = 67.94$, Écart = -66.8%
+2026-08-17 22:48:32,733 [INFO] ELV (Santé): Valeur DCF/action = 497.21$, Cours = 390.33$, Écart = 27.4%
+2026-08-17 22:48:32,733 [INFO] EME (Biens et services industriels): Valeur DCF/action = 276.58$, Cours = 802.37$, Écart = -65.5%
+2026-08-17 22:48:32,733 [INFO] EMR (Biens et services industriels): Valeur DCF/action = 44.64$, Cours = 158.84$, Écart = -71.9%
+2026-08-17 22:48:32,734 [INFO] EOG (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 143.52$, Écart = n/a
+2026-08-17 22:48:32,734 [INFO] EQT (Pétrole et gaz): Valeur DCF/action = 49.08$, Cours = 54.01$, Écart = -9.1%
+2026-08-17 22:48:32,734 [INFO] ES (Services aux collectivités): Valeur DCF/action = -65.87$, Cours = 67.04$, Écart = -198.3%
+2026-08-17 22:48:32,734 [INFO] ETN (Biens et services industriels): Valeur DCF/action = 139.83$, Cours = 374.59$, Écart = -62.7%
+2026-08-17 22:48:32,734 [INFO] ETR (Services aux collectivités): Valeur DCF/action = -48.33$, Cours = 87.40$, Écart = -155.3%
+2026-08-17 22:48:32,735 [INFO] EVRG (Services aux collectivités): Valeur DCF/action = -52.42$, Cours = 82.73$, Écart = -163.4%
+2026-08-17 22:48:32,735 [INFO] EW (Santé): Valeur DCF/action = 39.98$, Cours = 89.60$, Écart = -55.4%
+2026-08-17 22:48:32,735 [INFO] EXC (Services aux collectivités): Valeur DCF/action = -42.55$, Cours = 46.38$, Écart = -191.8%
+2026-08-17 22:48:32,735 [INFO] EXE (Pétrole et gaz): Valeur DCF/action = 90.66$, Cours = 96.96$, Écart = -6.5%
+2026-08-17 22:48:32,736 [INFO] EXPD (Biens et services industriels): Valeur DCF/action = 100.25$, Cours = 181.41$, Écart = -44.7%
+2026-08-17 22:48:32,736 [INFO] EXPE (Distribution): Valeur DCF/action = 93.39$, Cours = 306.57$, Écart = -69.5%
+2026-08-17 22:48:32,736 [INFO] F (Distribution): Valeur DCF/action = 145.16$, Cours = 12.53$, Écart = 1058.5%
+2026-08-17 22:48:32,736 [INFO] FANG (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 186.17$, Écart = n/a
+2026-08-17 22:48:32,736 [INFO] FAST (Biens et services industriels): Valeur DCF/action = 16.56$, Cours = 46.67$, Écart = -64.5%
+2026-08-17 22:48:32,737 [INFO] FCX (Matières premières): Valeur DCF/action = nan$, Cours = 68.18$, Écart = n/a
+2026-08-17 22:48:32,737 [INFO] FDX (Biens et services industriels): Valeur DCF/action = 159.47$, Cours = 306.22$, Écart = -47.9%
+2026-08-17 22:48:32,737 [INFO] FDXF (Biens et services industriels): Valeur DCF/action = 28.09$, Cours = 143.03$, Écart = -80.4%
+2026-08-17 22:48:32,737 [INFO] FE (Services aux collectivités): Valeur DCF/action = 9.18$, Cours = 42.83$, Écart = -78.6%
+2026-08-17 22:48:32,737 [INFO] FERG (Biens et services industriels): Valeur DCF/action = 102.29$, Cours = 252.81$, Écart = -59.5%
+2026-08-17 22:48:32,738 [INFO] FFIV (Technologie): Valeur DCF/action = 179.16$, Cours = 413.07$, Écart = -56.6%
+2026-08-17 22:48:32,738 [INFO] FICO (Technologie): Valeur DCF/action = 355.06$, Cours = 1373.08$, Écart = -74.1%
+2026-08-17 22:48:32,738 [INFO] FIX (Biens et services industriels): Valeur DCF/action = 223.14$, Cours = 1831.15$, Écart = -87.8%
+2026-08-17 22:48:32,738 [INFO] FLEX (Technologie): Valeur DCF/action = 83.88$, Cours = 131.52$, Écart = -36.2%
+2026-08-17 22:48:32,739 [INFO] FOX (Medias): Valeur DCF/action = 224.75$, Cours = 33.75$, Écart = 565.9%
+2026-08-17 22:48:32,739 [INFO] FOXA (Medias): Valeur DCF/action = 224.75$, Cours = 36.50$, Écart = 515.7%
+2026-08-17 22:48:32,739 [INFO] FSLR (Technologie): Valeur DCF/action = 31.06$, Cours = 206.01$, Écart = -84.9%
+2026-08-17 22:48:32,739 [INFO] FTNT (Technologie): Valeur DCF/action = 28.95$, Cours = 154.25$, Écart = -81.2%
+2026-08-17 22:48:32,739 [INFO] FTV (Biens et services industriels): Valeur DCF/action = 58.41$, Cours = 59.79$, Écart = -2.3%
+2026-08-17 22:48:32,739 [INFO] GD (Biens et services industriels): Valeur DCF/action = 162.57$, Cours = 338.73$, Écart = -52.0%
+2026-08-17 22:48:32,739 [INFO] GDDY (Technologie): Valeur DCF/action = 81.27$, Cours = 82.74$, Écart = -1.8%
+2026-08-17 22:48:32,740 [INFO] GE (Biens et services industriels): Valeur DCF/action = 166.25$, Cours = 345.73$, Écart = -51.9%
+2026-08-17 22:48:32,740 [INFO] GEHC (Santé): Valeur DCF/action = 169.99$, Cours = 82.63$, Écart = 105.7%
+2026-08-17 22:48:32,740 [INFO] GEN (Technologie): Valeur DCF/action = 27.18$, Cours = 29.17$, Écart = -6.8%
+2026-08-17 22:48:32,740 [INFO] GEV (Biens et services industriels): Valeur DCF/action = 248.07$, Cours = 717.39$, Écart = -65.4%
+2026-08-17 22:48:32,740 [INFO] GILD (Santé): Valeur DCF/action = 161.79$, Cours = 130.86$, Écart = 23.6%
+2026-08-17 22:48:32,740 [INFO] GIS (Agro-alimentaire et boissons): Valeur DCF/action = 93.37$, Cours = 37.77$, Écart = 147.2%
+2026-08-17 22:48:32,740 [INFO] GLW (Technologie): Valeur DCF/action = nan$, Cours = 158.26$, Écart = n/a
+2026-08-17 22:48:32,741 [INFO] GM (Distribution): Valeur DCF/action = 193.08$, Cours = 79.52$, Écart = 142.8%
+2026-08-17 22:48:32,741 [INFO] GNRC (Biens et services industriels): Valeur DCF/action = 67.43$, Cours = 218.63$, Écart = -69.2%
+2026-08-17 22:48:32,741 [INFO] GOOG (Medias): Valeur DCF/action = 66.01$, Cours = 318.34$, Écart = -79.3%
+2026-08-17 22:48:32,741 [INFO] GOOGL (Medias): Valeur DCF/action = 66.01$, Cours = 317.69$, Écart = -79.2%
+2026-08-17 22:48:32,741 [INFO] GPC (Distribution): Valeur DCF/action = 112.51$, Cours = 119.12$, Écart = -5.5%
+2026-08-17 22:48:32,741 [INFO] GRMN (Distribution): Valeur DCF/action = 22.45$, Cours = 253.08$, Écart = -91.1%
+2026-08-17 22:48:32,741 [INFO] GWW (Biens et services industriels): Valeur DCF/action = 530.71$, Cours = 1300.45$, Écart = -59.2%
+2026-08-17 22:48:32,741 [INFO] HAL (Pétrole et gaz): Valeur DCF/action = 26.22$, Cours = 33.36$, Écart = -21.4%
+2026-08-17 22:48:32,741 [INFO] HAS (Distribution): Valeur DCF/action = 6.58$, Cours = 99.75$, Écart = -93.4%
+2026-08-17 22:48:32,741 [INFO] HCA (Santé): Valeur DCF/action = 428.41$, Cours = 434.78$, Écart = -1.5%
+2026-08-17 22:48:32,741 [INFO] HD (Distribution): Valeur DCF/action = 286.79$, Cours = 317.85$, Écart = -9.8%
+2026-08-17 22:48:32,741 [INFO] HII (Biens et services industriels): Valeur DCF/action = 220.47$, Cours = 319.90$, Écart = -31.1%
+2026-08-17 22:48:32,742 [INFO] HLT (Distribution): Valeur DCF/action = 112.95$, Cours = 322.43$, Écart = -65.0%
+2026-08-17 22:48:32,742 [INFO] HON (Biens et services industriels): Valeur DCF/action = 165.81$, Cours = 246.27$, Écart = -32.7%
+2026-08-17 22:48:32,742 [INFO] HPE (Technologie): Valeur DCF/action = -9.62$, Cours = 56.15$, Écart = -117.1%
+2026-08-17 22:48:32,742 [INFO] HPQ (Technologie): Valeur DCF/action = 40.05$, Cours = 25.01$, Écart = 60.1%
+2026-08-17 22:48:32,742 [INFO] HSIC (Santé): Valeur DCF/action = 90.55$, Cours = 89.11$, Écart = 1.6%
+2026-08-17 22:48:32,742 [INFO] HSY (Agro-alimentaire et boissons): Valeur DCF/action = 266.24$, Cours = 219.40$, Écart = 21.3%
+2026-08-17 22:48:32,742 [INFO] HUBB (Biens et services industriels): Valeur DCF/action = 204.05$, Cours = 508.43$, Écart = -59.9%
+2026-08-17 22:48:32,742 [INFO] HUM (Santé): Valeur DCF/action = 343.33$, Cours = 190.50$, Écart = 80.2%
+2026-08-17 22:48:32,742 [INFO] HWM (Biens et services industriels): Valeur DCF/action = 38.97$, Cours = 289.72$, Écart = -86.5%
+2026-08-17 22:48:32,742 [INFO] IBM (Technologie): Valeur DCF/action = 127.35$, Cours = 206.65$, Écart = -38.4%
+2026-08-17 22:48:32,742 [INFO] IDXX (Santé): Valeur DCF/action = 214.57$, Cours = 588.09$, Écart = -63.5%
+2026-08-17 22:48:32,742 [INFO] IEX (Biens et services industriels): Valeur DCF/action = 99.33$, Cours = 229.52$, Écart = -56.7%
+2026-08-17 22:48:32,742 [INFO] IFF (Matières premières): Valeur DCF/action = -26.87$, Cours = 81.81$, Écart = -132.8%
+2026-08-17 22:48:32,743 [INFO] INCY (Santé): Valeur DCF/action = 235.05$, Cours = 100.05$, Écart = 134.9%
+2026-08-17 22:48:32,743 [INFO] INTC (Technologie): Valeur DCF/action = 0.92$, Cours = 45.07$, Écart = -98.0%
+2026-08-17 22:48:32,743 [INFO] INTU (Technologie): Valeur DCF/action = 380.43$, Cours = 383.93$, Écart = -0.9%
+2026-08-17 22:48:32,743 [INFO] IP (Matières premières): Valeur DCF/action = 8.23$, Cours = 42.25$, Écart = -80.5%
+2026-08-17 22:48:32,743 [INFO] IQV (Santé): Valeur DCF/action = 166.48$, Cours = 176.42$, Écart = -5.6%
+2026-08-17 22:48:32,743 [INFO] IR (Biens et services industriels): Valeur DCF/action = 47.06$, Cours = 83.38$, Écart = -43.6%
+2026-08-17 22:48:32,743 [INFO] ISRG (Santé): Valeur DCF/action = 67.27$, Cours = 350.06$, Écart = -80.8%
+2026-08-17 22:48:32,743 [INFO] IT (Technologie): Valeur DCF/action = nan$, Cours = 185.79$, Écart = n/a
+2026-08-17 22:48:32,743 [INFO] ITW (Biens et services industriels): Valeur DCF/action = 129.58$, Cours = 294.70$, Écart = -56.0%
+2026-08-17 22:48:32,743 [INFO] J (Biens et services industriels): Valeur DCF/action = 59.88$, Cours = 142.68$, Écart = -58.0%
+2026-08-17 22:48:32,743 [INFO] JBHT (Biens et services industriels): Valeur DCF/action = 56.07$, Cours = 288.30$, Écart = -80.6%
+2026-08-17 22:48:32,743 [INFO] JBL (Technologie): Valeur DCF/action = 45.07$, Cours = 385.48$, Écart = -88.3%
+2026-08-17 22:48:32,744 [INFO] JCI (Biens et services industriels): Valeur DCF/action = 13.72$, Cours = 63.55$, Écart = -78.4%
+2026-08-17 22:48:32,744 [INFO] JNJ (Santé): Valeur DCF/action = 197.02$, Cours = 259.27$, Écart = -24.0%
+2026-08-17 22:48:32,744 [INFO] KDP (Agro-alimentaire et boissons): Valeur DCF/action = 29.47$, Cours = 28.53$, Écart = 3.3%
+2026-08-17 22:48:32,744 [INFO] KEYS (Technologie): Valeur DCF/action = 104.58$, Cours = 343.11$, Écart = -69.5%
+2026-08-17 22:48:32,744 [INFO] KHC (Agro-alimentaire et boissons): Valeur DCF/action = 63.57$, Cours = 23.07$, Écart = 175.5%
+2026-08-17 22:48:32,744 [INFO] KLAC (Technologie): Valeur DCF/action = 46.59$, Cours = 193.22$, Écart = -75.9%
+2026-08-17 22:48:32,744 [INFO] KMB (Agro-alimentaire et boissons): Valeur DCF/action = 68.79$, Cours = 111.57$, Écart = -38.3%
+2026-08-17 22:48:32,744 [INFO] KMI (Pétrole et gaz): Valeur DCF/action = 3.55$, Cours = 32.86$, Écart = -89.2%
+2026-08-17 22:48:32,744 [INFO] KO (Agro-alimentaire et boissons): Valeur DCF/action = 7.12$, Cours = 78.76$, Écart = -91.0%
+2026-08-17 22:48:32,744 [INFO] KR (Agro-alimentaire et boissons): Valeur DCF/action = 148.59$, Cours = 57.73$, Écart = 157.4%
+2026-08-17 22:48:32,744 [INFO] KVUE (Agro-alimentaire et boissons): Valeur DCF/action = 26.61$, Cours = 19.18$, Écart = 38.7%
+2026-08-17 22:48:32,744 [INFO] LDOS (Biens et services industriels): Valeur DCF/action = 82.67$, Cours = 130.60$, Écart = -36.7%
+2026-08-17 22:48:32,745 [INFO] LH (Santé): Valeur DCF/action = 111.18$, Cours = 313.96$, Écart = -64.6%
+2026-08-17 22:48:32,745 [INFO] LHX (Biens et services industriels): Valeur DCF/action = 181.01$, Cours = 271.90$, Écart = -33.4%
+2026-08-17 22:48:32,745 [INFO] LII (Biens et services industriels): Valeur DCF/action = 194.61$, Cours = 565.50$, Écart = -65.6%
+2026-08-17 22:48:32,745 [INFO] LIN (Matières premières): Valeur DCF/action = 162.32$, Cours = 478.38$, Écart = -66.1%
+2026-08-17 22:48:32,745 [INFO] LITE (Technologie): Valeur DCF/action = 37.08$, Cours = 117.96$, Écart = -68.6%
+2026-08-17 22:48:32,745 [INFO] LLY (Santé): Valeur DCF/action = nan$, Cours = 1038.27$, Écart = n/a
+2026-08-17 22:48:32,745 [INFO] LMT (Biens et services industriels): Valeur DCF/action = 247.43$, Cours = 568.59$, Écart = -56.5%
+2026-08-17 22:48:32,745 [INFO] LNT (Services aux collectivités): Valeur DCF/action = nan$, Cours = 71.01$, Écart = n/a
+2026-08-17 22:48:32,745 [INFO] LOW (Distribution): Valeur DCF/action = 57.07$, Cours = 217.92$, Écart = -73.8%
+2026-08-17 22:48:32,745 [INFO] LRCX (Technologie): Valeur DCF/action = 70.54$, Cours = 311.35$, Écart = -77.3%
+2026-08-17 22:48:32,745 [INFO] LULU (Distribution): Valeur DCF/action = 152.41$, Cours = 124.92$, Écart = 22.0%
+2026-08-17 22:48:32,745 [INFO] LUV (Biens et services industriels): Valeur DCF/action = 109.51$, Cours = 52.51$, Écart = 108.6%
+2026-08-17 22:48:32,746 [INFO] LVS (Distribution): Valeur DCF/action = 18.44$, Cours = 46.08$, Écart = -60.0%
+2026-08-17 22:48:32,746 [INFO] LYB (Matières premières): Valeur DCF/action = 64.62$, Cours = 62.08$, Écart = 4.1%
+2026-08-17 22:48:32,746 [INFO] LYV (Medias): Valeur DCF/action = 113.66$, Cours = 183.56$, Écart = -38.1%
+2026-08-17 22:48:32,746 [INFO] MAR (Distribution): Valeur DCF/action = 200.13$, Cours = 346.83$, Écart = -42.3%
+2026-08-17 22:48:32,746 [INFO] MAS (Biens et services industriels): Valeur DCF/action = 51.56$, Cours = 73.96$, Écart = -30.3%
+2026-08-17 22:48:32,746 [INFO] MCD (Distribution): Valeur DCF/action = 116.28$, Cours = 274.48$, Écart = -57.6%
+2026-08-17 22:48:32,746 [INFO] MCHP (Technologie): Valeur DCF/action = 72.19$, Cours = 74.36$, Écart = -2.9%
+2026-08-17 22:48:32,746 [INFO] MCK (Santé): Valeur DCF/action = 995.16$, Cours = 877.23$, Écart = 13.4%
+2026-08-17 22:48:32,746 [INFO] MDLZ (Agro-alimentaire et boissons): Valeur DCF/action = 46.42$, Cours = 58.54$, Écart = -20.7%
+2026-08-17 22:48:32,746 [INFO] MDT (Santé): Valeur DCF/action = 56.64$, Cours = 79.34$, Écart = -28.6%
+2026-08-17 22:48:32,746 [INFO] MGM (Distribution): Valeur DCF/action = 71.58$, Cours = 45.83$, Écart = 56.2%
+2026-08-17 22:48:32,746 [INFO] MLM (Matières premières): Valeur DCF/action = 400.53$, Cours = 675.40$, Écart = -40.7%
+2026-08-17 22:48:32,747 [INFO] MMM (Biens et services industriels): Valeur DCF/action = 39.14$, Cours = 155.68$, Écart = -74.9%
+2026-08-17 22:48:32,747 [INFO] MNST (Agro-alimentaire et boissons): Valeur DCF/action = 35.84$, Cours = 45.18$, Écart = -20.7%
+2026-08-17 22:48:32,747 [INFO] MO (Agro-alimentaire et boissons): Valeur DCF/action = 91.15$, Cours = 67.94$, Écart = 34.2%
+2026-08-17 22:48:32,747 [INFO] MOS (Matières premières): Valeur DCF/action = 48.46$, Cours = 23.41$, Écart = 107.0%
+2026-08-17 22:48:32,747 [INFO] MPC (Pétrole et gaz): Valeur DCF/action = 510.52$, Cours = 312.61$, Écart = 63.3%
+2026-08-17 22:48:32,747 [INFO] MPWR (Technologie): Valeur DCF/action = 72.51$, Cours = 1345.45$, Écart = -94.6%
+2026-08-17 22:48:32,747 [INFO] MRK (Santé): Valeur DCF/action = 86.28$, Cours = 123.93$, Écart = -30.4%
+2026-08-17 22:48:32,747 [INFO] MRNA (Santé): Valeur DCF/action = 470.11$, Cours = 24.33$, Écart = 1832.2%
+2026-08-17 22:48:32,747 [INFO] MRVL (Technologie): Valeur DCF/action = 0.00$, Cours = 69.85$, Écart = -100.0%
+2026-08-17 22:48:32,747 [INFO] MSFT (Technologie): Valeur DCF/action = 125.24$, Cours = 390.54$, Écart = -67.9%
+2026-08-17 22:48:32,747 [INFO] MSI (Technologie): Valeur DCF/action = 163.28$, Cours = 438.14$, Écart = -62.7%
+2026-08-17 22:48:32,747 [INFO] MTD (Santé): Valeur DCF/action = nan$, Cours = 1416.30$, Écart = n/a
+2026-08-17 22:48:32,747 [INFO] MU (Technologie): Valeur DCF/action = 123.66$, Cours = 126.00$, Écart = -1.9%
+2026-08-17 22:48:32,748 [INFO] NCLH (Distribution): Valeur DCF/action = 34.71$, Cours = 23.72$, Écart = 46.3%
+2026-08-17 22:48:32,748 [INFO] NDSN (Biens et services industriels): Valeur DCF/action = 129.59$, Cours = 286.77$, Écart = -54.8%
+2026-08-17 22:48:32,748 [INFO] NEE (Services aux collectivités): Valeur DCF/action = nan$, Cours = 96.25$, Écart = n/a
+2026-08-17 22:48:32,748 [INFO] NEM (Matières premières): Valeur DCF/action = 71.73$, Cours = 94.72$, Écart = -24.3%
+2026-08-17 22:48:32,748 [INFO] NFLX (Medias): Valeur DCF/action = 30.39$, Cours = 68.95$, Écart = -55.9%
+2026-08-17 22:48:32,748 [INFO] NI (Services aux collectivités): Valeur DCF/action = 16.71$, Cours = 44.66$, Écart = -62.6%
+2026-08-17 22:48:32,748 [INFO] NKE (Distribution): Valeur DCF/action = 93.93$, Cours = 56.99$, Écart = 64.8%
+2026-08-17 22:48:32,748 [INFO] NOC (Biens et services industriels): Valeur DCF/action = 123.86$, Cours = 512.29$, Écart = -75.8%
+2026-08-17 22:48:32,748 [INFO] NOW (Technologie): Valeur DCF/action = 13.62$, Cours = 91.94$, Écart = -85.2%
+2026-08-17 22:48:32,748 [INFO] NRG (Services aux collectivités): Valeur DCF/action = 547.49$, Cours = 184.03$, Écart = 197.5%
+2026-08-17 22:48:32,748 [INFO] NSC (Biens et services industriels): Valeur DCF/action = 168.36$, Cours = 348.55$, Écart = -51.7%
+2026-08-17 22:48:32,748 [INFO] NTAP (Technologie): Valeur DCF/action = 162.92$, Cours = 167.04$, Écart = -2.5%
+2026-08-17 22:48:32,748 [INFO] NUE (Matières premières): Valeur DCF/action = 191.10$, Cours = 232.34$, Écart = -17.8%
+2026-08-17 22:48:32,749 [INFO] NVDA (Technologie): Valeur DCF/action = 25.51$, Cours = 223.47$, Écart = -88.6%
+2026-08-17 22:48:32,749 [INFO] NVR (Distribution): Valeur DCF/action = 9660.97$, Cours = 7300.37$, Écart = 32.3%
+2026-08-17 22:48:32,749 [INFO] NWS (Medias): Valeur DCF/action = 25.28$, Cours = 14.89$, Écart = 69.8%
+2026-08-17 22:48:32,749 [INFO] NWSA (Medias): Valeur DCF/action = 25.28$, Cours = 15.19$, Écart = 66.4%
+2026-08-17 22:48:32,749 [INFO] NXPI (Technologie): Valeur DCF/action = 235.43$, Cours = 230.39$, Écart = 2.2%
+2026-08-17 22:48:32,749 [INFO] ODFL (Biens et services industriels): Valeur DCF/action = 62.17$, Cours = 215.45$, Écart = -71.1%
+2026-08-17 22:48:32,749 [INFO] OKE (Pétrole et gaz): Valeur DCF/action = -1.57$, Cours = 87.65$, Écart = -101.8%
+2026-08-17 22:48:32,749 [INFO] OMC (Medias): Valeur DCF/action = 114.91$, Cours = 76.19$, Écart = 50.8%
+2026-08-17 22:48:32,749 [INFO] ON (Technologie): Valeur DCF/action = 13.16$, Cours = 80.40$, Écart = -83.6%
+2026-08-17 22:48:32,749 [INFO] ORCL (Technologie): Valeur DCF/action = 142.85$, Cours = 175.07$, Écart = -18.4%
+2026-08-17 22:48:32,749 [INFO] ORLY (Distribution): Valeur DCF/action = 28.78$, Cours = 93.53$, Écart = -69.2%
+2026-08-17 22:48:32,749 [INFO] OTIS (Biens et services industriels): Valeur DCF/action = 42.70$, Cours = 70.77$, Écart = -39.7%
+2026-08-17 22:48:32,750 [INFO] OXY (Pétrole et gaz): Valeur DCF/action = 33.21$, Cours = 53.81$, Écart = -38.3%
+2026-08-17 22:48:32,750 [INFO] PANW (Technologie): Valeur DCF/action = 21.31$, Cours = 280.43$, Écart = -92.4%
+2026-08-17 22:48:32,750 [INFO] PAYX (Biens et services industriels): Valeur DCF/action = 92.46$, Cours = 114.39$, Écart = -19.2%
+2026-08-17 22:48:32,750 [INFO] PCAR (Biens et services industriels): Valeur DCF/action = nan$, Cours = 133.87$, Écart = n/a
+2026-08-17 22:48:32,750 [INFO] PCG (Services aux collectivités): Valeur DCF/action = 1763.07$, Cours = 20.96$, Écart = 8311.6%
+2026-08-17 22:48:32,750 [INFO] PEG (Services aux collectivités): Valeur DCF/action = -6.20$, Cours = 85.85$, Écart = -107.2%
+2026-08-17 22:48:32,750 [INFO] PEP (Agro-alimentaire et boissons): Valeur DCF/action = 86.29$, Cours = 137.86$, Écart = -37.4%
+2026-08-17 22:48:32,750 [INFO] PFE (Santé): Valeur DCF/action = 10.29$, Cours = 25.41$, Écart = -59.5%
+2026-08-17 22:48:32,750 [INFO] PG (Agro-alimentaire et boissons): Valeur DCF/action = 103.73$, Cours = 148.01$, Écart = -29.9%
+2026-08-17 22:48:32,750 [INFO] PH (Biens et services industriels): Valeur DCF/action = 376.34$, Cours = 882.23$, Écart = -57.3%
+2026-08-17 22:48:32,750 [INFO] PHM (Distribution): Valeur DCF/action = 196.74$, Cours = 134.57$, Écart = 46.2%
+2026-08-17 22:48:32,750 [INFO] PKG (Matières premières): Valeur DCF/action = 137.89$, Cours = 256.04$, Écart = -46.1%
+2026-08-17 22:48:32,751 [INFO] PLTR (Technologie): Valeur DCF/action = 3.10$, Cours = 162.66$, Écart = -98.1%
+2026-08-17 22:48:32,751 [INFO] PM (Agro-alimentaire et boissons): Valeur DCF/action = 141.59$, Cours = 193.00$, Écart = -26.6%
+2026-08-17 22:48:32,751 [INFO] PNR (Biens et services industriels): Valeur DCF/action = 59.36$, Cours = 82.86$, Écart = -28.4%
+2026-08-17 22:48:32,751 [INFO] PNW (Services aux collectivités): Valeur DCF/action = 50.49$, Cours = 75.04$, Écart = -32.7%
+2026-08-17 22:48:32,751 [INFO] PODD (Santé): Valeur DCF/action = 88.19$, Cours = 133.26$, Écart = -33.8%
+2026-08-17 22:48:32,751 [INFO] PPG (Matières premières): Valeur DCF/action = 4.05$, Cours = 104.69$, Écart = -96.1%
+2026-08-17 22:48:32,751 [INFO] PPL (Services aux collectivités): Valeur DCF/action = -16.10$, Cours = 35.91$, Écart = -144.8%
+2026-08-17 22:48:32,751 [INFO] PSX (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 155.75$, Écart = n/a
+2026-08-17 22:48:32,751 [INFO] PTC (Technologie): Valeur DCF/action = 67.91$, Cours = 137.20$, Écart = -50.5%
+2026-08-17 22:48:32,751 [INFO] PWR (Biens et services industriels): Valeur DCF/action = 91.36$, Cours = 657.98$, Écart = -86.1%
+2026-08-17 22:48:32,751 [INFO] Q (Technologie): Valeur DCF/action = 52.82$, Cours = 124.78$, Écart = -57.7%
+2026-08-17 22:48:32,751 [INFO] QCOM (Technologie): Valeur DCF/action = 144.39$, Cours = 155.68$, Écart = -7.3%
+2026-08-17 22:48:32,752 [INFO] RCL (Distribution): Valeur DCF/action = 116.30$, Cours = 263.76$, Écart = -55.9%
+2026-08-17 22:48:32,752 [INFO] RMD (Santé): Valeur DCF/action = 161.11$, Cours = 205.02$, Écart = -21.4%
+2026-08-17 22:48:32,752 [INFO] ROK (Biens et services industriels): Valeur DCF/action = 171.39$, Cours = 445.23$, Écart = -61.5%
+2026-08-17 22:48:32,752 [INFO] ROL (Biens et services industriels): Valeur DCF/action = 16.38$, Cours = 39.44$, Écart = -58.5%
+2026-08-17 22:48:32,752 [INFO] ROP (Technologie): Valeur DCF/action = nan$, Cours = 391.97$, Écart = n/a
+2026-08-17 22:48:32,752 [INFO] ROST (Distribution): Valeur DCF/action = 92.33$, Cours = 223.82$, Écart = -58.7%
+2026-08-17 22:48:32,752 [INFO] RSG (Biens et services industriels): Valeur DCF/action = 117.67$, Cours = 214.56$, Écart = -45.2%
+2026-08-17 22:48:32,752 [INFO] RTX (Biens et services industriels): Valeur DCF/action = 78.18$, Cours = 209.16$, Écart = -62.6%
+2026-08-17 22:48:32,752 [INFO] RVTY (Santé): Valeur DCF/action = 90.22$, Cours = 99.30$, Écart = -9.1%
+2026-08-17 22:48:32,752 [INFO] SBUX (Distribution): Valeur DCF/action = 20.86$, Cours = 104.14$, Écart = -80.0%
+2026-08-17 22:48:32,752 [INFO] SHW (Matières premières): Valeur DCF/action = 112.63$, Cours = 354.27$, Écart = -68.2%
+2026-08-17 22:48:32,752 [INFO] SJM (Agro-alimentaire et boissons): Valeur DCF/action = 47.96$, Cours = 112.39$, Écart = -57.3%
+2026-08-17 22:48:32,752 [INFO] SLB (Pétrole et gaz): Valeur DCF/action = 40.36$, Cours = 48.96$, Écart = -17.6%
+2026-08-17 22:48:32,753 [INFO] SMCI (Technologie): Valeur DCF/action = 28.39$, Cours = 33.52$, Écart = -15.3%
+2026-08-17 22:48:32,753 [INFO] SNA (Biens et services industriels): Valeur DCF/action = nan$, Cours = 395.41$, Écart = n/a
+2026-08-17 22:48:32,753 [INFO] SNPS (Technologie): Valeur DCF/action = 52.21$, Cours = 525.92$, Écart = -90.1%
+2026-08-17 22:48:32,753 [INFO] SO (Services aux collectivités): Valeur DCF/action = 27.91$, Cours = 96.70$, Écart = -71.1%
+2026-08-17 22:48:32,753 [INFO] SOLV (Santé): Valeur DCF/action = 132.62$, Cours = 87.47$, Écart = 51.6%
+2026-08-17 22:48:32,753 [INFO] SRE (Services aux collectivités): Valeur DCF/action = 498.07$, Cours = 95.20$, Écart = 423.2%
+2026-08-17 22:48:32,753 [INFO] STE (Santé): Valeur DCF/action = 146.21$, Cours = 237.47$, Écart = -38.4%
+2026-08-17 22:48:32,753 [INFO] STLD (Matières premières): Valeur DCF/action = 78.54$, Cours = 259.74$, Écart = -69.8%
+2026-08-17 22:48:32,753 [INFO] STX (Technologie): Valeur DCF/action = 156.98$, Cours = 845.35$, Écart = -81.4%
+2026-08-17 22:48:32,753 [INFO] SW (Matières premières): Valeur DCF/action = 36.84$, Cours = 45.97$, Écart = -19.9%
+2026-08-17 22:48:32,753 [INFO] SWK (Biens et services industriels): Valeur DCF/action = 37.16$, Cours = 93.05$, Écart = -60.1%
+2026-08-17 22:48:32,753 [INFO] SWKS (Technologie): Valeur DCF/action = 110.17$, Cours = 64.68$, Écart = 70.3%
+2026-08-17 22:48:32,753 [INFO] SYK (Santé): Valeur DCF/action = 120.64$, Cours = 325.70$, Écart = -63.0%
+2026-08-17 22:48:32,754 [INFO] SYY (Agro-alimentaire et boissons): Valeur DCF/action = 72.08$, Cours = 73.97$, Écart = -2.6%
+2026-08-17 22:48:32,754 [INFO] T (Medias): Valeur DCF/action = 48.00$, Cours = 23.04$, Écart = 108.3%
+2026-08-17 22:48:32,754 [INFO] TDG (Biens et services industriels): Valeur DCF/action = 276.11$, Cours = 1275.05$, Écart = -78.3%
+2026-08-17 22:48:32,754 [INFO] TDY (Technologie): Valeur DCF/action = 408.76$, Cours = 655.35$, Écart = -37.6%
+2026-08-17 22:48:32,755 [INFO] TECH (Santé): Valeur DCF/action = 35.93$, Cours = 47.41$, Écart = -24.2%
+2026-08-17 22:48:32,755 [INFO] TEL (Technologie): Valeur DCF/action = -13.12$, Cours = 202.94$, Écart = -106.5%
+2026-08-17 22:48:32,755 [INFO] TER (Technologie): Valeur DCF/action = 33.36$, Cours = 367.69$, Écart = -90.9%
+2026-08-17 22:48:32,756 [INFO] TGT (Agro-alimentaire et boissons): Valeur DCF/action = 122.90$, Cours = 127.07$, Écart = -3.3%
+2026-08-17 22:48:32,756 [INFO] TJX (Distribution): Valeur DCF/action = 57.46$, Cours = 154.75$, Écart = -62.9%
+2026-08-17 22:48:32,756 [INFO] TMO (Santé): Valeur DCF/action = 228.69$, Cours = 574.30$, Écart = -60.2%
+2026-08-17 22:48:32,757 [INFO] TMUS (Medias): Valeur DCF/action = 227.93$, Cours = 170.42$, Écart = 33.7%
+2026-08-17 22:48:32,757 [INFO] TPL (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 381.88$, Écart = n/a
+2026-08-17 22:48:32,757 [INFO] TPR (Distribution): Valeur DCF/action = 75.20$, Cours = 130.52$, Écart = -42.4%
+2026-08-17 22:48:32,757 [INFO] TRGP (Pétrole et gaz): Valeur DCF/action = -19.40$, Cours = 268.23$, Écart = -107.2%
+2026-08-17 22:48:32,758 [INFO] TRMB (Technologie): Valeur DCF/action = 63.62$, Cours = 63.42$, Écart = 0.3%
+2026-08-17 22:48:32,758 [INFO] TSCO (Distribution): Valeur DCF/action = 15.02$, Cours = 34.09$, Écart = -55.9%
+2026-08-17 22:48:32,758 [INFO] TSLA (Distribution): Valeur DCF/action = 10.20$, Cours = 319.69$, Écart = -96.8%
+2026-08-17 22:48:32,758 [INFO] TSN (Agro-alimentaire et boissons): Valeur DCF/action = 373.31$, Cours = 16.60$, Écart = 2148.9%
+2026-08-17 22:48:32,759 [INFO] TT (Biens et services industriels): Valeur DCF/action = 167.16$, Cours = 440.28$, Écart = -62.0%
+2026-08-17 22:48:32,759 [INFO] TTWO (Medias): Valeur DCF/action = -10.43$, Cours = 208.77$, Écart = -105.0%
+2026-08-17 22:48:32,759 [INFO] TXN (Technologie): Valeur DCF/action = 44.63$, Cours = 279.58$, Écart = -84.0%
+2026-08-17 22:48:32,759 [INFO] TXT (Biens et services industriels): Valeur DCF/action = 100.16$, Cours = 70.11$, Écart = 42.9%
+2026-08-17 22:48:32,760 [INFO] TYL (Technologie): Valeur DCF/action = 19.32$, Cours = 333.50$, Écart = -94.2%
+2026-08-17 22:48:32,760 [INFO] UAL (Biens et services industriels): Valeur DCF/action = 226.47$, Cours = 109.30$, Écart = 107.2%
+2026-08-17 22:48:32,760 [INFO] UBER (Biens et services industriels): Valeur DCF/action = 19.55$, Cours = 68.18$, Écart = -71.3%
+2026-08-17 22:48:32,760 [INFO] ULTA (Distribution): Valeur DCF/action = 433.23$, Cours = 494.87$, Écart = -12.5%
+2026-08-17 22:48:32,760 [INFO] UNH (Santé): Valeur DCF/action = 637.84$, Cours = 363.87$, Écart = 75.3%
+2026-08-17 22:48:32,761 [INFO] UNP (Biens et services industriels): Valeur DCF/action = 158.14$, Cours = 304.33$, Écart = -48.0%
+2026-08-17 22:48:32,761 [INFO] UPS (Biens et services industriels): Valeur DCF/action = 117.23$, Cours = 58.74$, Écart = 99.6%
+2026-08-17 22:48:32,761 [INFO] URI (Biens et services industriels): Valeur DCF/action = nan$, Cours = 802.79$, Écart = n/a
+2026-08-17 22:48:32,761 [INFO] VEEV (Santé): Valeur DCF/action = nan$, Cours = 172.61$, Écart = n/a
+2026-08-17 22:48:32,762 [INFO] VLO (Pétrole et gaz): Valeur DCF/action = nan$, Cours = 311.71$, Écart = n/a
+2026-08-17 22:48:32,762 [INFO] VLTO (Biens et services industriels): Valeur DCF/action = 42.24$, Cours = 89.47$, Écart = -52.8%
+2026-08-17 22:48:32,762 [INFO] VMC (Matières premières): Valeur DCF/action = 129.07$, Cours = 296.08$, Écart = -56.4%
+2026-08-17 22:48:32,762 [INFO] VRSK (Biens et services industriels): Valeur DCF/action = 96.36$, Cours = 188.19$, Écart = -48.8%
+2026-08-17 22:48:32,762 [INFO] VRSN (Technologie): Valeur DCF/action = 166.22$, Cours = 261.58$, Écart = -36.5%
+2026-08-17 22:48:32,763 [INFO] VRT (Biens et services industriels): Valeur DCF/action = 38.40$, Cours = 223.04$, Écart = -82.8%
+2026-08-17 22:48:32,763 [INFO] VRTX (Santé): Valeur DCF/action = 540.39$, Cours = 478.70$, Écart = 12.9%
+2026-08-17 22:48:32,763 [INFO] VST (Services aux collectivités): Valeur DCF/action = 185.02$, Cours = 147.72$, Écart = 25.3%
+2026-08-17 22:48:32,763 [INFO] VTRS (Santé): Valeur DCF/action = 35.90$, Cours = 15.25$, Écart = 135.4%
+2026-08-17 22:48:32,764 [INFO] VZ (Medias): Valeur DCF/action = nan$, Cours = 46.81$, Écart = n/a
+2026-08-17 22:48:32,764 [INFO] WAB (Biens et services industriels): Valeur DCF/action = 99.05$, Cours = 290.00$, Écart = -65.8%
+2026-08-17 22:48:32,764 [INFO] WAT (Santé): Valeur DCF/action = nan$, Cours = 352.21$, Écart = n/a
+2026-08-17 22:48:32,764 [INFO] WBD (Medias): Valeur DCF/action = 79.43$, Cours = 26.40$, Écart = 200.9%
+2026-08-17 22:48:32,764 [INFO] WDAY (Technologie): Valeur DCF/action = 89.27$, Cours = 187.51$, Écart = -52.4%
+2026-08-17 22:48:32,765 [INFO] WDC (Technologie): Valeur DCF/action = 63.21$, Cours = 431.52$, Écart = -85.4%
+2026-08-17 22:48:32,765 [INFO] WEC (Services aux collectivités): Valeur DCF/action = nan$, Cours = 109.25$, Écart = n/a
+2026-08-17 22:48:32,765 [INFO] WM (Biens et services industriels): Valeur DCF/action = 84.00$, Cours = 236.60$, Écart = -64.5%
+2026-08-17 22:48:32,765 [INFO] WMB (Pétrole et gaz): Valeur DCF/action = 24.36$, Cours = 70.43$, Écart = -65.4%
+2026-08-17 22:48:32,765 [INFO] WMT (Agro-alimentaire et boissons): Valeur DCF/action = 41.31$, Cours = 115.75$, Écart = -64.3%
+2026-08-17 22:48:32,765 [INFO] WSM (Distribution): Valeur DCF/action = 127.14$, Cours = 192.50$, Écart = -34.0%
+2026-08-17 22:48:32,765 [INFO] WST (Santé): Valeur DCF/action = 103.44$, Cours = 355.48$, Écart = -70.9%
+2026-08-17 22:48:32,765 [INFO] WYNN (Distribution): Valeur DCF/action = 14.90$, Cours = 101.50$, Écart = -85.3%
+2026-08-17 22:48:32,765 [INFO] XEL (Services aux collectivités): Valeur DCF/action = -46.56$, Cours = 70.29$, Écart = -166.2%
+2026-08-17 22:48:32,765 [INFO] XYL (Biens et services industriels): Valeur DCF/action = 48.24$, Cours = 124.97$, Écart = -61.4%
+2026-08-17 22:48:32,765 [INFO] YUM (Distribution): Valeur DCF/action = 108.69$, Cours = 152.37$, Écart = -28.7%
+2026-08-17 22:48:32,766 [INFO] ZBH (Santé): Valeur DCF/action = 145.93$, Cours = 98.16$, Écart = 48.7%
+2026-08-17 22:48:32,766 [INFO] ZBRA (Technologie): Valeur DCF/action = 151.47$, Cours = 368.83$, Écart = -58.9%
+2026-08-17 22:48:32,766 [INFO] ZTS (Santé): Valeur DCF/action = 84.66$, Cours = 77.27$, Écart = 9.6%

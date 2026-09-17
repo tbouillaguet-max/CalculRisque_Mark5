@@ -1,0 +1,17 @@
+2026-08-14 09:18:53,677 [INFO] Log file: data\prices\year_end_prices_20260814_091853.log
+2026-08-14 09:18:53,743 [INFO] Univers chargé : 503 tickers.
+2026-08-14 09:18:54,665 [INFO] Cache existant chargé : data\prices\year_end_prices.parquet (7888 lignes, 504 symboles).
+2026-08-14 09:18:55,126 [INFO] 111/503 tickers déjà à jour (ignorés), 392 à récupérer.
+2026-08-14 09:18:55,127 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-08-14 09:18:55,128 [INFO] Connected
+2026-08-14 09:18:55,134 [INFO] Logged on to server version 176
+2026-08-14 09:19:25,133 [INFO] Disconnecting
+2026-08-14 09:19:25,151 [ERROR] API connection failed: TimeoutError()
+2026-08-14 09:19:25,207 [INFO] Disconnected.
+2026-08-14 09:19:25,216 [WARNING] La synchronisation de compte d'ib_insync a dépassé 30s (TimeoutError). La session API elle-même s'était pourtant ouverte : c'est la requête d'exécutions finale qui reste sans réponse (voir la docstring de ib_connect.py). Nouvelle tentative en connexion API SEULE -- suffisante pour ce pipeline, qui ne passe aucun ordre.
+2026-08-14 09:19:25,221 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-08-14 09:19:25,225 [INFO] Connected
+2026-08-14 09:19:25,236 [INFO] Logged on to server version 176
+2026-08-14 09:19:55,237 [INFO] Disconnecting
+2026-08-14 09:19:55,242 [ERROR] API connection failed: TimeoutError()
+2026-08-14 09:19:55,269 [INFO] Disconnected.

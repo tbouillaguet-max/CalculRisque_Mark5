@@ -17,7 +17,8 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
-        compare report test install universe bootstrap slippage merite
+        compare report test install universe bootstrap slippage merite lfs lfs-apply \
+        backtest-distant
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -34,8 +35,13 @@ help:
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"
+	@echo "    make backtest-distant   Rapatrie un backtest lance sur GitHub Actions"
 	@echo "    make merite        Le multiple merite predit-il mieux que le sectoriel ?"
 	@echo "    make report        Dashboard Streamlit"
+	@echo
+	@echo "  DONNEES (git)"
+	@echo "    make lfs           Chiffre ce que data/ coutera en Git LFS (ne modifie rien)"
+	@echo "    make lfs-apply     Active LFS et indexe data/"
 	@echo
 	@echo "  DEVELOPPEMENT"
 	@echo "    make test          Suite de tests"
@@ -85,6 +91,12 @@ audit:
 compare:
 	$(PYTHON) compare_options_strategies.py
 
+# Rapatrie dans data/backtest_options/ les resultats d'un backtest lance
+# depuis l'onglet Actions du depot (voir .github/workflows/backtest.yml).
+# --liste pour voir ce qui est disponible.
+backtest-distant:
+	$(PYTHON) recuperer_backtest.py
+
 slippage:
 	$(PYTHON) mesure_slippage_options.py
 
@@ -96,6 +108,21 @@ merite:
 
 report:
 	streamlit run report/Home.py
+
+# ---------------------------------------------------------------------------
+# Donnees dans git (Git LFS)
+# ---------------------------------------------------------------------------
+
+# Diagnostic seul : verifie git-lfs, demande a git quels fichiers sont
+# couverts par .gitattributes, et chiffre le volume face au quota GitHub.
+# Ne touche ni a l'index ni au .git/config.
+lfs:
+	$(PYTHON) setup_lfs.py
+
+# Active LFS pour ce depot et indexe data/. `git commit` puis `git push`
+# ensuite -- LFS televerse le contenu au push.
+lfs-apply:
+	$(PYTHON) setup_lfs.py --apply
 
 # ---------------------------------------------------------------------------
 # Developpement

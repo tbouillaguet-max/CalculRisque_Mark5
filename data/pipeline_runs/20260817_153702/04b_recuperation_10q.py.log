@@ -1,0 +1,7 @@
+2026-08-17 15:37:19,835 [INFO] 3/503 tickers à interroger (500 déjà à jour, 0 déjà traités).
+2026-08-17 15:37:19,835 [INFO] Récupération des CIK SEC...
+2026-08-17 15:37:20,694 [WARNING] [1/3] CIK introuvable pour AEP, ignoré.
+2026-08-17 15:37:20,695 [WARNING] [2/3] CIK introuvable pour BRK.B, ignoré.
+2026-08-17 15:37:20,695 [WARNING] [3/3] CIK introuvable pour BF.B, ignoré.
+2026-08-17 15:37:20,698 [INFO] Terminé. OK: 0 | Échecs: 3
+2026-08-17 15:37:20,699 [INFO] Rien de nouveau : fichiers existants conservés tels quels.

@@ -1,0 +1,7 @@
+2026-07-31 11:10:32,956 [INFO] Log file: data\options\us_options_20260731_111032.log
+2026-07-31 11:10:32,976 [INFO] Univers chargé : 503 tickers.
+2026-07-31 11:10:33,297 [INFO] Filtre de valorisation : 109/503 entreprises avec un écart cours/valeur théorique >= 20% (sur 121 entreprises avec un DCF calculé, 503 dans l'univers fourni).
+2026-07-31 11:10:33,300 [INFO] Connecting to 127.0.0.1:4002 with clientId 1...
+2026-07-31 11:10:35,322 [INFO] Disconnecting
+2026-07-31 11:10:35,323 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-07-31 11:10:35,331 [ERROR] Make sure API port on TWS/IBG is open

@@ -1,0 +1,44 @@
+2026-07-31 00:06:20,248 [INFO] Log file: data\prices\daily_prices_20260731_000620.log
+2026-07-31 00:06:20,347 [INFO] Univers chargé : 503 tickers.
+2026-07-31 00:06:20,387 [INFO] 0/503 tickers déjà à jour (ignorés), 503 à récupérer.
+2026-07-31 00:06:21,244 [INFO] Connecting to 127.0.0.1:4002 with clientId 4...
+2026-07-31 00:06:21,246 [INFO] Connected
+2026-07-31 00:06:21,251 [INFO] Logged on to server version 176
+2026-07-31 00:06:21,276 [INFO] Warning 2104, reqId -1: Market data farm connection is OK:eufarm
+2026-07-31 00:06:21,277 [INFO] API connection ready
+2026-07-31 00:06:21,283 [INFO] Warning 2107, reqId -1: HMDS data farm connection is inactive but should be available upon demand.euhmds
+2026-07-31 00:06:21,284 [INFO] Warning 2158, reqId -1: Sec-def data farm connection is OK:secdefeu
+2026-07-31 00:06:21,814 [INFO] Synchronization complete
+2026-07-31 00:06:21,814 [INFO] Connecté à IBKR sur 127.0.0.1:4002 (clientId=4)
+2026-07-31 00:06:21,815 [INFO] [1/503] A (Agilent Technologies), depuis 2010-01-01...
+2026-07-31 00:06:21,925 [ERROR] Error 321, reqId 4: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=1715006, symbol='A', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='A', tradingClass='A')
+2026-07-31 00:06:37,088 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour A : Aucune donnée (ni IBKR ni Stooq) pour A -- TROU DE COUVERTURE.
+2026-07-31 00:06:37,089 [INFO] [2/503] AAPL (Apple Inc.), depuis 2010-01-01...
+2026-07-31 00:06:37,295 [ERROR] Error 321, reqId 6: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=265598, symbol='AAPL', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='AAPL', tradingClass='NMS')
+2026-07-31 00:06:51,097 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour AAPL : Aucune donnée (ni IBKR ni Stooq) pour AAPL -- TROU DE COUVERTURE.
+2026-07-31 00:06:51,098 [INFO] [3/503] ABBV (AbbVie), depuis 2010-01-01...
+2026-07-31 00:06:51,262 [ERROR] Error 321, reqId 8: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=118089500, symbol='ABBV', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='ABBV', tradingClass='ABBV')
+2026-07-31 00:07:05,093 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ABBV : Aucune donnée (ni IBKR ni Stooq) pour ABBV -- TROU DE COUVERTURE.
+2026-07-31 00:07:05,093 [INFO] [4/503] ABNB (Airbnb), depuis 2010-01-01...
+2026-07-31 00:07:05,920 [ERROR] Error 321, reqId 10: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=459530964, symbol='ABNB', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='ABNB', tradingClass='NMS')
+2026-07-31 00:07:19,640 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ABNB : Aucune donnée (ni IBKR ni Stooq) pour ABNB -- TROU DE COUVERTURE.
+2026-07-31 00:07:19,641 [INFO] [5/503] ABT (Abbott Laboratories), depuis 2010-01-01...
+2026-07-31 00:07:19,782 [ERROR] Error 321, reqId 12: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=4065, symbol='ABT', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='ABT', tradingClass='ABT')
+2026-07-31 00:07:32,967 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ABT : Aucune donnée (ni IBKR ni Stooq) pour ABT -- TROU DE COUVERTURE.
+2026-07-31 00:07:32,973 [INFO] [6/503] ACGL (Arch Capital Group), depuis 2010-01-01...
+2026-07-31 00:07:33,078 [ERROR] Error 321, reqId 14: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=10763362, symbol='ACGL', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='ACGL', tradingClass='NMS')
+2026-07-31 00:07:46,429 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ACGL : Aucune donnée (ni IBKR ni Stooq) pour ACGL -- TROU DE COUVERTURE.
+2026-07-31 00:07:46,429 [INFO] [7/503] ACN (Accenture), depuis 2010-01-01...
+2026-07-31 00:07:46,613 [ERROR] Error 321, reqId 16: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=67889930, symbol='ACN', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='ACN', tradingClass='ACN')
+2026-07-31 00:08:01,993 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ACN : Aucune donnée (ni IBKR ni Stooq) pour ACN -- TROU DE COUVERTURE.
+2026-07-31 00:08:01,995 [INFO] [8/503] ADBE (Adobe Inc.), depuis 2010-01-01...
+2026-07-31 00:08:02,442 [ERROR] Error 321, reqId 18: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=265768, symbol='ADBE', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='ADBE', tradingClass='NMS')
+2026-07-31 00:08:16,182 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ADBE : Aucune donnée (ni IBKR ni Stooq) pour ADBE -- TROU DE COUVERTURE.
+2026-07-31 00:08:16,183 [INFO] [9/503] ADI (Analog Devices), depuis 2010-01-01...
+2026-07-31 00:08:18,001 [ERROR] Error 321, reqId 20: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=4157, symbol='ADI', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='ADI', tradingClass='NMS')
+2026-07-31 00:08:31,189 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ADI : Aucune donnée (ni IBKR ni Stooq) pour ADI -- TROU DE COUVERTURE.
+2026-07-31 00:08:31,190 [INFO] [10/503] ADM (Archer Daniels Midland), depuis 2010-01-01...
+2026-07-31 00:08:31,360 [ERROR] Error 321, reqId 22: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=4165, symbol='ADM', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='ADM', tradingClass='ADM')
+2026-07-31 00:08:45,194 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ADM : Aucune donnée (ni IBKR ni Stooq) pour ADM -- TROU DE COUVERTURE.
+2026-07-31 00:08:45,195 [INFO] [11/503] ADP (Automatic Data Processing), depuis 2010-01-01...
+2026-07-31 00:08:45,463 [ERROR] Error 321, reqId 24: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=4661, symbol='ADP', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='ADP', tradingClass='NMS')

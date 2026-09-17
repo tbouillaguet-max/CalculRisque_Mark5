@@ -1,0 +1,21 @@
+2026-07-31 11:15:27,384 [INFO] Log file: data\prices\daily_prices_20260731_111527.log
+2026-07-31 11:15:27,446 [INFO] Univers chargé : 503 tickers.
+2026-07-31 11:15:27,892 [INFO] Cache existant chargé : data\prices\daily_prices.parquet (1908900 lignes, 502 symboles).
+2026-07-31 11:15:52,825 [INFO] 502/503 tickers déjà à jour (ignorés), 1 à récupérer.
+2026-07-31 11:15:52,981 [INFO] Connecting to 127.0.0.1:4002 with clientId 4...
+2026-07-31 11:15:52,983 [INFO] Connected
+2026-07-31 11:15:53,132 [INFO] Logged on to server version 176
+2026-07-31 11:15:53,227 [INFO] API connection ready
+2026-07-31 11:15:53,360 [INFO] Warning 2104, reqId -1: Market data farm connection is OK:eufarm
+2026-07-31 11:15:53,394 [INFO] Warning 2106, reqId -1: HMDS data farm connection is OK:euhmds
+2026-07-31 11:15:53,397 [INFO] Warning 2158, reqId -1: Sec-def data farm connection is OK:secdefeu
+2026-07-31 11:15:53,988 [INFO] Synchronization complete
+2026-07-31 11:15:53,990 [INFO] Connecté à IBKR sur 127.0.0.1:4002 (clientId=4)
+2026-07-31 11:15:53,991 [INFO] [1/1] APH (Amphenol), depuis 2010-01-01...
+2026-07-31 11:15:58,836 [INFO] Warning 2106, reqId -1: HMDS data farm connection is OK:ushmds
+2026-07-31 11:16:13,724 [INFO]   -> 4168 jours récupérés pour APH (source: ibkr)
+2026-07-31 11:16:13,725 [INFO] Disconnecting from 127.0.0.1:4002, 242 B sent in 10 messages, 243 kB received in 261 messages, session time 20.7 s.
+2026-07-31 11:16:13,725 [INFO] Disconnecting
+2026-07-31 11:16:13,726 [INFO] Déconnecté d'IBKR.
+2026-07-31 11:16:13,726 [INFO] Terminé. OK: 1 | Échecs (trous de couverture): 0 | Déjà à jour (ignorés): 502 | Nouvelles lignes: 4168 | Sources: {'ibkr': 1}
+2026-07-31 11:16:16,671 [INFO] Fichier écrit : data\prices\daily_prices.parquet (1913068 lignes au total, 4168 nouvelles/mises à jour ce run).

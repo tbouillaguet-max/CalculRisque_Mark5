@@ -1,0 +1,17 @@
+2026-08-26 12:52:07,508 [INFO] Log file: data\prices\daily_prices_20260826_125207.log
+2026-08-26 12:52:07,631 [INFO] Univers chargé : 503 tickers.
+2026-08-26 12:52:07,633 [INFO] Indice de référence SPY ajouté aux tickers à récupérer (SPDR S&P 500 ETF Trust). Il n'entre PAS dans l'univers investissable, qui vient de sp500_universe_history.parquet.
+2026-08-26 12:52:09,136 [INFO] Cache existant chargé : data\prices\daily_prices.parquet (1924569 lignes, 505 symboles).
+2026-08-26 12:52:41,692 [INFO] 0/504 tickers déjà à jour (ignorés), 504 à récupérer.
+2026-08-26 12:52:42,280 [INFO] Connecting to 127.0.0.1:4002 with clientId 4...
+2026-08-26 12:52:44,323 [INFO] Disconnecting
+2026-08-26 12:52:44,324 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-08-26 12:52:44,326 [ERROR] Make sure API port on TWS/IBG is open
+2026-08-26 12:52:44,327 [WARNING] Connexion IBKR impossible ([WinError 1225] The remote computer refused the network connection) : repli Stooq pour TOUS les tickers.
+2026-08-26 12:52:44,328 [INFO] [1/504] A (Agilent Technologies), depuis 2026-08-14...
+2026-08-26 12:52:46,272 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour A : Aucune donnée (ni IBKR ni Stooq) pour A -- TROU DE COUVERTURE.
+2026-08-26 12:52:46,272 [INFO] [2/504] AAPL (Apple Inc.), depuis 2026-08-14...
+2026-08-26 12:52:48,105 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour AAPL : Aucune donnée (ni IBKR ni Stooq) pour AAPL -- TROU DE COUVERTURE.
+2026-08-26 12:52:48,106 [INFO] [3/504] ABBV (AbbVie), depuis 2026-08-14...
+2026-08-26 12:52:49,620 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour ABBV : Aucune donnée (ni IBKR ni Stooq) pour ABBV -- TROU DE COUVERTURE.
+2026-08-26 12:52:49,620 [INFO] [4/504] ABNB (Airbnb), depuis 2026-08-14...

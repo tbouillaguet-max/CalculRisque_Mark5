@@ -1,0 +1,13 @@
+2026-07-31 11:09:52,086 [INFO] Log file: data\prices\daily_prices_20260731_110952.log
+2026-07-31 11:09:52,129 [INFO] Univers chargé : 503 tickers.
+2026-07-31 11:09:52,351 [INFO] Cache existant chargé : data\prices\daily_prices.parquet (1908900 lignes, 502 symboles).
+2026-07-31 11:10:14,220 [INFO] 502/503 tickers déjà à jour (ignorés), 1 à récupérer.
+2026-07-31 11:10:14,801 [INFO] Connecting to 127.0.0.1:4002 with clientId 4...
+2026-07-31 11:10:16,822 [INFO] Disconnecting
+2026-07-31 11:10:16,826 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-07-31 11:10:16,827 [ERROR] Make sure API port on TWS/IBG is open
+2026-07-31 11:10:16,828 [WARNING] Connexion IBKR impossible ([WinError 1225] The remote computer refused the network connection) : repli Stooq pour TOUS les tickers.
+2026-07-31 11:10:16,829 [INFO] [1/1] APH (Amphenol), depuis 2010-01-01...
+2026-07-31 11:10:18,501 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour APH : Aucune donnée (ni IBKR ni Stooq) pour APH -- TROU DE COUVERTURE.
+2026-07-31 11:10:18,501 [INFO] Terminé. OK: 0 | Échecs (trous de couverture): 1 | Déjà à jour (ignorés): 502 | Nouvelles lignes: 0 | Sources: {}
+2026-07-31 11:10:18,502 [INFO] Rien de nouveau à écrire : fichier existant conservé tel quel (data\prices\daily_prices.parquet).

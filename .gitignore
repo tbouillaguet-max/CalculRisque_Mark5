@@ -1,8 +1,30 @@
 # Identifiants -- NE JAMAIS committer
 .env
 
-# Données du pipeline (volumineuses, régénérables)
-data/
+# ----------------------------------------------------------------------------
+# Données du pipeline
+# ----------------------------------------------------------------------------
+# data/ est VERSIONNÉ (il ne l'était pas : trop lourd pour git en direct). Ce
+# qui est lourd ou binaire -- parquet, xlsx, jsonl, cache SEC -- passe par Git
+# LFS, qui ne met qu'un pointeur de 130 octets dans l'historique. Voir
+# .gitattributes pour les motifs, et `python3 setup_lfs.py` (ou `make lfs`)
+# pour activer LFS et chiffrer le volume avant le premier push.
+#
+# L'intérêt : cloner le dépôt suffit pour relancer un backtest ou le dashboard,
+# sans repasser des heures sur les API SEC et IBKR.
+#
+# Si un sous-dossier finit par coûter trop de quota LFS, ajoute-le ici : rien
+# d'autre à faire, aucun script n'a besoin qu'il soit dans git pour tourner (le
+# pipeline le régénère). setup_lfs.py chiffre chaque sous-dossier justement
+# pour rendre ce choix possible.
+
+# SORTIES DE BACKTEST : hors git. Ce sont des RÉSULTATS, pas des entrées --
+# `10_backtest_options.py` les reproduit à l'identique à partir des données
+# ci-dessus, et un run daté de plus n'apprend rien à personne une fois lu.
+# Elles pesaient 474 Mo sur 915, soit la moitié du volume et de quoi épuiser à
+# elles seules le palier LFS gratuit dès le premier push.
+data/backtest/
+data/backtest_options/
 
 # Python
 __pycache__/

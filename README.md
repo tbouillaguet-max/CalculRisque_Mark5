@@ -18,6 +18,189 @@ Le `Makefile` n'ajoute aucune logique : il assemble les invocations décrites
 plus bas, et chaque cible reste lançable à la main avec d'autres options
 (`make -n daily` affiche la commande sans l'exécuter).
 
+## Les données dans git, via Git LFS
+
+`data/` est versionné. Cloner le dépôt suffit donc pour relancer un backtest ou
+le dashboard, sans repasser des heures sur les API SEC et IBKR.
+
+Ce n'était pas possible en direct : git conserve **chaque version complète**
+d'un fichier binaire dans son historique, pour toujours. Un
+`daily_prices.parquet` de 90 Mo réécrit à chaque run ajoute 90 Mo au `.git` à
+chaque commit, et plus personne ne clone. Git LFS ne met qu'un **pointeur de
+130 octets** dans l'historique ; le contenu part sur le stockage LFS du serveur
+et n'est rapatrié qu'au checkout. Mesuré sur un jeu de 432 Mo : `.git/objects`
+pèse 1,1 Mo.
+
+### Mise en place
+
+```bash
+# 1. vérifier que git-lfs est là (une fois par machine)
+git lfs version
+
+# 2. diagnostiquer et chiffrer AVANT de pousser -- ne modifie rien
+python setup_lfs.py
+
+# 3. activer LFS et indexer data/
+python setup_lfs.py --apply
+git commit -m "Donnees du pipeline"
+git push
+```
+
+Si `git lfs version` répond `'lfs' is not a git command`, il faut l'installer :
+
+| | |
+|---|---|
+| **Windows** | Déjà inclus dans Git for Windows en principe. Sinon, réinstalle-le depuis [git-scm.com](https://git-scm.com/download/win) en cochant *Git LFS*, ou prends l'installeur sur [git-lfs.com](https://git-lfs.com). |
+| **macOS** | `brew install git-lfs` |
+| **Debian/Ubuntu** | `sudo apt install git-lfs` |
+
+`make lfs` et `make lfs-apply` sont des raccourcis vers ces deux commandes,
+pour les machines qui ont `make` — ce qui n'est **pas** le cas de Git Bash sous
+Windows, d'où l'invocation directe ci-dessus. Sous Windows, `python` est aussi
+le bon nom de l'interpréteur (`python3` n'existe généralement pas) ; le
+`Makefile` le prend en compte avec `make PYTHON=python lfs`.
+
+`setup_lfs.py` sans argument ne modifie rien : il vérifie que git-lfs est là,
+demande **à git lui-même** (`git check-attr`) quels fichiers sont réellement
+couverts par les motifs de `.gitattributes`, puis chiffre le volume par
+sous-dossier et le compare au palier gratuit GitHub. Exemple de sortie :
+
+```
+data : 55 fichiers,  431.3 Mo
+   430.8 Mo     47 fichiers  -> Git LFS (pointeurs dans git)
+     0.5 Mo      8 fichiers  -> git en direct
+
+Par sous-dossier
+      total   dont LFS  fichiers
+   169.0 Mo   169.0 Mo         7  data/options
+   152.0 Mo   152.0 Mo        34  data/financials
+    92.3 Mo    91.9 Mo         4  data/prices
+```
+
+### Ce qui passe par LFS, et ce qui n'y passe pas
+
+Les motifs sont dans `.gitattributes`. Y vont les fichiers **lourds ou
+binaires** : `*.parquet`, `*.xlsx`, `*.jsonl`, et le cache des index SEC
+(`data/financials/sec_submissions/`, visé par son chemin pour ne pas embarquer
+les petits JSON d'état qui vivent ailleurs). Tout le reste — CSV d'univers,
+JSON d'état, journaux — est du petit texte que git compresse et diffe très bien
+tout seul ; le mettre en LFS consommerait du quota pour rien.
+
+Rien n'est exclu du dépôt dans un cas comme dans l'autre : c'est le **mode de
+stockage** qui diffère, pas ce qui est versionné.
+
+### Le point à surveiller : le quota
+
+**LFS garde une copie complète de chaque version.** Ce n'est pas le premier
+push qui coûte, c'est l'accumulation : un run qui réécrit 270 Mo de parquet
+consomme 270 Mo de stockage LFS **de plus**, à chaque fois. Le palier gratuit
+GitHub est de 1 Go de stockage et 1 Go de bande passante par mois (au-delà,
+data pack à 5 $/mois pour 50 Go de chaque).
+
+`make lfs` le dit explicitement :
+
+```
+Quota
+  Le premier push consomme 430.8 Mo des 1.00 Go du palier gratuit GitHub (593.2 Mo restants).
+  Chaque version compte : LFS garde une copie COMPLÈTE par commit. Les fichiers
+  réécrits à chaque run pèsent 276.8 Mo, soit autant de quota consommé à chaque
+  `make daily` qui les modifie.
+  À ce rythme, le palier gratuit tient environ 2 run(s) après le premier push.
+```
+
+Concrètement : **ne committe pas `data/` à chaque run.** Un commit ponctuel
+(après un `make bootstrap`, ou quand tu veux figer un état de référence) tient
+largement dans le palier gratuit ; un commit quotidien automatique l'épuise en
+quelques jours.
+
+Si le volume ne passe pas, le rapport par sous-dossier est là pour trancher :
+exclure le plus gros suffit, et il n'y a rien d'autre à faire — aucun script
+n'a besoin qu'un dossier soit dans git pour tourner, le pipeline le régénère.
+
+```bash
+echo "data/options/history/" >> .gitignore
+```
+
+### Sur les autres machines
+
+git-lfs doit y être installé **avant** le clone. Sans lui, `git clone` ne
+récupère que les pointeurs, et pandas échoue à ouvrir les parquet avec une
+erreur peu parlante. Si le mal est fait, installe git-lfs (tableau plus haut)
+puis rattrape le contenu sans recloner :
+
+```bash
+git lfs pull
+```
+
+Et **clone le dépôt** plutôt que de télécharger le ZIP de GitHub : un ZIP ne
+contient ni l'historique git ni le contenu LFS (juste les pointeurs), et ne
+peut rien pousser.
+
+```bash
+git clone https://github.com/tbouillaguet-max/CalculRisque_Mark5.git
+```
+
+## Lancer un backtest sur GitHub et récupérer ses résultats
+
+Les sorties de backtest ne sont **pas** versionnées : ce sont des résultats,
+pas des entrées, `10_backtest_options.py` les reproduit à l'identique, et elles
+pesaient la moitié du dépôt (474 Mo sur 915). Elles voyagent donc par
+**artefact** plutôt que par commit.
+
+**1. Lancer.** Onglet *Actions* du dépôt → *Backtest* → *Run workflow*. Trois
+champs : la stratégie, la date de début, et des options en plus si besoin
+(`--entry-threshold-pct 25 --stop-loss-pct -40`). Déclenchement manuel
+uniquement — un backtest dure des minutes et consomme du quota, le lancer à
+chaque commit n'aurait aucun sens.
+
+**2. Rapatrier**, une fois le run terminé :
+
+```bash
+python recuperer_backtest.py            # le dernier backtest en date
+python recuperer_backtest.py --liste    # ce qui est disponible
+python recuperer_backtest.py --run-id 123
+```
+
+Les résultats atterrissent dans `data/backtest_options/<run_id>/` (ou
+`data/backtest/` pour une stratégie actions), c'est-à-dire **là où un run local
+les aurait écrits** : `python 14_audit_backtest.py`, `make audit`,
+`compare_options_strategies.py` et le dashboard les lisent sans rien changer.
+Un fichier déjà présent n'est jamais écrasé sans `--ecraser`.
+
+Le script affiche aussi la fiche du run (stratégie, date de début, options,
+commit) : on sait ce qui a produit ces chiffres sans retourner sur GitHub.
+
+### Authentification
+
+L'API des artefacts exige un jeton, même sur un dépôt public. Le script en
+cherche un dans `GITHUB_TOKEN`/`GH_TOKEN`, puis via `gh auth token`. Le plus
+simple est d'installer le [CLI GitHub](https://cli.github.com) et de faire
+`gh auth login` une fois. Sinon, un jeton créé sur
+[github.com/settings/tokens](https://github.com/settings/tokens) (portée `repo`,
+ou `actions:read` pour un jeton à portée fine) :
+
+```bash
+export GITHUB_TOKEN=ghp_...      # Git Bash / macOS / Linux
+setx GITHUB_TOKEN ghp_...        # Windows, puis rouvre le terminal
+```
+
+### Ce qui rend ça soutenable : le trafic LFS
+
+Un `checkout` avec `lfs: true` rapatrierait **tout** le contenu LFS du dépôt à
+chaque run — cache des index SEC compris, dont aucun backtest n'a besoin — et
+chaque téléchargement compte contre le quota de bande passante LFS (1 Go/mois
+sur le palier gratuit, soit deux runs). Le workflow fait donc deux choses :
+
+- il ne rapatrie que les fichiers que `09`/`10` lisent réellement
+  (`daily_prices.parquet`, l'univers, la valorisation combinée, l'historique
+  DCF, les snapshots d'options, les événements 8-K) ;
+- il met en cache les objets LFS entre les runs, donc un second backtest sur
+  les mêmes données ne consomme rien.
+
+Si tu ajoutes un fichier au chargement d'un backtest, pense à l'ajouter à
+`DONNEES_BACKTEST` dans `.github/workflows/backtest.yml` — sinon le run partira,
+tournera, et échouera sur un pointeur LFS que pandas ne sait pas ouvrir.
+
 ## Mise à jour quotidienne (`run_pipeline_daily.py`)
 
 **Pourquoi un run quotidien alors que les comptes sont trimestriels.** Le

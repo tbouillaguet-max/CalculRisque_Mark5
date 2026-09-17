@@ -1,0 +1,504 @@
+﻿RIC,Instrument_Name,Country,Currency,Exchange,GICS_Sector,GICS_Sub_Industry,sector
+MMM,3M,United States,USD,SMART,Industrials,Industrial Conglomerates,Biens et services industriels
+AOS,A. O. Smith,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+ABT,Abbott Laboratories,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+ABBV,AbbVie,United States,USD,SMART,Health Care,Biotechnology,Santé
+ACN,Accenture,United States,USD,SMART,Information Technology,IT Consulting & Other Services,Technologie
+ADBE,Adobe Inc.,United States,USD,SMART,Information Technology,Application Software,Technologie
+AMD,Advanced Micro Devices,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+AES,AES Corporation,United States,USD,SMART,Utilities,Independent Power Producers & Energy Traders,Services aux collectivités
+AFL,Aflac,United States,USD,SMART,Financials,Life & Health Insurance,Assurance
+A,Agilent Technologies,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+APD,Air Products,United States,USD,SMART,Materials,Industrial Gases,Matières premières
+ABNB,Airbnb,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+AKAM,Akamai Technologies,United States,USD,SMART,Information Technology,Internet Services & Infrastructure,Technologie
+ALB,Albemarle Corporation,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+ARE,Alexandria Real Estate Equities,United States,USD,SMART,Real Estate,Office REITs,Immobilier
+ALGN,Align Technology,United States,USD,SMART,Health Care,Health Care Supplies,Santé
+ALLE,Allegion,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+LNT,Alliant Energy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+ALL,Allstate,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+GOOGL,Alphabet Inc. (Class A),United States,USD,SMART,Communication Services,Interactive Media & Services,Medias
+GOOG,Alphabet Inc. (Class C),United States,USD,SMART,Communication Services,Interactive Media & Services,Medias
+MO,Altria,United States,USD,SMART,Consumer Staples,Tobacco,Agro-alimentaire et boissons
+AMZN,Amazon,United States,USD,SMART,Consumer Discretionary,Broadline Retail,Distribution
+AMCR,Amcor,United States,USD,SMART,Materials,Paper & Plastic Packaging Products & Materials,Matières premières
+AEE,Ameren,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+AEP,American Electric Power,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+AXP,American Express,United States,USD,SMART,Financials,Consumer Finance,Banques
+AIG,American International Group,United States,USD,SMART,Financials,Multi-line Insurance,Assurance
+AMT,American Tower,United States,USD,SMART,Real Estate,Telecom Tower REITs,Immobilier
+AWK,American Water Works,United States,USD,SMART,Utilities,Water Utilities,Services aux collectivités
+AMP,Ameriprise Financial,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+AME,Ametek,United States,USD,SMART,Industrials,Electrical Components & Equipment,Biens et services industriels
+AMGN,Amgen,United States,USD,SMART,Health Care,Biotechnology,Santé
+APH,Amphenol,United States,USD,SMART,Information Technology,Electronic Components,Technologie
+ADI,Analog Devices,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+AON,Aon plc,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+APA,APA Corporation,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+APO,Apollo Global Management,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+AAPL,Apple Inc.,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+AMAT,Applied Materials,United States,USD,SMART,Information Technology,Semiconductor Materials & Equipment,Technologie
+APP,AppLovin,United States,USD,SMART,Communication Services,Advertising,Technologie
+APTV,Aptiv,United States,USD,SMART,Consumer Discretionary,Automotive Parts & Equipment,Distribution
+ACGL,Arch Capital Group,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+ADM,Archer Daniels Midland,United States,USD,SMART,Consumer Staples,Agricultural Products & Services,Agro-alimentaire et boissons
+ARES,Ares Management,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+ANET,Arista Networks,United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+AJG,Arthur J. Gallagher & Co.,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+AIZ,Assurant,United States,USD,SMART,Financials,Multi-line Insurance,Assurance
+T,AT&T,United States,USD,SMART,Communication Services,Integrated Telecommunication Services,Medias
+ATO,Atmos Energy,United States,USD,SMART,Utilities,Gas Utilities,Services aux collectivités
+ADSK,Autodesk,United States,USD,SMART,Information Technology,Application Software,Technologie
+ADP,Automatic Data Processing,United States,USD,SMART,Industrials,Human Resource & Employment Services,Biens et services industriels
+AZO,AutoZone,United States,USD,SMART,Consumer Discretionary,Automotive Retail,Distribution
+AVY,Avery Dennison,United States,USD,SMART,Materials,Paper & Plastic Packaging Products & Materials,Matières premières
+AXON,Axon Enterprise,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+BKR,Baker Hughes,United States,USD,SMART,Energy,Oil & Gas Equipment & Services,Pétrole et gaz
+BALL,Ball Corporation,United States,USD,SMART,Materials,"Metal, Glass & Plastic Containers",Matières premières
+BAC,Bank of America,United States,USD,SMART,Financials,Diversified Banks,Banques
+BAX,Baxter International,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+BDX,Becton Dickinson,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+BRK.B,Berkshire Hathaway,United States,USD,SMART,Financials,Multi-Sector Holdings,Assurance
+BBY,Best Buy,United States,USD,SMART,Consumer Discretionary,Computer & Electronics Retail,Distribution
+TECH,Bio-Techne,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+BIIB,Biogen,United States,USD,SMART,Health Care,Biotechnology,Santé
+BLK,BlackRock,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+BX,Blackstone Inc.,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+XYZ,"Block, Inc.",United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+BNY,BNY Mellon,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+BA,Boeing,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+BKNG,Booking Holdings,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+BSX,Boston Scientific,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+BMY,Bristol Myers Squibb,United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+AVGO,Broadcom,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+BR,Broadridge Financial Solutions,United States,USD,SMART,Industrials,Data Processing & Outsourced Services,Biens et services industriels
+BRO,Brown & Brown,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+BF.B,Brown–Forman,United States,USD,SMART,Consumer Staples,Distillers & Vintners,Agro-alimentaire et boissons
+BLDR,Builders FirstSource,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+BG,Bunge Global,United States,USD,SMART,Consumer Staples,Agricultural Products & Services,Agro-alimentaire et boissons
+BXP,"BXP, Inc.",United States,USD,SMART,Real Estate,Office REITs,Immobilier
+CHRW,C.H. Robinson,United States,USD,SMART,Industrials,Air Freight & Logistics,Biens et services industriels
+CDNS,Cadence Design Systems,United States,USD,SMART,Information Technology,Application Software,Technologie
+CPT,Camden Property Trust,United States,USD,SMART,Real Estate,Multi-Family Residential REITs,Immobilier
+COF,Capital One,United States,USD,SMART,Financials,Consumer Finance,Banques
+CAH,Cardinal Health,United States,USD,SMART,Health Care,Health Care Distributors,Santé
+CCL,Carnival Corporation,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+CARR,Carrier Global,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+CVNA,Carvana,United States,USD,SMART,Consumer Discretionary,Automotive Retail,Distribution
+CASY,Casey's,United States,USD,SMART,Consumer Staples,Food Retail,Agro-alimentaire et boissons
+CAT,Caterpillar Inc.,United States,USD,SMART,Industrials,Construction Machinery & Heavy Transportation Equipment,Biens et services industriels
+CBOE,Cboe Global Markets,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+CBRE,CBRE Group,United States,USD,SMART,Real Estate,Real Estate Services,Immobilier
+CDW,CDW Corporation,United States,USD,SMART,Information Technology,Technology Distributors,Technologie
+COR,Cencora,United States,USD,SMART,Health Care,Health Care Distributors,Santé
+CNC,Centene Corporation,United States,USD,SMART,Health Care,Managed Health Care,Santé
+CNP,CenterPoint Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+CF,CF Industries,United States,USD,SMART,Materials,Fertilizers & Agricultural Chemicals,Matières premières
+CRL,Charles River Laboratories,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+SCHW,Charles Schwab Corporation,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+CHTR,Charter Communications,United States,USD,SMART,Communication Services,Cable & Satellite,Medias
+CVX,Chevron Corporation,United States,USD,SMART,Energy,Integrated Oil & Gas,Pétrole et gaz
+CMG,Chipotle Mexican Grill,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+CB,Chubb Limited,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+CHD,Church & Dwight,United States,USD,SMART,Consumer Staples,Household Products,Agro-alimentaire et boissons
+CIEN,Ciena,United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+CI,Cigna,United States,USD,SMART,Health Care,Health Care Services,Santé
+CINF,Cincinnati Financial,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+CTAS,Cintas,United States,USD,SMART,Industrials,Diversified Support Services,Biens et services industriels
+CSCO,Cisco,United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+C,Citigroup,United States,USD,SMART,Financials,Diversified Banks,Banques
+CFG,Citizens Financial Group,United States,USD,SMART,Financials,Regional Banks,Banques
+CLX,Clorox,United States,USD,SMART,Consumer Staples,Household Products,Agro-alimentaire et boissons
+CME,CME Group,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+CMS,CMS Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+KO,Coca-Cola Company (The),United States,USD,SMART,Consumer Staples,Soft Drinks & Non-alcoholic Beverages,Agro-alimentaire et boissons
+CTSH,Cognizant,United States,USD,SMART,Information Technology,IT Consulting & Other Services,Technologie
+COHR,Coherent Corp.,United States,USD,SMART,Information Technology,Electronic Components,Technologie
+COIN,Coinbase,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+CL,Colgate-Palmolive,United States,USD,SMART,Consumer Staples,Household Products,Agro-alimentaire et boissons
+CMCSA,Comcast,United States,USD,SMART,Communication Services,Cable & Satellite,Medias
+FIX,Comfort Systems USA,United States,USD,SMART,Industrials,Construction & Engineering,Biens et services industriels
+COP,ConocoPhillips,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+ED,Consolidated Edison,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+STZ,Constellation Brands,United States,USD,SMART,Consumer Staples,Distillers & Vintners,Agro-alimentaire et boissons
+CEG,Constellation Energy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+COO,Cooper Companies (The),United States,USD,SMART,Health Care,Health Care Supplies,Santé
+CPRT,Copart,United States,USD,SMART,Industrials,Diversified Support Services,Biens et services industriels
+GLW,Corning Inc.,United States,USD,SMART,Information Technology,Electronic Components,Technologie
+CPAY,Corpay,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+CTVA,Corteva,United States,USD,SMART,Materials,Fertilizers & Agricultural Chemicals,Matières premières
+CSGP,CoStar Group,United States,USD,SMART,Real Estate,Real Estate Services,Immobilier
+COST,Costco,United States,USD,SMART,Consumer Staples,Consumer Staples Merchandise Retail,Agro-alimentaire et boissons
+CRH,CRH plc,United States,USD,SMART,Materials,Construction Materials,Matières premières
+CRWD,CrowdStrike,United States,USD,SMART,Information Technology,Systems Software,Technologie
+CCI,Crown Castle,United States,USD,SMART,Real Estate,Telecom Tower REITs,Immobilier
+CSX,CSX Corporation,United States,USD,SMART,Industrials,Rail Transportation,Biens et services industriels
+CMI,Cummins,United States,USD,SMART,Industrials,Construction Machinery & Heavy Transportation Equipment,Biens et services industriels
+CVS,CVS Health,United States,USD,SMART,Health Care,Health Care Services,Santé
+DHR,Danaher Corporation,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+DRI,Darden Restaurants,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+DDOG,Datadog,United States,USD,SMART,Information Technology,Application Software,Technologie
+DVA,DaVita,United States,USD,SMART,Health Care,Health Care Services,Santé
+DECK,Deckers Brands,United States,USD,SMART,Consumer Discretionary,Footwear,Distribution
+DE,Deere & Company,United States,USD,SMART,Industrials,Agricultural & Farm Machinery,Biens et services industriels
+DELL,Dell Technologies,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+DAL,Delta Air Lines,United States,USD,SMART,Industrials,Passenger Airlines,Biens et services industriels
+DVN,Devon Energy,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+DXCM,Dexcom,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+FANG,Diamondback Energy,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+DLR,Digital Realty,United States,USD,SMART,Real Estate,Data Center REITs,Immobilier
+DG,Dollar General,United States,USD,SMART,Consumer Staples,Consumer Staples Merchandise Retail,Agro-alimentaire et boissons
+DLTR,Dollar Tree,United States,USD,SMART,Consumer Staples,Consumer Staples Merchandise Retail,Agro-alimentaire et boissons
+D,Dominion Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+DPZ,Domino's,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+DASH,DoorDash,United States,USD,SMART,Consumer Discretionary,Specialized Consumer Services,Distribution
+DOV,Dover Corporation,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+DOW,Dow Inc.,United States,USD,SMART,Materials,Commodity Chemicals,Matières premières
+DHI,D. R. Horton,United States,USD,SMART,Consumer Discretionary,Homebuilding,Distribution
+DTE,DTE Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+DUK,Duke Energy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+DD,DuPont,United States,USD,SMART,Industrials,Industrial Conglomerates,Matières premières
+ETN,Eaton Corporation,United States,USD,SMART,Industrials,Electrical Components & Equipment,Biens et services industriels
+EBAY,eBay Inc.,United States,USD,SMART,Consumer Discretionary,Broadline Retail,Distribution
+ECHO,EchoStar,United States,USD,SMART,Communication Services,Wireless Telecommunication Services,Medias
+ECL,Ecolab,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+EIX,Edison International,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+EW,Edwards Lifesciences,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+ELV,Elevance Health,United States,USD,SMART,Health Care,Managed Health Care,Santé
+EME,Emcor,United States,USD,SMART,Industrials,Construction & Engineering,Biens et services industriels
+EMR,Emerson Electric,United States,USD,SMART,Industrials,Electrical Components & Equipment,Biens et services industriels
+ETR,Entergy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+EOG,EOG Resources,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+EQT,EQT Corporation,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+EFX,Equifax,United States,USD,SMART,Industrials,Research & Consulting Services,Biens et services industriels
+EQIX,Equinix,United States,USD,SMART,Real Estate,Data Center REITs,Immobilier
+ERIE,Erie Indemnity,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+ESS,Essex Property Trust,United States,USD,SMART,Real Estate,Multi-Family Residential REITs,Immobilier
+EL,Estée Lauder Companies (The),United States,USD,SMART,Consumer Staples,Personal Care Products,Agro-alimentaire et boissons
+EG,Everest Group,United States,USD,SMART,Financials,Reinsurance,Assurance
+EVRG,Evergy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+ES,Eversource Energy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+EXC,Exelon,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+EXE,Expand Energy,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+EXPE,Expedia Group,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+EXPD,Expeditors International,United States,USD,SMART,Industrials,Air Freight & Logistics,Biens et services industriels
+EXR,Extra Space Storage,United States,USD,SMART,Real Estate,Self-Storage REITs,Immobilier
+XOM,ExxonMobil,United States,USD,SMART,Energy,Integrated Oil & Gas,Pétrole et gaz
+FFIV,"F5, Inc.",United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+FDS,FactSet,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+FICO,Fair Isaac,United States,USD,SMART,Information Technology,Application Software,Technologie
+FAST,Fastenal,United States,USD,SMART,Industrials,Trading Companies & Distributors,Biens et services industriels
+FRT,Federal Realty Investment Trust,United States,USD,SMART,Real Estate,Retail REITs,Immobilier
+FDX,FedEx,United States,USD,SMART,Industrials,Air Freight & Logistics,Biens et services industriels
+FDXF,FedEx Freight,United States,USD,SMART,Industrials,Cargo Ground Transportation,Biens et services industriels
+FERG,Ferguson Enterprises,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+FIS,Fidelity National Information Services,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+FITB,Fifth Third Bancorp,United States,USD,SMART,Financials,Regional Banks,Banques
+FSLR,First Solar,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+FE,FirstEnergy,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+FISV,Fiserv,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+FLEX,Flex Ltd.,United States,USD,SMART,Information Technology,Electronic Manufacturing Services,Technologie
+F,Ford Motor Company,United States,USD,SMART,Consumer Discretionary,Automobile Manufacturers,Distribution
+FTNT,Fortinet,United States,USD,SMART,Information Technology,Systems Software,Technologie
+FTV,Fortive,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+FOXA,Fox Corporation (Class A),United States,USD,SMART,Communication Services,Broadcasting,Medias
+FOX,Fox Corporation (Class B),United States,USD,SMART,Communication Services,Broadcasting,Medias
+BEN,Franklin Resources,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+FCX,Freeport-McMoRan,United States,USD,SMART,Materials,Copper,Matières premières
+GRMN,Garmin,United States,USD,SMART,Consumer Discretionary,Consumer Electronics,Distribution
+IT,Gartner,United States,USD,SMART,Information Technology,IT Consulting & Other Services,Technologie
+GE,GE Aerospace,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+GEHC,GE HealthCare,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+GEV,GE Vernova,United States,USD,SMART,Industrials,Heavy Electrical Equipment,Biens et services industriels
+GEN,Gen Digital,United States,USD,SMART,Information Technology,Systems Software,Technologie
+GNRC,Generac,United States,USD,SMART,Industrials,Heavy Electrical Equipment,Biens et services industriels
+GD,General Dynamics,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+GIS,General Mills,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+GM,General Motors,United States,USD,SMART,Consumer Discretionary,Automobile Manufacturers,Distribution
+GPC,Genuine Parts Company,United States,USD,SMART,Consumer Discretionary,Distributors,Distribution
+GILD,Gilead Sciences,United States,USD,SMART,Health Care,Biotechnology,Santé
+GPN,Global Payments,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+GL,Globe Life,United States,USD,SMART,Financials,Life & Health Insurance,Assurance
+GDDY,GoDaddy,United States,USD,SMART,Information Technology,Internet Services & Infrastructure,Technologie
+GS,Goldman Sachs,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+HAL,Halliburton,United States,USD,SMART,Energy,Oil & Gas Equipment & Services,Pétrole et gaz
+HIG,Hartford (The),United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+HAS,Hasbro,United States,USD,SMART,Consumer Discretionary,Leisure Products,Distribution
+HCA,HCA Healthcare,United States,USD,SMART,Health Care,Health Care Facilities,Santé
+DOC,Healthpeak Properties,United States,USD,SMART,Real Estate,Health Care REITs,Immobilier
+HSIC,Henry Schein,United States,USD,SMART,Health Care,Health Care Distributors,Santé
+HSY,Hershey Company (The),United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+HPE,Hewlett Packard Enterprise,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+HLT,Hilton Worldwide,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+HD,Home Depot (The),United States,USD,SMART,Consumer Discretionary,Home Improvement Retail,Distribution
+HONA,Honeywell Aerospace,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+HON,Honeywell Technologies,United States,USD,SMART,Industrials,Industrial Conglomerates,Biens et services industriels
+HRL,Hormel Foods,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+HST,Host Hotels & Resorts,United States,USD,SMART,Real Estate,Hotel & Resort REITs,Immobilier
+HWM,Howmet Aerospace,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+HPQ,HP Inc.,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+HUBB,Hubbell Incorporated,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+HUM,Humana,United States,USD,SMART,Health Care,Managed Health Care,Santé
+HBAN,Huntington Bancshares,United States,USD,SMART,Financials,Regional Banks,Banques
+HII,Huntington Ingalls Industries,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+IBM,IBM,United States,USD,SMART,Information Technology,IT Consulting & Other Services,Technologie
+IEX,IDEX Corporation,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+IDXX,Idexx Laboratories,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+ITW,Illinois Tool Works,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+INCY,Incyte,United States,USD,SMART,Health Care,Biotechnology,Santé
+IR,Ingersoll Rand,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+PODD,Insulet Corporation,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+INTC,Intel,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+IBKR,Interactive Brokers,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+ICE,Intercontinental Exchange,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+IFF,International Flavors & Fragrances,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+IP,International Paper,United States,USD,SMART,Materials,Paper & Plastic Packaging Products & Materials,Matières premières
+INTU,Intuit,United States,USD,SMART,Information Technology,Application Software,Technologie
+ISRG,Intuitive Surgical,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+IVZ,Invesco,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+INVH,Invitation Homes,United States,USD,SMART,Real Estate,Single-Family Residential REITs,Immobilier
+IQV,IQVIA,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+IRM,Iron Mountain,United States,USD,SMART,Real Estate,Other Specialized REITs,Immobilier
+JBHT,J.B. Hunt,United States,USD,SMART,Industrials,Cargo Ground Transportation,Biens et services industriels
+JBL,Jabil,United States,USD,SMART,Information Technology,Electronic Manufacturing Services,Technologie
+JKHY,Jack Henry & Associates,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+J,Jacobs Solutions,United States,USD,SMART,Industrials,Construction & Engineering,Biens et services industriels
+JNJ,Johnson & Johnson,United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+JCI,Johnson Controls,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+JPM,JPMorgan Chase,United States,USD,SMART,Financials,Diversified Banks,Banques
+KVUE,Kenvue,United States,USD,SMART,Consumer Staples,Personal Care Products,Agro-alimentaire et boissons
+KDP,Keurig Dr Pepper,United States,USD,SMART,Consumer Staples,Soft Drinks & Non-alcoholic Beverages,Agro-alimentaire et boissons
+KEY,KeyCorp,United States,USD,SMART,Financials,Regional Banks,Banques
+KEYS,Keysight Technologies,United States,USD,SMART,Information Technology,Electronic Equipment & Instruments,Technologie
+KMB,Kimberly-Clark,United States,USD,SMART,Consumer Staples,Household Products,Agro-alimentaire et boissons
+KIM,Kimco Realty,United States,USD,SMART,Real Estate,Retail REITs,Immobilier
+KMI,Kinder Morgan,United States,USD,SMART,Energy,Oil & Gas Storage & Transportation,Pétrole et gaz
+KKR,KKR & Co.,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+KLAC,KLA Corporation,United States,USD,SMART,Information Technology,Semiconductor Materials & Equipment,Technologie
+KHC,Kraft Heinz,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+KR,Kroger,United States,USD,SMART,Consumer Staples,Food Retail,Agro-alimentaire et boissons
+LHX,L3Harris,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+LH,Labcorp,United States,USD,SMART,Health Care,Health Care Services,Santé
+LRCX,Lam Research,United States,USD,SMART,Information Technology,Semiconductor Materials & Equipment,Technologie
+LVS,Las Vegas Sands,United States,USD,SMART,Consumer Discretionary,Casinos & Gaming,Distribution
+LDOS,Leidos,United States,USD,SMART,Industrials,Diversified Support Services,Biens et services industriels
+LEN,Lennar,United States,USD,SMART,Consumer Discretionary,Homebuilding,Distribution
+LII,Lennox International,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+LLY,Lilly (Eli),United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+LIN,Linde plc,United States,USD,SMART,Materials,Industrial Gases,Matières premières
+LYV,Live Nation Entertainment,United States,USD,SMART,Communication Services,Movies & Entertainment,Medias
+LMT,Lockheed Martin,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+L,Loews Corporation,United States,USD,SMART,Financials,Multi-line Insurance,Assurance
+LOW,Lowe's,United States,USD,SMART,Consumer Discretionary,Home Improvement Retail,Distribution
+LULU,Lululemon Athletica,United States,USD,SMART,Consumer Discretionary,"Apparel, Accessories & Luxury Goods",Distribution
+LITE,Lumentum,United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+LYB,LyondellBasell,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+MTB,M&T Bank,United States,USD,SMART,Financials,Regional Banks,Banques
+MPC,Marathon Petroleum,United States,USD,SMART,Energy,Oil & Gas Refining & Marketing,Pétrole et gaz
+MAR,Marriott International,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+MRSH,Marsh McLennan,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+MLM,Martin Marietta Materials,United States,USD,SMART,Materials,Construction Materials,Matières premières
+MRVL,Marvell Technology,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+MAS,Masco,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+MA,Mastercard,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+MKC,McCormick & Company,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+MCD,McDonald's,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+MCK,McKesson Corporation,United States,USD,SMART,Health Care,Health Care Distributors,Santé
+MDT,Medtronic,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+MRK,Merck & Co.,United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+META,Meta Platforms,United States,USD,SMART,Communication Services,Interactive Media & Services,Medias
+MET,MetLife,United States,USD,SMART,Financials,Life & Health Insurance,Assurance
+MTD,Mettler Toledo,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+MGM,MGM Resorts,United States,USD,SMART,Consumer Discretionary,Casinos & Gaming,Distribution
+MCHP,Microchip Technology,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+MU,Micron Technology,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+MSFT,Microsoft,United States,USD,SMART,Information Technology,Systems Software,Technologie
+MAA,Mid-America Apartment Communities,United States,USD,SMART,Real Estate,Multi-Family Residential REITs,Immobilier
+MRNA,Moderna,United States,USD,SMART,Health Care,Biotechnology,Santé
+TAP,Molson Coors Beverage Company,United States,USD,SMART,Consumer Staples,Brewers,Agro-alimentaire et boissons
+MDLZ,Mondelez International,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+MPWR,Monolithic Power Systems,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+MNST,Monster Beverage,United States,USD,SMART,Consumer Staples,Soft Drinks & Non-alcoholic Beverages,Agro-alimentaire et boissons
+MCO,Moody's Corporation,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+MS,Morgan Stanley,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+MOS,Mosaic Company (The),United States,USD,SMART,Materials,Fertilizers & Agricultural Chemicals,Matières premières
+MSI,Motorola Solutions,United States,USD,SMART,Information Technology,Communications Equipment,Technologie
+MSCI,MSCI,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+NDAQ,"Nasdaq, Inc.",United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+NTAP,NetApp,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+NFLX,Netflix,United States,USD,SMART,Communication Services,Movies & Entertainment,Medias
+NEM,Newmont,United States,USD,SMART,Materials,Gold,Matières premières
+NWSA,News Corp (Class A),United States,USD,SMART,Communication Services,Publishing,Medias
+NWS,News Corp (Class B),United States,USD,SMART,Communication Services,Publishing,Medias
+NEE,NextEra Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+NKE,"Nike, Inc.",United States,USD,SMART,Consumer Discretionary,"Apparel, Accessories & Luxury Goods",Distribution
+NI,NiSource,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+NDSN,Nordson Corporation,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+NSC,Norfolk Southern,United States,USD,SMART,Industrials,Rail Transportation,Biens et services industriels
+NTRS,Northern Trust,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+NOC,Northrop Grumman,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+NCLH,Norwegian Cruise Line Holdings,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+NRG,NRG Energy,United States,USD,SMART,Utilities,Independent Power Producers & Energy Traders,Services aux collectivités
+NUE,Nucor,United States,USD,SMART,Materials,Steel,Matières premières
+NVDA,Nvidia,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+NVR,"NVR, Inc.",United States,USD,SMART,Consumer Discretionary,Homebuilding,Distribution
+NXPI,NXP Semiconductors,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+ORLY,O'Reilly Automotive,United States,USD,SMART,Consumer Discretionary,Automotive Retail,Distribution
+OXY,Occidental Petroleum,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+ODFL,Old Dominion,United States,USD,SMART,Industrials,Cargo Ground Transportation,Biens et services industriels
+OMC,Omnicom Group,United States,USD,SMART,Communication Services,Advertising,Medias
+ON,ON Semiconductor,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+OKE,Oneok,United States,USD,SMART,Energy,Oil & Gas Storage & Transportation,Pétrole et gaz
+ORCL,Oracle Corporation,United States,USD,SMART,Information Technology,Application Software,Technologie
+OTIS,Otis Worldwide,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+PCAR,Paccar,United States,USD,SMART,Industrials,Construction Machinery & Heavy Transportation Equipment,Biens et services industriels
+PKG,Packaging Corporation of America,United States,USD,SMART,Materials,Paper & Plastic Packaging Products & Materials,Matières premières
+PLTR,Palantir Technologies,United States,USD,SMART,Information Technology,Application Software,Technologie
+PANW,Palo Alto Networks,United States,USD,SMART,Information Technology,Systems Software,Technologie
+PSKY,Paramount Skydance Corporation,United States,USD,SMART,Communication Services,Movies & Entertainment,Medias
+PH,Parker Hannifin,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+PAYX,Paychex,United States,USD,SMART,Industrials,Human Resource & Employment Services,Biens et services industriels
+PYPL,PayPal,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+PNR,Pentair,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+PEP,PepsiCo,United States,USD,SMART,Consumer Staples,Soft Drinks & Non-alcoholic Beverages,Agro-alimentaire et boissons
+PFE,Pfizer,United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+PCG,PG&E Corporation,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+PM,Philip Morris International,United States,USD,SMART,Consumer Staples,Tobacco,Agro-alimentaire et boissons
+PSX,Phillips 66,United States,USD,SMART,Energy,Oil & Gas Refining & Marketing,Pétrole et gaz
+PNW,Pinnacle West Capital,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+PNC,PNC Financial Services,United States,USD,SMART,Financials,Diversified Banks,Banques
+PPG,PPG Industries,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+PPL,PPL Corporation,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+PFG,Principal Financial Group,United States,USD,SMART,Financials,Life & Health Insurance,Assurance
+PG,Procter & Gamble,United States,USD,SMART,Consumer Staples,Personal Care Products,Agro-alimentaire et boissons
+PGR,Progressive Corporation,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+PLD,Prologis,United States,USD,SMART,Real Estate,Industrial REITs,Immobilier
+PRU,Prudential Financial,United States,USD,SMART,Financials,Life & Health Insurance,Assurance
+PEG,Public Service Enterprise Group,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+PTC,PTC Inc.,United States,USD,SMART,Information Technology,Application Software,Technologie
+PSA,Public Storage,United States,USD,SMART,Real Estate,Self-Storage REITs,Immobilier
+PHM,PulteGroup,United States,USD,SMART,Consumer Discretionary,Homebuilding,Distribution
+PWR,Quanta Services,United States,USD,SMART,Industrials,Construction & Engineering,Biens et services industriels
+QCOM,Qualcomm,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+DGX,Quest Diagnostics,United States,USD,SMART,Health Care,Health Care Services,Santé
+Q,Qnity Electronics,United States,USD,SMART,Information Technology,Semiconductor Materials & Equipment,Technologie
+RL,Ralph Lauren Corporation,United States,USD,SMART,Consumer Discretionary,"Apparel, Accessories & Luxury Goods",Distribution
+RJF,Raymond James Financial,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+RDDT,Reddit,United States,USD,SMART,Communication Services,,Medias
+RTX,RTX Corporation,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+O,Realty Income,United States,USD,SMART,Real Estate,Retail REITs,Immobilier
+REG,Regency Centers,United States,USD,SMART,Real Estate,Retail REITs,Immobilier
+REGN,Regeneron Pharmaceuticals,United States,USD,SMART,Health Care,Biotechnology,Santé
+RF,Regions Financial Corporation,United States,USD,SMART,Financials,Regional Banks,Banques
+RSG,Republic Services,United States,USD,SMART,Industrials,Environmental & Facilities Services,Biens et services industriels
+RMD,ResMed|,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+RVTY,Revvity,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+HOOD,Robinhood Markets,United States,USD,SMART,Financials,Investment Banking & Brokerage,Banques
+ROK,Rockwell Automation,United States,USD,SMART,Industrials,Electrical Components & Equipment,Biens et services industriels
+ROL,"Rollins, Inc.",United States,USD,SMART,Industrials,Environmental & Facilities Services,Biens et services industriels
+ROP,Roper Technologies,United States,USD,SMART,Information Technology,Electronic Equipment & Instruments,Technologie
+ROST,Ross Stores,United States,USD,SMART,Consumer Discretionary,Apparel Retail,Distribution
+RCL,Royal Caribbean Group,United States,USD,SMART,Consumer Discretionary,"Hotels, Resorts & Cruise Lines",Distribution
+SPGI,S&P Global,United States,USD,SMART,Financials,Financial Exchanges & Data,Services financiers
+CRM,Salesforce,United States,USD,SMART,Information Technology,Application Software,Technologie
+SNDK,Sandisk,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+SBAC,SBA Communications,United States,USD,SMART,Real Estate,Telecom Tower REITs,Immobilier
+SLB,Schlumberger,United States,USD,SMART,Energy,Oil & Gas Equipment & Services,Pétrole et gaz
+STX,Seagate Technology,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+SRE,Sempra,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+NOW,ServiceNow,United States,USD,SMART,Information Technology,Systems Software,Technologie
+SHW,Sherwin-Williams,United States,USD,SMART,Materials,Specialty Chemicals,Matières premières
+SPG,Simon Property Group,United States,USD,SMART,Real Estate,Retail REITs,Immobilier
+SWKS,Skyworks Solutions,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+SJM,J.M. Smucker Company (The),United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+SW,Smurfit Westrock,United States,USD,SMART,Materials,Paper & Plastic Packaging Products & Materials,Matières premières
+SNA,Snap-on,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+SOLV,Solventum,United States,USD,SMART,Health Care,Health Care Technology,Santé
+SO,Southern Company,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+LUV,Southwest Airlines,United States,USD,SMART,Industrials,Passenger Airlines,Biens et services industriels
+SWK,Stanley Black & Decker,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+SBUX,Starbucks,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+STT,State Street Corporation,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+STLD,Steel Dynamics,United States,USD,SMART,Materials,Steel,Matières premières
+STE,Steris,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+SYK,Stryker Corporation,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+SMCI,Supermicro,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+SYF,Synchrony Financial,United States,USD,SMART,Financials,Consumer Finance,Banques
+SNPS,Synopsys,United States,USD,SMART,Information Technology,Application Software,Technologie
+SYY,Sysco,United States,USD,SMART,Consumer Staples,Food Distributors,Agro-alimentaire et boissons
+TMUS,T-Mobile US,United States,USD,SMART,Communication Services,Wireless Telecommunication Services,Medias
+TROW,T. Rowe Price,United States,USD,SMART,Financials,Asset Management & Custody Banks,Banques
+TTWO,Take-Two Interactive,United States,USD,SMART,Communication Services,Interactive Home Entertainment,Medias
+TPR,"Tapestry, Inc.",United States,USD,SMART,Consumer Discretionary,"Apparel, Accessories & Luxury Goods",Distribution
+TRGP,Targa Resources,United States,USD,SMART,Energy,Oil & Gas Storage & Transportation,Pétrole et gaz
+TGT,Target Corporation,United States,USD,SMART,Consumer Staples,Consumer Staples Merchandise Retail,Agro-alimentaire et boissons
+TEL,TE Connectivity,United States,USD,SMART,Information Technology,Electronic Manufacturing Services,Technologie
+TDY,Teledyne Technologies,United States,USD,SMART,Information Technology,Electronic Equipment & Instruments,Technologie
+TER,Teradyne,United States,USD,SMART,Information Technology,Semiconductor Materials & Equipment,Technologie
+TSLA,"Tesla, Inc.",United States,USD,SMART,Consumer Discretionary,Automobile Manufacturers,Distribution
+TXN,Texas Instruments,United States,USD,SMART,Information Technology,Semiconductors,Technologie
+TPL,Texas Pacific Land Corporation,United States,USD,SMART,Energy,Oil & Gas Exploration & Production,Pétrole et gaz
+TXT,Textron,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+TMO,Thermo Fisher Scientific,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+TJX,TJX Companies,United States,USD,SMART,Consumer Discretionary,Apparel Retail,Distribution
+TKO,TKO Group Holdings,United States,USD,SMART,Communication Services,Movies & Entertainment,Medias
+TTD,Trade Desk (The),United States,USD,SMART,Communication Services,Advertising,Medias
+TSCO,Tractor Supply,United States,USD,SMART,Consumer Discretionary,Other Specialty Retail,Distribution
+TT,Trane Technologies,United States,USD,SMART,Industrials,Building Products,Biens et services industriels
+TDG,TransDigm Group,United States,USD,SMART,Industrials,Aerospace & Defense,Biens et services industriels
+TRV,Travelers Companies (The),United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+TRMB,Trimble Inc.,United States,USD,SMART,Information Technology,Application Software,Technologie
+TFC,Truist Financial,United States,USD,SMART,Financials,Diversified Banks,Banques
+TYL,Tyler Technologies,United States,USD,SMART,Information Technology,Application Software,Technologie
+TSN,Tyson Foods,United States,USD,SMART,Consumer Staples,Packaged Foods & Meats,Agro-alimentaire et boissons
+USB,U.S. Bancorp,United States,USD,SMART,Financials,Diversified Banks,Banques
+UBER,Uber,United States,USD,SMART,Industrials,Passenger Ground Transportation,Biens et services industriels
+UDR,"UDR, Inc.",United States,USD,SMART,Real Estate,Multi-Family Residential REITs,Immobilier
+ULTA,Ulta Beauty,United States,USD,SMART,Consumer Discretionary,Other Specialty Retail,Distribution
+UNP,Union Pacific Corporation,United States,USD,SMART,Industrials,Rail Transportation,Biens et services industriels
+UAL,United Airlines Holdings,United States,USD,SMART,Industrials,Passenger Airlines,Biens et services industriels
+UPS,United Parcel Service,United States,USD,SMART,Industrials,Air Freight & Logistics,Biens et services industriels
+URI,United Rentals,United States,USD,SMART,Industrials,Trading Companies & Distributors,Biens et services industriels
+UNH,UnitedHealth Group,United States,USD,SMART,Health Care,Managed Health Care,Santé
+UHS,Universal Health Services,United States,USD,SMART,Health Care,Health Care Facilities,Santé
+VLO,Valero Energy,United States,USD,SMART,Energy,Oil & Gas Refining & Marketing,Pétrole et gaz
+VEEV,Veeva Systems,United States,USD,SMART,Health Care,Health Care Technology,Santé
+VTR,Ventas,United States,USD,SMART,Real Estate,Health Care REITs,Immobilier
+VLTO,Veralto,United States,USD,SMART,Industrials,Environmental & Facilities Services,Biens et services industriels
+VRSN,Verisign,United States,USD,SMART,Information Technology,Internet Services & Infrastructure,Technologie
+VRSK,Verisk Analytics,United States,USD,SMART,Industrials,Research & Consulting Services,Biens et services industriels
+VZ,Verizon,United States,USD,SMART,Communication Services,Integrated Telecommunication Services,Medias
+VRTX,Vertex Pharmaceuticals,United States,USD,SMART,Health Care,Biotechnology,Santé
+VRT,Vertiv,United States,USD,SMART,Industrials,Electrical Components & Equipment,Biens et services industriels
+VTRS,Viatris,United States,USD,SMART,Health Care,Pharmaceuticals,Santé
+VICI,Vici Properties,United States,USD,SMART,Real Estate,Hotel & Resort REITs,Immobilier
+V,Visa Inc.,United States,USD,SMART,Financials,Transaction & Payment Processing Services,Services financiers
+VST,Vistra Corp.,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+VMRK,Vivmark Residential,United States,USD,SMART,Real Estate,Multi-Family Residential REITs,Immobilier
+VMC,Vulcan Materials Company,United States,USD,SMART,Materials,Construction Materials,Matières premières
+WRB,W. R. Berkley Corporation,United States,USD,SMART,Financials,Property & Casualty Insurance,Assurance
+GWW,W. W. Grainger,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+WAB,Wabtec,United States,USD,SMART,Industrials,Construction Machinery & Heavy Transportation Equipment,Biens et services industriels
+WMT,Walmart,United States,USD,SMART,Consumer Staples,Consumer Staples Merchandise Retail,Agro-alimentaire et boissons
+DIS,Walt Disney Company (The),United States,USD,SMART,Communication Services,Movies & Entertainment,Medias
+WBD,Warner Bros. Discovery,United States,USD,SMART,Communication Services,Broadcasting,Medias
+WM,Waste Management,United States,USD,SMART,Industrials,Environmental & Facilities Services,Biens et services industriels
+WAT,Waters Corporation,United States,USD,SMART,Health Care,Life Sciences Tools & Services,Santé
+WEC,WEC Energy Group,United States,USD,SMART,Utilities,Electric Utilities,Services aux collectivités
+WFC,Wells Fargo,United States,USD,SMART,Financials,Diversified Banks,Banques
+WELL,Welltower,United States,USD,SMART,Real Estate,Health Care REITs,Immobilier
+WST,West Pharmaceutical Services,United States,USD,SMART,Health Care,Health Care Supplies,Santé
+WDC,Western Digital,United States,USD,SMART,Information Technology,"Technology Hardware, Storage & Peripherals",Technologie
+WY,Weyerhaeuser,United States,USD,SMART,Real Estate,Timber REITs,Immobilier
+WSM,"Williams-Sonoma, Inc.",United States,USD,SMART,Consumer Discretionary,Homefurnishing Retail,Distribution
+WMB,Williams Companies,United States,USD,SMART,Energy,Oil & Gas Storage & Transportation,Pétrole et gaz
+WTW,Willis Towers Watson,United States,USD,SMART,Financials,Insurance Brokers,Services financiers
+WDAY,"Workday, Inc.",United States,USD,SMART,Information Technology,Application Software,Technologie
+WYNN,Wynn Resorts,United States,USD,SMART,Consumer Discretionary,Casinos & Gaming,Distribution
+XEL,Xcel Energy,United States,USD,SMART,Utilities,Multi-Utilities,Services aux collectivités
+XYL,Xylem Inc.,United States,USD,SMART,Industrials,Industrial Machinery & Supplies & Components,Biens et services industriels
+YUM,Yum! Brands,United States,USD,SMART,Consumer Discretionary,Restaurants,Distribution
+ZBRA,Zebra Technologies,United States,USD,SMART,Information Technology,Electronic Equipment & Instruments,Technologie
+ZBH,Zimmer Biomet,United States,USD,SMART,Health Care,Health Care Equipment,Santé
+ZTS,Zoetis,United States,USD,SMART,Health Care,Pharmaceuticals,Santé

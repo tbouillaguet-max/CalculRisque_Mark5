@@ -1,0 +1,6 @@
+2026-07-29 15:34:00,743 [INFO] Log file: data\prices\year_end_prices_20260729_153400.log
+2026-07-29 15:34:00,846 [INFO] Univers chargé : 503 tickers.
+2026-07-29 15:34:00,849 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-07-29 15:34:02,871 [INFO] Disconnecting
+2026-07-29 15:34:02,871 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-07-29 15:34:02,872 [ERROR] Make sure API port on TWS/IBG is open

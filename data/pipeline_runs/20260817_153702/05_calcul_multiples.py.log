@@ -1,0 +1,3 @@
+2026-08-17 22:46:40,711 [INFO] Association des cours : 37481 lignes au total -- 36853 au cours quotidien (03b), 11 en repli sur la clôture annuelle antérieure (03), 617 sans cours.
+2026-08-17 22:46:40,835 [WARNING] 64 lignes (1 entreprises) restent SANS SECTEUR : elles seront exclues des médianes sectorielles de 06b, ce qui rouvre le biais de survivance pour ces titres. Lance 02_categoriser_secteurs.py --universe data\universe\sp500_universe_full.csv. Concernées (extrait) : EA
+2026-08-17 22:46:41,053 [INFO] Multiples sauvegardés : data\multiples\multiples.parquet (33297 lignes)

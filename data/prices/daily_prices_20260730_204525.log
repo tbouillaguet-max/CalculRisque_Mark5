@@ -1,0 +1,23 @@
+2026-07-30 20:45:25,530 [INFO] Log file: data\prices\daily_prices_20260730_204525.log
+2026-07-30 20:45:25,564 [INFO] Univers chargé : 503 tickers.
+2026-07-30 20:45:25,598 [INFO] 0/503 tickers déjà à jour (ignorés), 503 à récupérer.
+2026-07-30 20:45:26,521 [INFO] Connecting to 127.0.0.1:4002 with clientId 4...
+2026-07-30 20:45:26,522 [INFO] Connected
+2026-07-30 20:45:26,649 [INFO] Logged on to server version 176
+2026-07-30 20:45:26,724 [INFO] API connection ready
+2026-07-30 20:45:26,753 [INFO] Warning 2104, reqId -1: Market data farm connection is OK:eufarm
+2026-07-30 20:45:26,757 [INFO] Warning 2106, reqId -1: HMDS data farm connection is OK:euhmds
+2026-07-30 20:45:26,758 [INFO] Warning 2158, reqId -1: Sec-def data farm connection is OK:secdefeu
+2026-07-30 20:45:27,433 [INFO] Synchronization complete
+2026-07-30 20:45:27,439 [INFO] Connecté à IBKR sur 127.0.0.1:4002 (clientId=4)
+2026-07-30 20:45:27,441 [INFO] [1/503] A (Agilent Technologies), depuis 2010-01-01...
+2026-07-30 20:45:28,091 [ERROR] Error 321, reqId 4: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=1715006, symbol='A', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='A', tradingClass='A')
+2026-07-30 20:45:40,668 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour A : Aucune donnée (ni IBKR ni Stooq) pour A -- TROU DE COUVERTURE.
+2026-07-30 20:45:40,673 [INFO] [2/503] AAPL (Apple Inc.), depuis 2010-01-01...
+2026-07-30 20:45:40,851 [ERROR] Error 321, reqId 6: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=265598, symbol='AAPL', exchange='SMART', primaryExchange='NASDAQ', currency='USD', localSymbol='AAPL', tradingClass='NMS')
+2026-07-30 20:45:53,247 [WARNING]   -> ECHEC (ni IBKR ni Stooq) pour AAPL : Aucune donnée (ni IBKR ni Stooq) pour AAPL -- TROU DE COUVERTURE.
+2026-07-30 20:45:53,248 [INFO] [3/503] ABBV (AbbVie), depuis 2010-01-01...
+2026-07-30 20:45:53,324 [ERROR] Error 321, reqId 8: Error validating request.-'bH' : cause - Historical data requests for durations longer than 365 days must be made in years., contract: Contract(secType='STK', conId=118089500, symbol='ABBV', exchange='SMART', primaryExchange='NYSE', currency='USD', localSymbol='ABBV', tradingClass='ABBV')
+2026-07-30 20:45:56,493 [INFO] Disconnecting from 127.0.0.1:4002, 509 B sent in 14 messages, 16.6 kB received in 266 messages, session time 30.0 s.
+2026-07-30 20:45:56,493 [INFO] Disconnecting
+2026-07-30 20:45:56,494 [INFO] Déconnecté d'IBKR.

@@ -1,0 +1,504 @@
+﻿RIC,Instrument_Name,Country,Currency,Exchange
+A,Agilent Technologies,United States,USD,SMART
+AAPL,Apple Inc.,United States,USD,SMART
+ABBV,AbbVie,United States,USD,SMART
+ABNB,Airbnb,United States,USD,SMART
+ABT,Abbott Laboratories,United States,USD,SMART
+ACGL,Arch Capital Group,United States,USD,SMART
+ACN,Accenture,United States,USD,SMART
+ADBE,Adobe Inc.,United States,USD,SMART
+ADI,Analog Devices,United States,USD,SMART
+ADM,Archer Daniels Midland,United States,USD,SMART
+ADP,Automatic Data Processing,United States,USD,SMART
+ADSK,Autodesk,United States,USD,SMART
+AEE,Ameren,United States,USD,SMART
+AEP,American Electric Power,United States,USD,SMART
+AES,AES Corporation,United States,USD,SMART
+AFL,Aflac,United States,USD,SMART
+AIG,American International Group,United States,USD,SMART
+AIZ,Assurant,United States,USD,SMART
+AJG,Arthur J. Gallagher & Co.,United States,USD,SMART
+AKAM,Akamai Technologies,United States,USD,SMART
+ALB,Albemarle Corporation,United States,USD,SMART
+ALGN,Align Technology,United States,USD,SMART
+ALL,Allstate,United States,USD,SMART
+ALLE,Allegion,United States,USD,SMART
+AMAT,Applied Materials,United States,USD,SMART
+AMCR,Amcor,United States,USD,SMART
+AMD,Advanced Micro Devices,United States,USD,SMART
+AME,Ametek,United States,USD,SMART
+AMGN,Amgen,United States,USD,SMART
+AMP,Ameriprise Financial,United States,USD,SMART
+AMT,American Tower,United States,USD,SMART
+AMZN,Amazon,United States,USD,SMART
+ANET,Arista Networks,United States,USD,SMART
+AON,Aon plc,United States,USD,SMART
+AOS,A. O. Smith,United States,USD,SMART
+APA,APA Corporation,United States,USD,SMART
+APD,Air Products,United States,USD,SMART
+APH,Amphenol,United States,USD,SMART
+APO,Apollo Global Management,United States,USD,SMART
+APP,AppLovin,United States,USD,SMART
+APTV,Aptiv,United States,USD,SMART
+ARE,Alexandria Real Estate Equities,United States,USD,SMART
+ARES,Ares Management,United States,USD,SMART
+ATO,Atmos Energy,United States,USD,SMART
+AVB,AvalonBay Communities,United States,USD,SMART
+AVGO,Broadcom,United States,USD,SMART
+AVY,Avery Dennison,United States,USD,SMART
+AWK,American Water Works,United States,USD,SMART
+AXON,Axon Enterprise,United States,USD,SMART
+AXP,American Express,United States,USD,SMART
+AZO,AutoZone,United States,USD,SMART
+BA,Boeing,United States,USD,SMART
+BAC,Bank of America,United States,USD,SMART
+BALL,Ball Corporation,United States,USD,SMART
+BAX,Baxter International,United States,USD,SMART
+BBY,Best Buy,United States,USD,SMART
+BDX,Becton Dickinson,United States,USD,SMART
+BEN,Franklin Resources,United States,USD,SMART
+BF.B,Brown–Forman,United States,USD,SMART
+BG,Bunge Global,United States,USD,SMART
+BIIB,Biogen,United States,USD,SMART
+BKNG,Booking Holdings,United States,USD,SMART
+BKR,Baker Hughes,United States,USD,SMART
+BLDR,Builders FirstSource,United States,USD,SMART
+BLK,BlackRock,United States,USD,SMART
+BMY,Bristol Myers Squibb,United States,USD,SMART
+BNY,BNY Mellon,United States,USD,SMART
+BR,Broadridge Financial Solutions,United States,USD,SMART
+BRK.B,Berkshire Hathaway,United States,USD,SMART
+BRO,Brown & Brown,United States,USD,SMART
+BSX,Boston Scientific,United States,USD,SMART
+BX,Blackstone Inc.,United States,USD,SMART
+BXP,"BXP, Inc.",United States,USD,SMART
+C,Citigroup,United States,USD,SMART
+CAH,Cardinal Health,United States,USD,SMART
+CARR,Carrier Global,United States,USD,SMART
+CASY,Casey's,United States,USD,SMART
+CAT,Caterpillar Inc.,United States,USD,SMART
+CB,Chubb Limited,United States,USD,SMART
+CBOE,Cboe Global Markets,United States,USD,SMART
+CBRE,CBRE Group,United States,USD,SMART
+CCI,Crown Castle,United States,USD,SMART
+CCL,Carnival Corporation,United States,USD,SMART
+CDNS,Cadence Design Systems,United States,USD,SMART
+CDW,CDW Corporation,United States,USD,SMART
+CEG,Constellation Energy,United States,USD,SMART
+CF,CF Industries,United States,USD,SMART
+CFG,Citizens Financial Group,United States,USD,SMART
+CHD,Church & Dwight,United States,USD,SMART
+CHRW,C.H. Robinson,United States,USD,SMART
+CHTR,Charter Communications,United States,USD,SMART
+CI,Cigna,United States,USD,SMART
+CIEN,Ciena,United States,USD,SMART
+CINF,Cincinnati Financial,United States,USD,SMART
+CL,Colgate-Palmolive,United States,USD,SMART
+CLX,Clorox,United States,USD,SMART
+CMCSA,Comcast,United States,USD,SMART
+CME,CME Group,United States,USD,SMART
+CMG,Chipotle Mexican Grill,United States,USD,SMART
+CMI,Cummins,United States,USD,SMART
+CMS,CMS Energy,United States,USD,SMART
+CNC,Centene Corporation,United States,USD,SMART
+CNP,CenterPoint Energy,United States,USD,SMART
+COF,Capital One,United States,USD,SMART
+COHR,Coherent Corp.,United States,USD,SMART
+COIN,Coinbase,United States,USD,SMART
+COO,Cooper Companies (The),United States,USD,SMART
+COP,ConocoPhillips,United States,USD,SMART
+COR,Cencora,United States,USD,SMART
+COST,Costco,United States,USD,SMART
+CPAY,Corpay,United States,USD,SMART
+CPRT,Copart,United States,USD,SMART
+CPT,Camden Property Trust,United States,USD,SMART
+CRH,CRH plc,United States,USD,SMART
+CRL,Charles River Laboratories,United States,USD,SMART
+CRM,Salesforce,United States,USD,SMART
+CRWD,CrowdStrike,United States,USD,SMART
+CSCO,Cisco,United States,USD,SMART
+CSGP,CoStar Group,United States,USD,SMART
+CSX,CSX Corporation,United States,USD,SMART
+CTAS,Cintas,United States,USD,SMART
+CTSH,Cognizant,United States,USD,SMART
+CTVA,Corteva,United States,USD,SMART
+CVNA,Carvana,United States,USD,SMART
+CVS,CVS Health,United States,USD,SMART
+CVX,Chevron Corporation,United States,USD,SMART
+D,Dominion Energy,United States,USD,SMART
+DAL,Delta Air Lines,United States,USD,SMART
+DASH,DoorDash,United States,USD,SMART
+DD,DuPont,United States,USD,SMART
+DDOG,Datadog,United States,USD,SMART
+DE,Deere & Company,United States,USD,SMART
+DECK,Deckers Brands,United States,USD,SMART
+DELL,Dell Technologies,United States,USD,SMART
+DG,Dollar General,United States,USD,SMART
+DGX,Quest Diagnostics,United States,USD,SMART
+DHI,D. R. Horton,United States,USD,SMART
+DHR,Danaher Corporation,United States,USD,SMART
+DIS,Walt Disney Company (The),United States,USD,SMART
+DLR,Digital Realty,United States,USD,SMART
+DLTR,Dollar Tree,United States,USD,SMART
+DOC,Healthpeak Properties,United States,USD,SMART
+DOV,Dover Corporation,United States,USD,SMART
+DOW,Dow Inc.,United States,USD,SMART
+DPZ,Domino's,United States,USD,SMART
+DRI,Darden Restaurants,United States,USD,SMART
+DTE,DTE Energy,United States,USD,SMART
+DUK,Duke Energy,United States,USD,SMART
+DVA,DaVita,United States,USD,SMART
+DVN,Devon Energy,United States,USD,SMART
+DXCM,Dexcom,United States,USD,SMART
+EBAY,eBay Inc.,United States,USD,SMART
+ECHO,EchoStar,United States,USD,SMART
+ECL,Ecolab,United States,USD,SMART
+ED,Consolidated Edison,United States,USD,SMART
+EFX,Equifax,United States,USD,SMART
+EG,Everest Group,United States,USD,SMART
+EIX,Edison International,United States,USD,SMART
+EL,Estée Lauder Companies (The),United States,USD,SMART
+ELV,Elevance Health,United States,USD,SMART
+EME,Emcor,United States,USD,SMART
+EMR,Emerson Electric,United States,USD,SMART
+EOG,EOG Resources,United States,USD,SMART
+EQIX,Equinix,United States,USD,SMART
+EQR,Equity Residential,United States,USD,SMART
+EQT,EQT Corporation,United States,USD,SMART
+ERIE,Erie Indemnity,United States,USD,SMART
+ES,Eversource Energy,United States,USD,SMART
+ESS,Essex Property Trust,United States,USD,SMART
+ETN,Eaton Corporation,United States,USD,SMART
+ETR,Entergy,United States,USD,SMART
+EVRG,Evergy,United States,USD,SMART
+EW,Edwards Lifesciences,United States,USD,SMART
+EXC,Exelon,United States,USD,SMART
+EXE,Expand Energy,United States,USD,SMART
+EXPD,Expeditors International,United States,USD,SMART
+EXPE,Expedia Group,United States,USD,SMART
+EXR,Extra Space Storage,United States,USD,SMART
+F,Ford Motor Company,United States,USD,SMART
+FANG,Diamondback Energy,United States,USD,SMART
+FAST,Fastenal,United States,USD,SMART
+FCX,Freeport-McMoRan,United States,USD,SMART
+FDS,FactSet,United States,USD,SMART
+FDX,FedEx,United States,USD,SMART
+FDXF,FedEx Freight,United States,USD,SMART
+FE,FirstEnergy,United States,USD,SMART
+FERG,Ferguson Enterprises,United States,USD,SMART
+FFIV,"F5, Inc.",United States,USD,SMART
+FICO,Fair Isaac,United States,USD,SMART
+FIS,Fidelity National Information Services,United States,USD,SMART
+FISV,Fiserv,United States,USD,SMART
+FITB,Fifth Third Bancorp,United States,USD,SMART
+FIX,Comfort Systems USA,United States,USD,SMART
+FLEX,Flex Ltd.,United States,USD,SMART
+FOX,Fox Corporation (Class B),United States,USD,SMART
+FOXA,Fox Corporation (Class A),United States,USD,SMART
+FRT,Federal Realty Investment Trust,United States,USD,SMART
+FSLR,First Solar,United States,USD,SMART
+FTNT,Fortinet,United States,USD,SMART
+FTV,Fortive,United States,USD,SMART
+GD,General Dynamics,United States,USD,SMART
+GDDY,GoDaddy,United States,USD,SMART
+GE,GE Aerospace,United States,USD,SMART
+GEHC,GE HealthCare,United States,USD,SMART
+GEN,Gen Digital,United States,USD,SMART
+GEV,GE Vernova,United States,USD,SMART
+GILD,Gilead Sciences,United States,USD,SMART
+GIS,General Mills,United States,USD,SMART
+GL,Globe Life,United States,USD,SMART
+GLW,Corning Inc.,United States,USD,SMART
+GM,General Motors,United States,USD,SMART
+GNRC,Generac,United States,USD,SMART
+GOOG,Alphabet Inc. (Class C),United States,USD,SMART
+GOOGL,Alphabet Inc. (Class A),United States,USD,SMART
+GPC,Genuine Parts Company,United States,USD,SMART
+GPN,Global Payments,United States,USD,SMART
+GRMN,Garmin,United States,USD,SMART
+GS,Goldman Sachs,United States,USD,SMART
+GWW,W. W. Grainger,United States,USD,SMART
+HAL,Halliburton,United States,USD,SMART
+HAS,Hasbro,United States,USD,SMART
+HBAN,Huntington Bancshares,United States,USD,SMART
+HCA,HCA Healthcare,United States,USD,SMART
+HD,Home Depot (The),United States,USD,SMART
+HIG,Hartford (The),United States,USD,SMART
+HII,Huntington Ingalls Industries,United States,USD,SMART
+HLT,Hilton Worldwide,United States,USD,SMART
+HON,Honeywell Technologies,United States,USD,SMART
+HONA,Honeywell Aerospace,United States,USD,SMART
+HOOD,Robinhood Markets,United States,USD,SMART
+HPE,Hewlett Packard Enterprise,United States,USD,SMART
+HPQ,HP Inc.,United States,USD,SMART
+HRL,Hormel Foods,United States,USD,SMART
+HSIC,Henry Schein,United States,USD,SMART
+HST,Host Hotels & Resorts,United States,USD,SMART
+HSY,Hershey Company (The),United States,USD,SMART
+HUBB,Hubbell Incorporated,United States,USD,SMART
+HUM,Humana,United States,USD,SMART
+HWM,Howmet Aerospace,United States,USD,SMART
+IBKR,Interactive Brokers,United States,USD,SMART
+IBM,IBM,United States,USD,SMART
+ICE,Intercontinental Exchange,United States,USD,SMART
+IDXX,Idexx Laboratories,United States,USD,SMART
+IEX,IDEX Corporation,United States,USD,SMART
+IFF,International Flavors & Fragrances,United States,USD,SMART
+INCY,Incyte,United States,USD,SMART
+INTC,Intel,United States,USD,SMART
+INTU,Intuit,United States,USD,SMART
+INVH,Invitation Homes,United States,USD,SMART
+IP,International Paper,United States,USD,SMART
+IQV,IQVIA,United States,USD,SMART
+IR,Ingersoll Rand,United States,USD,SMART
+IRM,Iron Mountain,United States,USD,SMART
+ISRG,Intuitive Surgical,United States,USD,SMART
+IT,Gartner,United States,USD,SMART
+ITW,Illinois Tool Works,United States,USD,SMART
+IVZ,Invesco,United States,USD,SMART
+J,Jacobs Solutions,United States,USD,SMART
+JBHT,J.B. Hunt,United States,USD,SMART
+JBL,Jabil,United States,USD,SMART
+JCI,Johnson Controls,United States,USD,SMART
+JKHY,Jack Henry & Associates,United States,USD,SMART
+JNJ,Johnson & Johnson,United States,USD,SMART
+JPM,JPMorgan Chase,United States,USD,SMART
+KDP,Keurig Dr Pepper,United States,USD,SMART
+KEY,KeyCorp,United States,USD,SMART
+KEYS,Keysight Technologies,United States,USD,SMART
+KHC,Kraft Heinz,United States,USD,SMART
+KIM,Kimco Realty,United States,USD,SMART
+KKR,KKR & Co.,United States,USD,SMART
+KLAC,KLA Corporation,United States,USD,SMART
+KMB,Kimberly-Clark,United States,USD,SMART
+KMI,Kinder Morgan,United States,USD,SMART
+KO,Coca-Cola Company (The),United States,USD,SMART
+KR,Kroger,United States,USD,SMART
+KVUE,Kenvue,United States,USD,SMART
+L,Loews Corporation,United States,USD,SMART
+LDOS,Leidos,United States,USD,SMART
+LEN,Lennar,United States,USD,SMART
+LH,Labcorp,United States,USD,SMART
+LHX,L3Harris,United States,USD,SMART
+LII,Lennox International,United States,USD,SMART
+LIN,Linde plc,United States,USD,SMART
+LITE,Lumentum,United States,USD,SMART
+LLY,Lilly (Eli),United States,USD,SMART
+LMT,Lockheed Martin,United States,USD,SMART
+LNT,Alliant Energy,United States,USD,SMART
+LOW,Lowe's,United States,USD,SMART
+LRCX,Lam Research,United States,USD,SMART
+LULU,Lululemon Athletica,United States,USD,SMART
+LUV,Southwest Airlines,United States,USD,SMART
+LVS,Las Vegas Sands,United States,USD,SMART
+LYB,LyondellBasell,United States,USD,SMART
+LYV,Live Nation Entertainment,United States,USD,SMART
+MA,Mastercard,United States,USD,SMART
+MAA,Mid-America Apartment Communities,United States,USD,SMART
+MAR,Marriott International,United States,USD,SMART
+MAS,Masco,United States,USD,SMART
+MCD,McDonald's,United States,USD,SMART
+MCHP,Microchip Technology,United States,USD,SMART
+MCK,McKesson Corporation,United States,USD,SMART
+MCO,Moody's Corporation,United States,USD,SMART
+MDLZ,Mondelez International,United States,USD,SMART
+MDT,Medtronic,United States,USD,SMART
+MET,MetLife,United States,USD,SMART
+META,Meta Platforms,United States,USD,SMART
+MGM,MGM Resorts,United States,USD,SMART
+MKC,McCormick & Company,United States,USD,SMART
+MLM,Martin Marietta Materials,United States,USD,SMART
+MMM,3M,United States,USD,SMART
+MNST,Monster Beverage,United States,USD,SMART
+MO,Altria,United States,USD,SMART
+MOS,Mosaic Company (The),United States,USD,SMART
+MPC,Marathon Petroleum,United States,USD,SMART
+MPWR,Monolithic Power Systems,United States,USD,SMART
+MRK,Merck & Co.,United States,USD,SMART
+MRNA,Moderna,United States,USD,SMART
+MRSH,Marsh McLennan,United States,USD,SMART
+MRVL,Marvell Technology,United States,USD,SMART
+MS,Morgan Stanley,United States,USD,SMART
+MSCI,MSCI,United States,USD,SMART
+MSFT,Microsoft,United States,USD,SMART
+MSI,Motorola Solutions,United States,USD,SMART
+MTB,M&T Bank,United States,USD,SMART
+MTD,Mettler Toledo,United States,USD,SMART
+MU,Micron Technology,United States,USD,SMART
+NCLH,Norwegian Cruise Line Holdings,United States,USD,SMART
+NDAQ,"Nasdaq, Inc.",United States,USD,SMART
+NDSN,Nordson Corporation,United States,USD,SMART
+NEE,NextEra Energy,United States,USD,SMART
+NEM,Newmont,United States,USD,SMART
+NFLX,Netflix,United States,USD,SMART
+NI,NiSource,United States,USD,SMART
+NKE,"Nike, Inc.",United States,USD,SMART
+NOC,Northrop Grumman,United States,USD,SMART
+NOW,ServiceNow,United States,USD,SMART
+NRG,NRG Energy,United States,USD,SMART
+NSC,Norfolk Southern,United States,USD,SMART
+NTAP,NetApp,United States,USD,SMART
+NTRS,Northern Trust,United States,USD,SMART
+NUE,Nucor,United States,USD,SMART
+NVDA,Nvidia,United States,USD,SMART
+NVR,"NVR, Inc.",United States,USD,SMART
+NWS,News Corp (Class B),United States,USD,SMART
+NWSA,News Corp (Class A),United States,USD,SMART
+NXPI,NXP Semiconductors,United States,USD,SMART
+O,Realty Income,United States,USD,SMART
+ODFL,Old Dominion,United States,USD,SMART
+OKE,Oneok,United States,USD,SMART
+OMC,Omnicom Group,United States,USD,SMART
+ON,ON Semiconductor,United States,USD,SMART
+ORCL,Oracle Corporation,United States,USD,SMART
+ORLY,O'Reilly Automotive,United States,USD,SMART
+OTIS,Otis Worldwide,United States,USD,SMART
+OXY,Occidental Petroleum,United States,USD,SMART
+PANW,Palo Alto Networks,United States,USD,SMART
+PAYX,Paychex,United States,USD,SMART
+PCAR,Paccar,United States,USD,SMART
+PCG,PG&E Corporation,United States,USD,SMART
+PEG,Public Service Enterprise Group,United States,USD,SMART
+PEP,PepsiCo,United States,USD,SMART
+PFE,Pfizer,United States,USD,SMART
+PFG,Principal Financial Group,United States,USD,SMART
+PG,Procter & Gamble,United States,USD,SMART
+PGR,Progressive Corporation,United States,USD,SMART
+PH,Parker Hannifin,United States,USD,SMART
+PHM,PulteGroup,United States,USD,SMART
+PKG,Packaging Corporation of America,United States,USD,SMART
+PLD,Prologis,United States,USD,SMART
+PLTR,Palantir Technologies,United States,USD,SMART
+PM,Philip Morris International,United States,USD,SMART
+PNC,PNC Financial Services,United States,USD,SMART
+PNR,Pentair,United States,USD,SMART
+PNW,Pinnacle West Capital,United States,USD,SMART
+PODD,Insulet Corporation,United States,USD,SMART
+PPG,PPG Industries,United States,USD,SMART
+PPL,PPL Corporation,United States,USD,SMART
+PRU,Prudential Financial,United States,USD,SMART
+PSA,Public Storage,United States,USD,SMART
+PSKY,Paramount Skydance Corporation,United States,USD,SMART
+PSX,Phillips 66,United States,USD,SMART
+PTC,PTC Inc.,United States,USD,SMART
+PWR,Quanta Services,United States,USD,SMART
+PYPL,PayPal,United States,USD,SMART
+Q,Qnity Electronics,United States,USD,SMART
+QCOM,Qualcomm,United States,USD,SMART
+RCL,Royal Caribbean Group,United States,USD,SMART
+REG,Regency Centers,United States,USD,SMART
+REGN,Regeneron Pharmaceuticals,United States,USD,SMART
+RF,Regions Financial Corporation,United States,USD,SMART
+RJF,Raymond James Financial,United States,USD,SMART
+RL,Ralph Lauren Corporation,United States,USD,SMART
+RMD,ResMed|,United States,USD,SMART
+ROK,Rockwell Automation,United States,USD,SMART
+ROL,"Rollins, Inc.",United States,USD,SMART
+ROP,Roper Technologies,United States,USD,SMART
+ROST,Ross Stores,United States,USD,SMART
+RSG,Republic Services,United States,USD,SMART
+RTX,RTX Corporation,United States,USD,SMART
+RVTY,Revvity,United States,USD,SMART
+SBAC,SBA Communications,United States,USD,SMART
+SBUX,Starbucks,United States,USD,SMART
+SCHW,Charles Schwab Corporation,United States,USD,SMART
+SHW,Sherwin-Williams,United States,USD,SMART
+SJM,J.M. Smucker Company (The),United States,USD,SMART
+SLB,Schlumberger,United States,USD,SMART
+SMCI,Supermicro,United States,USD,SMART
+SNA,Snap-on,United States,USD,SMART
+SNDK,Sandisk,United States,USD,SMART
+SNPS,Synopsys,United States,USD,SMART
+SO,Southern Company,United States,USD,SMART
+SOLV,Solventum,United States,USD,SMART
+SPG,Simon Property Group,United States,USD,SMART
+SPGI,S&P Global,United States,USD,SMART
+SRE,Sempra,United States,USD,SMART
+STE,Steris,United States,USD,SMART
+STLD,Steel Dynamics,United States,USD,SMART
+STT,State Street Corporation,United States,USD,SMART
+STX,Seagate Technology,United States,USD,SMART
+STZ,Constellation Brands,United States,USD,SMART
+SW,Smurfit Westrock,United States,USD,SMART
+SWK,Stanley Black & Decker,United States,USD,SMART
+SWKS,Skyworks Solutions,United States,USD,SMART
+SYF,Synchrony Financial,United States,USD,SMART
+SYK,Stryker Corporation,United States,USD,SMART
+SYY,Sysco,United States,USD,SMART
+T,AT&T,United States,USD,SMART
+TAP,Molson Coors Beverage Company,United States,USD,SMART
+TDG,TransDigm Group,United States,USD,SMART
+TDY,Teledyne Technologies,United States,USD,SMART
+TECH,Bio-Techne,United States,USD,SMART
+TEL,TE Connectivity,United States,USD,SMART
+TER,Teradyne,United States,USD,SMART
+TFC,Truist Financial,United States,USD,SMART
+TGT,Target Corporation,United States,USD,SMART
+TJX,TJX Companies,United States,USD,SMART
+TKO,TKO Group Holdings,United States,USD,SMART
+TMO,Thermo Fisher Scientific,United States,USD,SMART
+TMUS,T-Mobile US,United States,USD,SMART
+TPL,Texas Pacific Land Corporation,United States,USD,SMART
+TPR,"Tapestry, Inc.",United States,USD,SMART
+TRGP,Targa Resources,United States,USD,SMART
+TRMB,Trimble Inc.,United States,USD,SMART
+TROW,T. Rowe Price,United States,USD,SMART
+TRV,Travelers Companies (The),United States,USD,SMART
+TSCO,Tractor Supply,United States,USD,SMART
+TSLA,"Tesla, Inc.",United States,USD,SMART
+TSN,Tyson Foods,United States,USD,SMART
+TT,Trane Technologies,United States,USD,SMART
+TTD,Trade Desk (The),United States,USD,SMART
+TTWO,Take-Two Interactive,United States,USD,SMART
+TXN,Texas Instruments,United States,USD,SMART
+TXT,Textron,United States,USD,SMART
+TYL,Tyler Technologies,United States,USD,SMART
+UAL,United Airlines Holdings,United States,USD,SMART
+UBER,Uber,United States,USD,SMART
+UDR,"UDR, Inc.",United States,USD,SMART
+UHS,Universal Health Services,United States,USD,SMART
+ULTA,Ulta Beauty,United States,USD,SMART
+UNH,UnitedHealth Group,United States,USD,SMART
+UNP,Union Pacific Corporation,United States,USD,SMART
+UPS,United Parcel Service,United States,USD,SMART
+URI,United Rentals,United States,USD,SMART
+USB,U.S. Bancorp,United States,USD,SMART
+V,Visa Inc.,United States,USD,SMART
+VEEV,Veeva Systems,United States,USD,SMART
+VICI,Vici Properties,United States,USD,SMART
+VLO,Valero Energy,United States,USD,SMART
+VLTO,Veralto,United States,USD,SMART
+VMC,Vulcan Materials Company,United States,USD,SMART
+VRSK,Verisk Analytics,United States,USD,SMART
+VRSN,Verisign,United States,USD,SMART
+VRT,Vertiv,United States,USD,SMART
+VRTX,Vertex Pharmaceuticals,United States,USD,SMART
+VST,Vistra Corp.,United States,USD,SMART
+VTR,Ventas,United States,USD,SMART
+VTRS,Viatris,United States,USD,SMART
+VZ,Verizon,United States,USD,SMART
+WAB,Wabtec,United States,USD,SMART
+WAT,Waters Corporation,United States,USD,SMART
+WBD,Warner Bros. Discovery,United States,USD,SMART
+WDAY,"Workday, Inc.",United States,USD,SMART
+WDC,Western Digital,United States,USD,SMART
+WEC,WEC Energy Group,United States,USD,SMART
+WELL,Welltower,United States,USD,SMART
+WFC,Wells Fargo,United States,USD,SMART
+WM,Waste Management,United States,USD,SMART
+WMB,Williams Companies,United States,USD,SMART
+WMT,Walmart,United States,USD,SMART
+WRB,W. R. Berkley Corporation,United States,USD,SMART
+WSM,"Williams-Sonoma, Inc.",United States,USD,SMART
+WST,West Pharmaceutical Services,United States,USD,SMART
+WTW,Willis Towers Watson,United States,USD,SMART
+WY,Weyerhaeuser,United States,USD,SMART
+WYNN,Wynn Resorts,United States,USD,SMART
+XEL,Xcel Energy,United States,USD,SMART
+XOM,ExxonMobil,United States,USD,SMART
+XYL,Xylem Inc.,United States,USD,SMART
+XYZ,"Block, Inc.",United States,USD,SMART
+YUM,Yum! Brands,United States,USD,SMART
+ZBH,Zimmer Biomet,United States,USD,SMART
+ZBRA,Zebra Technologies,United States,USD,SMART
+ZTS,Zoetis,United States,USD,SMART

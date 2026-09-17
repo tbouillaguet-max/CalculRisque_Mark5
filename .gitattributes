@@ -1,0 +1,39 @@
+# Git LFS : quels fichiers de data/ sont stockés hors du dépôt git lui-même.
+#
+# Sans LFS, git stocke chaque version complète d'un fichier binaire dans son
+# historique, pour toujours : un daily_prices.parquet de 80 Mo réécrit à chaque
+# run pèse 80 Mo de plus dans le .git à chaque commit, et personne ne peut plus
+# cloner. Avec LFS, git ne suit qu'un POINTEUR de 130 octets ; le contenu part
+# sur le stockage LFS du serveur et n'est téléchargé qu'au checkout.
+#
+# Ce qui est ici est donc uniquement ce qui est LOURD ou BINAIRE. Tout le reste
+# de data/ (CSV d'univers, JSON d'état, journaux) est du texte petit et
+# diffable : git s'en sort mieux tout seul, et le mettre en LFS consommerait du
+# quota pour rien. Rien n'est exclu du dépôt dans un cas comme dans l'autre --
+# c'est le MODE DE STOCKAGE qui diffère, pas ce qui est versionné.
+#
+# Après avoir modifié ce fichier, relance `python3 setup_lfs.py` : il vérifie
+# auprès de git (git check-attr) que les motifs s'appliquent réellement, et
+# chiffre ce que ça représente avant le premier push.
+#
+# ATTENTION QUOTA. LFS conserve une copie COMPLÈTE de chaque version. Un run
+# qui réécrit 100 Mo de parquet coûte 100 Mo de stockage LFS de plus, à chaque
+# fois. Le palier gratuit GitHub est de 1 Go de stockage et 1 Go de bande
+# passante par mois ; setup_lfs.py affiche où tu en es.
+
+# Tables du pipeline : le gros du volume (cours quotidiens, financiers,
+# multiples, DCF, chaînes d'options).
+data/**/*.parquet filter=lfs diff=lfs merge=lfs -text
+
+# Classeurs Excel (07, 06) : binaires, non diffables.
+data/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
+
+# JSONL append-only : mémoire des classifications 8-K (Mistral) et points de
+# reprise. Grossit sans limite au fil des runs.
+data/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
+
+# Cache des index de dépôts SEC : un JSON par émetteur, de quelques centaines
+# de Ko à plusieurs Mo, multiplié par tout l'univers. Visé par son CHEMIN et
+# non par son extension, pour ne pas embarquer les petits JSON d'état
+# (progress.json, fetch_state.json) qui vivent ailleurs dans data/.
+data/financials/sec_submissions/** filter=lfs diff=lfs merge=lfs -text
