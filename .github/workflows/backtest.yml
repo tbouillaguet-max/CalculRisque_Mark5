@@ -11,15 +11,23 @@
 # quota de bande passante LFS, le lancer à chaque commit n'aurait aucun sens.
 #
 # LE POINT COÛTEUX, ET CE QUI EST FAIT POUR. Un `checkout` avec `lfs: true`
-# rapatrierait TOUT le contenu LFS du dépôt (plusieurs centaines de Mo, dont le
-# cache des index SEC dont aucun backtest n'a besoin) à chaque run, et chaque
+# rapatrierait TOUT le contenu LFS du dépôt (307 Mo, dont 246 Mo de cache
+# d'index SEC dont aucun backtest n'a besoin) à chaque run, et chaque
 # téléchargement compte contre le quota de bande passante LFS -- 1 Go/mois sur
-# le palier gratuit, soit deux runs. D'où deux précautions :
+# le palier gratuit, soit trois runs. D'où deux précautions :
 #
-#   1. on ne rapatrie QUE les fichiers que 09/10 lisent réellement
-#      (DONNEES_BACKTEST ci-dessous) ;
+#   1. on EXCLUT le cache SEC et la mémoire des classifications 8-K, et on
+#      rapatrie tout le reste : ~61 Mo au lieu de 307 ;
 #   2. les objets LFS déjà téléchargés sont mis en cache entre les runs, donc
 #      un second backtest sur les mêmes données ne consomme rien.
+#
+# POURQUOI EXCLURE PLUTÔT QU'ÉNUMÉRER. La première version listait les fichiers
+# que 09/10 lisent. Elle en oubliait un -- data/dcf/validation_qualitative.parquet,
+# lu indirectement par load_valorisation_combinee_history via le filtre
+# qualitatif -- et le run échouait sur « Parquet magic bytes not found in
+# footer », une erreur qui envoie chercher une corruption là où il ne manquait
+# qu'un fichier. Une liste de ce qu'il FAUT se périme dès qu'un chargeur lit
+# un fichier de plus ; une liste de ce qui est INUTILE ne se périme pas.
 
 name: Backtest
 
@@ -57,17 +65,13 @@ jobs:
     timeout-minutes: 120
 
     env:
-      # Les SEULS fichiers LFS que 09_backtest.py et 10_backtest_options.py
-      # lisent (voir leurs appels à backtest/data_loader). Tout le reste --
-      # data/financials/sec_submissions/ en tête, de loin le plus gros -- est
-      # laissé sous forme de pointeur.
-      DONNEES_BACKTEST: >-
-        data/prices/daily_prices.parquet,
-        data/universe/**,
-        data/multiples/valorisation_combinee_historique.parquet,
-        data/dcf/dcf_historique.parquet,
-        data/options/history/**,
-        data/financials/material_events_8k.parquet
+      # Ce qu'aucun backtest ne lit, et qui pèse l'essentiel du volume LFS :
+      # le cache des index de dépôts SEC (246 Mo, reconstruit par 04/04b/04c)
+      # et la mémoire des classifications 8-K (utile à 04c seul). Tout le
+      # reste est rapatrié -- voir l'en-tête pour le choix exclure/énumérer.
+      DONNEES_INUTILES: >-
+        data/financials/sec_submissions/**,
+        data/financials/cache_8k_mistral.jsonl
 
     steps:
       - name: Récupérer le code (sans le contenu LFS)
@@ -82,15 +86,26 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .git/lfs/objects
-          key: lfs-${{ hashFiles('data/prices/daily_prices.parquet', 'data/universe/**', 'data/multiples/valorisation_combinee_historique.parquet', 'data/dcf/dcf_historique.parquet', 'data/options/history/**', 'data/financials/material_events_8k.parquet') }}
+          key: lfs-${{ hashFiles('data/**', '!data/financials/sec_submissions/**') }}
           restore-keys: lfs-
 
-      - name: Rapatrier uniquement les données du backtest
+      - name: Rapatrier les données (sauf ce qu'aucun backtest ne lit)
         run: |
           set -euo pipefail
-          git lfs pull --include="$(echo "$DONNEES_BACKTEST" | tr -d ' \n')"
-          echo "Contenu LFS présent :"
+          EXCLUS="$(echo "$DONNEES_INUTILES" | tr -d ' \n')"
+          git lfs pull --exclude="$EXCLUS"
+          echo "Contenu présent :"
           du -sh data/* 2>/dev/null || true
+
+      # Un pointeur oublié ne dit pas son nom : pandas échoue dessus sur
+      # « Parquet magic bytes not found in footer », ce qui fait chercher une
+      # corruption de données là où il ne manque qu'un rapatriement. Mieux vaut
+      # échouer ici, en nommant les fichiers en cause.
+      - name: Vérifier qu'aucun fichier n'est resté un pointeur
+        run: |
+          set -euo pipefail
+          python setup_lfs.py --verifier-pointeurs \
+            --ignorer "$(echo "$DONNEES_INUTILES" | tr -d ' \n')"
 
       - name: Installer Python
         uses: actions/setup-python@v5

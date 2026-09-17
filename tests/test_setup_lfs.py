@@ -291,6 +291,74 @@ def test_pas_d_alerte_quand_tout_le_lourd_est_en_lfs(depot, capsys):
     assert "Gros fichiers HORS LFS" not in capsys.readouterr().out
 
 
+# ---------------------------------------------------------------------------
+# Détection des pointeurs non rapatriés
+# ---------------------------------------------------------------------------
+
+POINTEUR = (
+    b"version https://git-lfs.github.com/spec/v1\n"
+    b"oid sha256:3eb5a60cda5b92178c6d9cdfafb59b76b394fcc6b42dfa3685e8e432633bf8c6\n"
+    b"size 31926116\n"
+)
+
+
+def test_un_pointeur_est_reconnu(tmp_path):
+    chemin = tmp_path / "daily_prices.parquet"
+    chemin.write_bytes(POINTEUR)
+    assert setup_lfs.est_pointeur(chemin) is True
+
+
+def test_un_vrai_parquet_n_est_pas_pris_pour_un_pointeur(tmp_path):
+    chemin = tmp_path / "daily_prices.parquet"
+    chemin.write_bytes(b"PAR1" + b"\0" * 500)
+    assert setup_lfs.est_pointeur(chemin) is False
+
+
+def test_les_pointeurs_oublies_sont_listes(depot):
+    """Le scénario qui a réellement cassé un backtest : un seul parquet non
+    rapatrié, et pandas qui échoue sur « Parquet magic bytes not found in
+    footer » -- une erreur qui fait chercher une corruption de données."""
+    (depot / "data/dcf").mkdir(parents=True)
+    (depot / "data/dcf/validation_qualitative.parquet").write_bytes(POINTEUR)
+    (depot / "data/dcf/dcf_historique.parquet").write_bytes(b"PAR1" + b"\0" * 100)
+
+    restants = setup_lfs.pointeurs_restants(Path("data"))
+
+    assert [p.as_posix() for p in restants] == ["data/dcf/validation_qualitative.parquet"]
+
+
+def test_les_motifs_ignores_sont_exemptes(depot):
+    """Le cache SEC reste volontairement un pointeur en CI : l'exempter est ce
+    qui permet au garde-fou d'être strict sur tout le reste."""
+    (depot / "data/financials/sec_submissions").mkdir(parents=True)
+    (depot / "data/financials/sec_submissions/CIK0000320193.json").write_bytes(POINTEUR)
+
+    restants = setup_lfs.pointeurs_restants(
+        Path("data"), ["data/financials/sec_submissions/**"]
+    )
+
+    assert restants == []
+
+
+def test_la_verification_sort_en_erreur_et_nomme_les_fichiers(depot, capsys):
+    (depot / "data/dcf").mkdir(parents=True)
+    (depot / "data/dcf/validation_qualitative.parquet").write_bytes(POINTEUR)
+
+    code = setup_lfs.main(["--verifier-pointeurs"])
+
+    assert code == 1
+    erreur = capsys.readouterr().err
+    assert "validation_qualitative.parquet" in erreur
+    assert "git lfs pull" in erreur
+
+
+def test_la_verification_passe_quand_tout_est_rapatrie(depot):
+    (depot / "data/dcf").mkdir(parents=True)
+    (depot / "data/dcf/dcf_historique.parquet").write_bytes(b"PAR1" + b"\0" * 100)
+
+    assert setup_lfs.main(["--verifier-pointeurs"]) == 0
+
+
 def test_les_tailles_sont_lisibles():
     assert setup_lfs._taille(500 * setup_lfs.MO).strip() == "500.0 Mo"
     assert setup_lfs._taille(2 * setup_lfs.GO).strip() == "2.00 Go"

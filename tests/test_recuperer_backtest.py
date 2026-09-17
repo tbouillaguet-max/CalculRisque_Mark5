@@ -210,6 +210,35 @@ def test_les_strategies_du_workflow_existent_vraiment():
     assert set(proposees) <= connues, f"inconnues : {set(proposees) - connues}"
 
 
+def test_le_workflow_verifie_les_pointeurs_avant_de_lancer():
+    """Sans ce garde-fou, un fichier LFS non rapatrié faisait échouer le run
+    sur « Parquet magic bytes not found in footer » -- constaté en vrai avec
+    data/dcf/validation_qualitative.parquet. L'étape doit venir AVANT le
+    backtest, sinon elle ne sert à rien."""
+    yaml = pytest.importorskip("yaml")
+    contenu = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    etapes = [e.get("name", "") for e in contenu["jobs"]["backtest"]["steps"]]
+
+    verif = next(i for i, n in enumerate(etapes) if "pointeur" in n.lower())
+    lancement = next(i for i, n in enumerate(etapes) if "Lancer le backtest" in n)
+    assert verif < lancement
+
+
+def test_le_workflow_exclut_plutot_que_d_enumerer():
+    """Une liste de ce qu'il FAUT se périme dès qu'un chargeur lit un fichier
+    de plus ; une liste de ce qui est INUTILE ne se périme pas. La première
+    version énumérait, et oubliait un fichier."""
+    yaml = pytest.importorskip("yaml")
+    contenu = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    env = contenu["jobs"]["backtest"]["env"]
+
+    assert "DONNEES_INUTILES" in env
+    assert "sec_submissions" in env["DONNEES_INUTILES"]
+    texte = WORKFLOW.read_text(encoding="utf-8")
+    assert "git lfs pull --exclude=" in texte
+    assert "--include=" not in texte
+
+
 def test_le_workflow_publie_ce_que_le_script_attend():
     """Le dossier de rassemblement du workflow et les préfixes attendus à
     l'extraction doivent rester d'accord."""

@@ -45,6 +45,7 @@ section LFS du README.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import re
 import shutil
 import subprocess
@@ -124,6 +125,41 @@ def activer_lfs() -> None:
     r = _git("lfs", "install", "--local")
     if r.returncode != 0:
         raise RuntimeError(f"git lfs install a échoué : {r.stderr.strip()}")
+
+
+# Première ligne d'un fichier-pointeur LFS (spec v1). Un pointeur fait ~130
+# octets et remplace le contenu tant qu'il n'a pas été rapatrié.
+ENTETE_POINTEUR = b"version https://git-lfs.github.com/spec/v1"
+
+
+def est_pointeur(chemin: Path) -> bool:
+    """Ce fichier est-il un pointeur LFS non rapatrié plutôt que son contenu ?"""
+    try:
+        with chemin.open("rb") as f:
+            return f.read(len(ENTETE_POINTEUR)) == ENTETE_POINTEUR
+    except OSError:
+        return False
+
+
+def pointeurs_restants(racine: Path, ignorer: Iterable[str] = ()) -> list[Path]:
+    """Fichiers de `racine` restés à l'état de pointeur, hors motifs ignorés.
+
+    POURQUOI C'EST UTILE. Un pointeur non rapatrié ne dit pas son nom : pandas
+    l'ouvre et échoue sur « Parquet magic bytes not found in footer », une
+    erreur qui envoie chercher une corruption de données là où il ne manque
+    qu'un `git lfs pull`. Le cas s'est produit en vrai -- un backtest lancé sur
+    un dépôt dont un seul parquet n'avait pas été rapatrié."""
+    motifs = [m.strip() for m in ignorer if m.strip()]
+    restants = []
+    for chemin in sorted(racine.rglob("*")):
+        if not chemin.is_file():
+            continue
+        relatif = chemin.as_posix()
+        if any(fnmatch.fnmatch(relatif, m) for m in motifs):
+            continue
+        if est_pointeur(chemin):
+            restants.append(chemin)
+    return restants
 
 
 def chemins_suivis_par_lfs(relatifs: list[str]) -> set[str]:
@@ -368,11 +404,44 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--commit", metavar="MESSAGE", default=None,
         help="Committe l'index avec ce message. Implique --apply.",
     )
+    p.add_argument(
+        "--verifier-pointeurs", action="store_true",
+        help="Vérifie qu'aucun fichier n'est resté un pointeur LFS non "
+             "rapatrié, et sort en erreur s'il en reste. À lancer après un "
+             "clone ou un `git lfs pull` partiel : sans ça, pandas échouerait "
+             "plus tard sur une erreur de parquet corrompu trompeuse.",
+    )
+    p.add_argument(
+        "--ignorer", default="", metavar="MOTIFS",
+        help="Motifs séparés par des virgules exemptés de --verifier-pointeurs "
+             "(les mêmes que le --exclude du `git lfs pull`).",
+    )
     args = p.parse_args(argv)
     # Sans ça, `--commit "..."` seul ne ferait rien du tout en silence : le
     # script s'arrêterait au diagnostic et l'utilisateur croirait avoir commité.
     args.apply = args.apply or args.commit is not None
     return args
+
+
+def _verifier_pointeurs(racine: Path, ignorer: str) -> int:
+    restants = pointeurs_restants(racine, ignorer.split(","))
+    if not restants:
+        print(f"Aucun pointeur LFS non rapatrié dans {racine}.")
+        return 0
+
+    print(
+        f"\n{len(restants)} fichier(s) sont restés des POINTEURS LFS : leur "
+        f"contenu n'a pas été rapatrié.\n"
+        f"  Toute lecture échouera sur une erreur trompeuse du type "
+        f"« Parquet magic bytes not found in footer ».\n"
+        f"  Rapatrie-les : git lfs pull",
+        file=sys.stderr,
+    )
+    for chemin in restants[:10]:
+        print(f"    {chemin}", file=sys.stderr)
+    if len(restants) > 10:
+        print(f"    ... et {len(restants) - 10} autres", file=sys.stderr)
+    return 1
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -407,6 +476,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(f"{args.data_dir} n'existe pas : lance d'abord le pipeline "
               f"(`make bootstrap`), il n'y a rien à versionner.", file=sys.stderr)
         return 1
+
+    if args.verifier_pointeurs:
+        return _verifier_pointeurs(args.data_dir, args.ignorer)
 
     fichiers = inventorier(args.data_dir)
     if not fichiers:

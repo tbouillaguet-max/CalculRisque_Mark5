@@ -130,6 +130,7 @@ puis rattrape le contenu sans recloner :
 
 ```bash
 git lfs pull
+python setup_lfs.py --verifier-pointeurs   # confirme qu'il ne reste rien
 ```
 
 Et **clone le dépôt** plutôt que de télécharger le ZIP de GitHub : un ZIP ne
@@ -187,19 +188,34 @@ setx GITHUB_TOKEN ghp_...        # Windows, puis rouvre le terminal
 ### Ce qui rend ça soutenable : le trafic LFS
 
 Un `checkout` avec `lfs: true` rapatrierait **tout** le contenu LFS du dépôt à
-chaque run — cache des index SEC compris, dont aucun backtest n'a besoin — et
-chaque téléchargement compte contre le quota de bande passante LFS (1 Go/mois
-sur le palier gratuit, soit deux runs). Le workflow fait donc deux choses :
+chaque run — 307 Mo, dont 246 Mo de cache d'index SEC dont aucun backtest n'a
+besoin — et chaque téléchargement compte contre le quota de bande passante LFS
+(1 Go/mois sur le palier gratuit, soit trois runs). Le workflow fait donc deux
+choses :
 
-- il ne rapatrie que les fichiers que `09`/`10` lisent réellement
-  (`daily_prices.parquet`, l'univers, la valorisation combinée, l'historique
-  DCF, les snapshots d'options, les événements 8-K) ;
+- il **exclut** le cache SEC et la mémoire des classifications 8-K, et rapatrie
+  tout le reste : **~61 Mo au lieu de 307** ;
 - il met en cache les objets LFS entre les runs, donc un second backtest sur
   les mêmes données ne consomme rien.
 
-Si tu ajoutes un fichier au chargement d'un backtest, pense à l'ajouter à
-`DONNEES_BACKTEST` dans `.github/workflows/backtest.yml` — sinon le run partira,
-tournera, et échouera sur un pointeur LFS que pandas ne sait pas ouvrir.
+**Pourquoi exclure plutôt qu'énumérer.** La première version listait les
+fichiers que `09`/`10` lisent. Elle en oubliait un —
+`data/dcf/validation_qualitative.parquet`, lu indirectement par
+`load_valorisation_combinee_history` via le filtre qualitatif — et le backtest
+échouait sur `Parquet magic bytes not found in footer`, une erreur qui envoie
+chercher une corruption de données là où il ne manquait qu'un fichier. Une
+liste de ce qu'il **faut** se périme dès qu'un chargeur lit un fichier de plus ;
+une liste de ce qui est **inutile** ne se périme pas.
+
+Le workflow vérifie en plus, avant de lancer quoi que ce soit, qu'aucun fichier
+n'est resté un pointeur :
+
+```bash
+python setup_lfs.py --verifier-pointeurs   # utile aussi après un clone local
+```
+
+C'est le filet qui transforme l'erreur parquet incompréhensible en un message
+nommant les fichiers en cause.
 
 ## Mise à jour quotidienne (`run_pipeline_daily.py`)
 
