@@ -79,8 +79,28 @@ class Fichier(NamedTuple):
 # ---------------------------------------------------------------------------
 
 def _git(*args: str, entree: Optional[str] = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args], input=entree, capture_output=True, text=True, check=False,
+    """Appelle git et rend sa sortie décodée.
+
+    Quand on ALIMENTE stdin, l'écriture se fait en binaire, jamais en mode
+    texte. Sous Windows, `text=True` fait traduire par Python chaque "\\n" en
+    "\\r\\n" ; or `git check-attr --stdin` et `git check-ignore --stdin` lisent
+    leurs lignes avec strbuf_getline_lf, qui ne retire QUE le LF. Chaque chemin
+    envoyé arrivait donc suffixé d'un CR, ne correspondait à aucun motif de
+    .gitattributes, et le script concluait que rien n'allait en LFS -- sur un
+    dépôt réel : 0 fichier sur 1116. Bug invisible sous Linux, où os.linesep
+    vaut déjà "\\n"."""
+    if entree is None:
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=False,
+        )
+
+    brut = subprocess.run(
+        ["git", *args], input=entree.encode("utf-8"), capture_output=True, check=False,
+    )
+    return subprocess.CompletedProcess(
+        brut.args, brut.returncode,
+        brut.stdout.decode("utf-8", "replace"),
+        brut.stderr.decode("utf-8", "replace"),
     )
 
 
@@ -212,7 +232,40 @@ def afficher_rapport(fichiers: list[Fichier], racine: Path) -> None:
             marque = "LFS" if f.lfs else "git"
             print(f"  {_taille(f.taille)}  [{marque}]  {f.relatif}")
 
+    _avertir_gros_hors_lfs(fichiers)
     _avertir_quota(total_lfs, total_git, fichiers)
+
+
+# Au-delà de cette taille, un fichier laissé hors LFS pèse durablement sur le
+# dépôt : git garde chaque version dans son historique, et l'historique ne se
+# purge pas.
+SEUIL_GROS_FICHIER = 5 * MO
+
+
+def _avertir_gros_hors_lfs(fichiers: list[Fichier]) -> None:
+    """Les fichiers volumineux qu'aucun motif de .gitattributes n'attrape.
+
+    C'est l'angle mort du montage : ils s'ajoutent EN DUR à l'historique git,
+    sans rien signaler, et les en retirer plus tard demande de réécrire
+    l'historique. Typiquement les journaux de collecte de 08, qu'on imagine
+    petits et qui atteignent la vingtaine de Mo sur un univers complet."""
+    gros = [f for f in fichiers if not f.lfs and f.taille >= SEUIL_GROS_FICHIER]
+    if not gros:
+        return
+
+    total = sum(f.taille for f in gros)
+    print(
+        f"\nGros fichiers HORS LFS : {len(gros)} fichiers, {_taille(total).strip()}"
+    )
+    print("  Ils entreront en dur dans l'historique git, qui ne se purge pas.")
+    for f in sorted(gros, key=lambda f: -f.taille)[:5]:
+        print(f"    {_taille(f.taille)}  {f.relatif}")
+    if len(gros) > 5:
+        print(f"    ... et {len(gros) - 5} autres")
+    print(
+        "  Deux issues : ajouter leur motif à .gitattributes pour les basculer "
+        "en LFS, ou les exclure via .gitignore s'ils ne servent qu'au diagnostic."
+    )
 
 
 def _avertir_quota(total_lfs: int, total_git: int, fichiers: list[Fichier]) -> None:

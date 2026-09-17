@@ -247,6 +247,50 @@ def test_un_dossier_de_donnees_absent_est_signale(depot, capsys):
     assert "n'existe pas" in capsys.readouterr().err
 
 
+def test_stdin_est_alimente_en_binaire_sans_cr(monkeypatch):
+    """Régression Windows. En mode texte, Python traduit "\\n" en "\\r\\n" à
+    l'écriture, et `git check-attr --stdin` ne retire que le LF : chaque chemin
+    arrivait à git suffixé d'un CR, ne correspondait à aucun motif, et le
+    script concluait que rien n'allait en LFS -- 0 fichier sur 1116 sur un
+    dépôt réel. Invisible sous Linux, où os.linesep vaut déjà "\\n" : d'où ce
+    test sur ce qui est RÉELLEMENT transmis, plutôt que sur le résultat."""
+    vu = {}
+
+    def faux_run(cmd, **kwargs):
+        vu["input"] = kwargs.get("input")
+        vu["text"] = kwargs.get("text")
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(setup_lfs.subprocess, "run", faux_run)
+    setup_lfs._git("check-attr", "filter", "--stdin", entree="data/a.parquet\n")
+
+    assert isinstance(vu["input"], bytes), "stdin doit être écrit en binaire"
+    assert not vu["text"], "le mode texte retraduirait les fins de ligne"
+    assert b"\r" not in vu["input"]
+
+
+def test_les_gros_fichiers_hors_lfs_sont_signales(depot, capsys):
+    """Un journal de collecte de 18 Mo qu'aucun motif n'attrape s'ajoute en dur
+    à l'historique git sans rien dire : le rapport doit le montrer."""
+    ecrire(depot, "data/options/us_options_20260905_135246.log", 8 * setup_lfs.MO)
+    ecrire(depot, "data/prices/daily_prices.parquet", 4096)
+
+    setup_lfs.afficher_rapport(setup_lfs.inventorier(Path("data")), Path("data"))
+
+    sortie = capsys.readouterr().out
+    assert "Gros fichiers HORS LFS" in sortie
+    assert "us_options_20260905_135246.log" in sortie
+
+
+def test_pas_d_alerte_quand_tout_le_lourd_est_en_lfs(depot, capsys):
+    ecrire(depot, "data/prices/daily_prices.parquet", 8 * setup_lfs.MO)
+    ecrire(depot, "data/universe/sp500_universe.csv", 300)
+
+    setup_lfs.afficher_rapport(setup_lfs.inventorier(Path("data")), Path("data"))
+
+    assert "Gros fichiers HORS LFS" not in capsys.readouterr().out
+
+
 def test_les_tailles_sont_lisibles():
     assert setup_lfs._taille(500 * setup_lfs.MO).strip() == "500.0 Mo"
     assert setup_lfs._taille(2 * setup_lfs.GO).strip() == "2.00 Go"
