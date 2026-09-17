@@ -18,6 +18,14 @@
 # pipeline le régénère). setup_lfs.py chiffre chaque sous-dossier justement
 # pour rendre ce choix possible.
 
+# SORTIES DE BACKTEST : hors git. Ce sont des RÉSULTATS, pas des entrées --
+# `10_backtest_options.py` les reproduit à l'identique à partir des données
+# ci-dessus, et un run daté de plus n'apprend rien à personne une fois lu.
+# Elles pesaient 474 Mo sur 915, soit la moitié du volume et de quoi épuiser à
+# elles seules le palier LFS gratuit dès le premier push.
+data/backtest/
+data/backtest_options/
+
 # Python
 __pycache__/
 *.pyc
