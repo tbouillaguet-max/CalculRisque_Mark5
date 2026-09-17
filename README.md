@@ -140,6 +140,67 @@ peut rien pousser.
 git clone https://github.com/tbouillaguet-max/CalculRisque_Mark5.git
 ```
 
+## Lancer un backtest sur GitHub et récupérer ses résultats
+
+Les sorties de backtest ne sont **pas** versionnées : ce sont des résultats,
+pas des entrées, `10_backtest_options.py` les reproduit à l'identique, et elles
+pesaient la moitié du dépôt (474 Mo sur 915). Elles voyagent donc par
+**artefact** plutôt que par commit.
+
+**1. Lancer.** Onglet *Actions* du dépôt → *Backtest* → *Run workflow*. Trois
+champs : la stratégie, la date de début, et des options en plus si besoin
+(`--entry-threshold-pct 25 --stop-loss-pct -40`). Déclenchement manuel
+uniquement — un backtest dure des minutes et consomme du quota, le lancer à
+chaque commit n'aurait aucun sens.
+
+**2. Rapatrier**, une fois le run terminé :
+
+```bash
+python recuperer_backtest.py            # le dernier backtest en date
+python recuperer_backtest.py --liste    # ce qui est disponible
+python recuperer_backtest.py --run-id 123
+```
+
+Les résultats atterrissent dans `data/backtest_options/<run_id>/` (ou
+`data/backtest/` pour une stratégie actions), c'est-à-dire **là où un run local
+les aurait écrits** : `python 14_audit_backtest.py`, `make audit`,
+`compare_options_strategies.py` et le dashboard les lisent sans rien changer.
+Un fichier déjà présent n'est jamais écrasé sans `--ecraser`.
+
+Le script affiche aussi la fiche du run (stratégie, date de début, options,
+commit) : on sait ce qui a produit ces chiffres sans retourner sur GitHub.
+
+### Authentification
+
+L'API des artefacts exige un jeton, même sur un dépôt public. Le script en
+cherche un dans `GITHUB_TOKEN`/`GH_TOKEN`, puis via `gh auth token`. Le plus
+simple est d'installer le [CLI GitHub](https://cli.github.com) et de faire
+`gh auth login` une fois. Sinon, un jeton créé sur
+[github.com/settings/tokens](https://github.com/settings/tokens) (portée `repo`,
+ou `actions:read` pour un jeton à portée fine) :
+
+```bash
+export GITHUB_TOKEN=ghp_...      # Git Bash / macOS / Linux
+setx GITHUB_TOKEN ghp_...        # Windows, puis rouvre le terminal
+```
+
+### Ce qui rend ça soutenable : le trafic LFS
+
+Un `checkout` avec `lfs: true` rapatrierait **tout** le contenu LFS du dépôt à
+chaque run — cache des index SEC compris, dont aucun backtest n'a besoin — et
+chaque téléchargement compte contre le quota de bande passante LFS (1 Go/mois
+sur le palier gratuit, soit deux runs). Le workflow fait donc deux choses :
+
+- il ne rapatrie que les fichiers que `09`/`10` lisent réellement
+  (`daily_prices.parquet`, l'univers, la valorisation combinée, l'historique
+  DCF, les snapshots d'options, les événements 8-K) ;
+- il met en cache les objets LFS entre les runs, donc un second backtest sur
+  les mêmes données ne consomme rien.
+
+Si tu ajoutes un fichier au chargement d'un backtest, pense à l'ajouter à
+`DONNEES_BACKTEST` dans `.github/workflows/backtest.yml` — sinon le run partira,
+tournera, et échouera sur un pointeur LFS que pandas ne sait pas ouvrir.
+
 ## Mise à jour quotidienne (`run_pipeline_daily.py`)
 
 **Pourquoi un run quotidien alors que les comptes sont trimestriels.** Le

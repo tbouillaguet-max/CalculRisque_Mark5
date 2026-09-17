@@ -1,0 +1,158 @@
+# Lance un backtest sur les serveurs GitHub et renvoie ses résultats.
+#
+# POURQUOI. Les sorties de backtest ne sont pas versionnées (voir .gitignore) :
+# ce sont des résultats, pas des entrées, et elles pesaient la moitié du dépôt.
+# Elles voyagent donc par ARTEFACT plutôt que par commit -- `python
+# recuperer_backtest.py` les rapatrie dans data/backtest_options/ sur ton PC,
+# où `make audit` et le dashboard les lisent comme un run local.
+#
+# Déclenchement MANUEL uniquement (onglet Actions > Backtest > Run workflow).
+# Pas de déclenchement sur push : un backtest dure des minutes et consomme du
+# quota de bande passante LFS, le lancer à chaque commit n'aurait aucun sens.
+#
+# LE POINT COÛTEUX, ET CE QUI EST FAIT POUR. Un `checkout` avec `lfs: true`
+# rapatrierait TOUT le contenu LFS du dépôt (plusieurs centaines de Mo, dont le
+# cache des index SEC dont aucun backtest n'a besoin) à chaque run, et chaque
+# téléchargement compte contre le quota de bande passante LFS -- 1 Go/mois sur
+# le palier gratuit, soit deux runs. D'où deux précautions :
+#
+#   1. on ne rapatrie QUE les fichiers que 09/10 lisent réellement
+#      (DONNEES_BACKTEST ci-dessous) ;
+#   2. les objets LFS déjà téléchargés sont mis en cache entre les runs, donc
+#      un second backtest sur les mêmes données ne consomme rien.
+
+name: Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      strategie:
+        description: "Stratégie à backtester"
+        type: choice
+        default: valuation_gap_multiples_options
+        options:
+          - valuation_gap_multiples_options
+          - valuation_gap_options
+          - valuation_gap_expected_value_options
+          - valuation_gap_dcf
+          - valuation_gap_sector_neutral
+      date_debut:
+        description: "Date de début (AAAA-MM-JJ)"
+        type: string
+        default: "2015-01-01"
+      args_supplementaires:
+        description: "Options en plus, ex: --entry-threshold-pct 25 --stop-loss-pct -40"
+        type: string
+        default: ""
+
+# Un seul backtest à la fois : deux runs concurrents téléchargeraient les mêmes
+# données LFS en double, pour rien.
+concurrency:
+  group: backtest
+  cancel-in-progress: false
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      # Les SEULS fichiers LFS que 09_backtest.py et 10_backtest_options.py
+      # lisent (voir leurs appels à backtest/data_loader). Tout le reste --
+      # data/financials/sec_submissions/ en tête, de loin le plus gros -- est
+      # laissé sous forme de pointeur.
+      DONNEES_BACKTEST: >-
+        data/prices/daily_prices.parquet,
+        data/universe/**,
+        data/multiples/valorisation_combinee_historique.parquet,
+        data/dcf/dcf_historique.parquet,
+        data/options/history/**,
+        data/financials/material_events_8k.parquet
+
+    steps:
+      - name: Récupérer le code (sans le contenu LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      # Les fichiers LFS sont ici des POINTEURS : leur empreinte change
+      # exactement quand leur contenu change, ce qui en fait une clé de cache
+      # juste -- et bien plus légère à calculer que le contenu réel.
+      - name: Restaurer les objets LFS déjà téléchargés
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs/objects
+          key: lfs-${{ hashFiles('data/prices/daily_prices.parquet', 'data/universe/**', 'data/multiples/valorisation_combinee_historique.parquet', 'data/dcf/dcf_historique.parquet', 'data/options/history/**', 'data/financials/material_events_8k.parquet') }}
+          restore-keys: lfs-
+
+      - name: Rapatrier uniquement les données du backtest
+        run: |
+          set -euo pipefail
+          git lfs pull --include="$(echo "$DONNEES_BACKTEST" | tr -d ' \n')"
+          echo "Contenu LFS présent :"
+          du -sh data/* 2>/dev/null || true
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Installer les dépendances
+        run: python -m pip install --quiet -r requirements.txt
+
+      - name: Lancer le backtest
+        # Les entrées passent par l'environnement et non par une interpolation
+        # ${{ }} directement dans le script : une interpolation est substituée
+        # AVANT que bash ne s'exécute, ce qui permettrait à une valeur
+        # d'entrée d'injecter des commandes.
+        env:
+          STRATEGIE: ${{ inputs.strategie }}
+          DATE_DEBUT: ${{ inputs.date_debut }}
+          ARGS: ${{ inputs.args_supplementaires }}
+        run: |
+          set -euo pipefail
+          case "$STRATEGIE" in
+            valuation_gap_dcf|valuation_gap_sector_neutral) SCRIPT=09_backtest.py ;;
+            *)                                             SCRIPT=10_backtest_options.py ;;
+          esac
+          echo "Lancement : $SCRIPT --strategy $STRATEGIE --start-date $DATE_DEBUT $ARGS"
+          # $ARGS volontairement non quoté : c'est une LISTE d'arguments.
+          python "$SCRIPT" --strategy "$STRATEGIE" --start-date "$DATE_DEBUT" $ARGS
+
+      # Racine d'archive stable : sans ce dossier de rassemblement,
+      # upload-artifact calcule la racine du zip d'après les fichiers trouvés,
+      # et elle changerait selon que le run a produit des sorties actions ou
+      # options. recuperer_backtest.py pourrait alors ne plus savoir où
+      # extraire.
+      - name: Rassembler les résultats
+        if: always()
+        env:
+          STRATEGIE: ${{ inputs.strategie }}
+          DATE_DEBUT: ${{ inputs.date_debut }}
+          ARGS: ${{ inputs.args_supplementaires }}
+        run: |
+          set -euo pipefail
+          mkdir -p artefact/backtest artefact/backtest_options
+          cp -r data/backtest/.         artefact/backtest/         2>/dev/null || true
+          cp -r data/backtest_options/. artefact/backtest_options/ 2>/dev/null || true
+          cat > artefact/run_distant.json <<JSON
+          {
+            "strategie": "$STRATEGIE",
+            "date_debut": "$DATE_DEBUT",
+            "args_supplementaires": "$ARGS",
+            "commit": "${{ github.sha }}",
+            "run_github": "${{ github.run_id }}",
+            "lance_le": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          JSON
+          find artefact -type f | head -50
+
+      - name: Publier les résultats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-${{ inputs.strategie }}-${{ github.run_id }}
+          path: artefact/
+          if-no-files-found: warn
+          retention-days: 30

@@ -17,7 +17,8 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
-        compare report test install universe bootstrap slippage merite lfs lfs-apply
+        compare report test install universe bootstrap slippage merite lfs lfs-apply \
+        backtest-distant
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -34,6 +35,7 @@ help:
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"
+	@echo "    make backtest-distant   Rapatrie un backtest lance sur GitHub Actions"
 	@echo "    make merite        Le multiple merite predit-il mieux que le sectoriel ?"
 	@echo "    make report        Dashboard Streamlit"
 	@echo
@@ -88,6 +90,12 @@ audit:
 
 compare:
 	$(PYTHON) compare_options_strategies.py
+
+# Rapatrie dans data/backtest_options/ les resultats d'un backtest lance
+# depuis l'onglet Actions du depot (voir .github/workflows/backtest.yml).
+# --liste pour voir ce qui est disponible.
+backtest-distant:
+	$(PYTHON) recuperer_backtest.py
 
 slippage:
 	$(PYTHON) mesure_slippage_options.py
