@@ -1,0 +1,8 @@
+2026-08-02 20:39:11,371 [INFO] Log file: data\options\us_options_20260802_203911.log
+2026-08-02 20:39:11,407 [INFO] Univers chargé : 503 tickers.
+2026-08-02 20:39:11,799 [INFO] Filtre de valorisation : 109/503 entreprises avec un écart cours/valeur théorique >= 20% (sur 121 entreprises avec un DCF calculé, 503 dans l'univers fourni).
+2026-08-02 20:39:11,801 [INFO] Alpha Vantage désactivé (ALPHAVANTAGE_API_KEY non définie) : repli Black-Scholes local uniquement pour l'IV/greeks. Clé gratuite : https://www.alphavantage.co/support/#api-key
+2026-08-02 20:39:11,802 [INFO] Connecting to 127.0.0.1:4002 with clientId 1...
+2026-08-02 20:39:13,831 [INFO] Disconnecting
+2026-08-02 20:39:13,832 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-08-02 20:39:13,833 [ERROR] Make sure API port on TWS/IBG is open

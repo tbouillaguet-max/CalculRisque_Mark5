@@ -1,0 +1,82 @@
+{
+  "run_id": "20260817_153702",
+  "mode": "live",
+  "status": "running",
+  "started_at": "2026-08-17T15:37:02",
+  "finished_at": null,
+  "duration_seconds": null,
+  "steps": [
+    {
+      "script": "04b_recuperation_10q.py",
+      "required": true,
+      "args": [],
+      "started_at": "2026-08-17T15:37:02",
+      "attempts": 1,
+      "status": "success",
+      "returncode": 0,
+      "log": "pipeline_runs\\20260817_153702\\04b_recuperation_10q.py.log",
+      "finished_at": "2026-08-17T15:37:20",
+      "duration_seconds": 18.3
+    },
+    {
+      "script": "04c_recuperation_8k.py",
+      "required": false,
+      "args": [],
+      "started_at": "2026-08-17T15:37:20",
+      "attempts": 3,
+      "status": "failed",
+      "returncode": 1,
+      "log": "pipeline_runs\\20260817_153702\\04c_recuperation_8k.py.log",
+      "finished_at": "2026-08-17T22:46:37",
+      "duration_seconds": 25760.8
+    },
+    {
+      "script": "05_calcul_multiples.py",
+      "required": true,
+      "args": [],
+      "started_at": "2026-08-17T22:46:37",
+      "attempts": 1,
+      "status": "success",
+      "returncode": 0,
+      "log": "pipeline_runs\\20260817_153702\\05_calcul_multiples.py.log",
+      "finished_at": "2026-08-17T22:46:41",
+      "duration_seconds": 3.5
+    },
+    {
+      "script": "06_calcul_multiples_moyens.py",
+      "required": true,
+      "args": [],
+      "started_at": "2026-08-17T22:46:41",
+      "attempts": 1,
+      "status": "success",
+      "returncode": 0,
+      "log": "pipeline_runs\\20260817_153702\\06_calcul_multiples_moyens.py.log",
+      "finished_at": "2026-08-17T22:47:11",
+      "duration_seconds": 30.0
+    },
+    {
+      "script": "06b_calcul_valorisation_combinee.py",
+      "required": true,
+      "args": [],
+      "started_at": "2026-08-17T22:47:11",
+      "attempts": 1,
+      "status": "success",
+      "returncode": 0,
+      "log": "pipeline_runs\\20260817_153702\\06b_calcul_valorisation_combinee.py.log",
+      "finished_at": "2026-08-17T22:48:25",
+      "duration_seconds": 74.2
+    },
+    {
+      "script": "07_calcul_dcf.py",
+      "required": true,
+      "args": [],
+      "started_at": "2026-08-17T22:48:25",
+      "attempts": 1,
+      "status": "success",
+      "returncode": 0,
+      "log": "pipeline_runs\\20260817_153702\\07_calcul_dcf.py.log",
+      "finished_at": "2026-08-17T22:48:32",
+      "duration_seconds": 7.4
+    }
+  ]
+}

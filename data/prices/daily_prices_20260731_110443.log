@@ -1,0 +1,3 @@
+2026-07-31 11:04:43,927 [INFO] Log file: data\prices\daily_prices_20260731_110443.log
+2026-07-31 11:04:43,989 [INFO] Univers chargé : 503 tickers.
+2026-07-31 11:04:44,602 [INFO] Cache existant chargé : data\prices\daily_prices.parquet (1908900 lignes, 502 symboles).

@@ -1,0 +1,23 @@
+2026-07-29 21:30:01,696 [INFO] Log file: data\prices\year_end_prices_20260729_213001.log
+2026-07-29 21:30:01,738 [INFO] Univers chargé : 10 tickers.
+2026-07-29 21:30:02,660 [INFO] Cache existant chargé : data\prices\year_end_prices.parquet (7882 lignes, 503 symboles).
+2026-07-29 21:30:02,682 [INFO] 8/10 tickers déjà à jour (ignorés), 2 à récupérer.
+2026-07-29 21:30:02,683 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-07-29 21:30:02,684 [INFO] Connected
+2026-07-29 21:30:02,694 [INFO] Logged on to server version 176
+2026-07-29 21:30:02,739 [INFO] API connection ready
+2026-07-29 21:30:02,766 [INFO] Warning 2104, reqId -1: Market data farm connection is OK:eufarm
+2026-07-29 21:30:02,767 [INFO] Warning 2107, reqId -1: HMDS data farm connection is inactive but should be available upon demand.euhmds
+2026-07-29 21:30:02,767 [INFO] Warning 2106, reqId -1: HMDS data farm connection is OK:ushmds
+2026-07-29 21:30:02,768 [INFO] Warning 2158, reqId -1: Sec-def data farm connection is OK:secdefeu
+2026-07-29 21:30:03,299 [INFO] Synchronization complete
+2026-07-29 21:30:03,300 [INFO] Connecté à IBKR sur 127.0.0.1:4002 (clientId=3)
+2026-07-29 21:30:03,301 [INFO] [1/2] ABBV (AbbVie), depuis 2010...
+2026-07-29 21:30:16,388 [INFO]   -> 15 années récupérées pour ABBV
+2026-07-29 21:30:16,388 [INFO] [2/2] AMD (Advanced Micro Devices), depuis 2010...
+2026-07-29 21:30:28,911 [INFO]   -> 12 années récupérées pour AMD
+2026-07-29 21:30:28,911 [INFO] Disconnecting from 127.0.0.1:4002, 378 B sent in 12 messages, 371 kB received in 264 messages, session time 26.2 s.
+2026-07-29 21:30:28,911 [INFO] Disconnecting
+2026-07-29 21:30:28,912 [INFO] Déconnecté d'IBKR.
+2026-07-29 21:30:28,912 [INFO] Terminé. OK: 2 | Échecs: 0 | Déjà à jour (ignorés): 8 | Nouvelles lignes: 27
+2026-07-29 21:30:28,944 [INFO] Fichier écrit : data\prices\year_end_prices.parquet (7882 lignes au total, 27 nouvelles/mises à jour ce run).

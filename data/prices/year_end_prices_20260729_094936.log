@@ -1,0 +1,12 @@
+2026-07-29 09:49:36,437 [INFO] Log file: data\prices\year_end_prices_20260729_094936.log
+2026-07-29 09:49:36,508 [INFO] Univers chargé : 503 tickers.
+2026-07-29 09:49:36,511 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-07-29 09:49:36,513 [INFO] Connected
+2026-07-29 09:49:36,635 [INFO] Logged on to server version 176
+2026-07-29 09:49:36,701 [INFO] API connection ready
+2026-07-29 09:49:36,716 [INFO] Warning 2104, reqId -1: Market data farm connection is OK:eufarm
+2026-07-29 09:49:36,718 [INFO] Warning 2107, reqId -1: HMDS data farm connection is inactive but should be available upon demand.euhmds
+2026-07-29 09:49:36,720 [INFO] Warning 2158, reqId -1: Sec-def data farm connection is OK:secdefeu
+2026-07-29 09:49:57,907 [INFO] Disconnecting from 127.0.0.1:4002, 117 B sent in 8 messages, 12.6 kB received in 256 messages, session time 21.4 s.
+2026-07-29 09:49:57,907 [INFO] Disconnecting
+2026-07-29 09:49:57,908 [INFO] Disconnected.

@@ -1,0 +1,8 @@
+2026-08-09 18:43:58,153 [INFO] Log file: data\prices\year_end_prices_20260809_184358.log
+2026-08-09 18:43:58,248 [INFO] Univers chargé : 503 tickers.
+2026-08-09 18:43:59,088 [INFO] Cache existant chargé : data\prices\year_end_prices.parquet (7882 lignes, 503 symboles).
+2026-08-09 18:43:59,610 [INFO] 0/503 tickers déjà à jour (ignorés), 503 à récupérer.
+2026-08-09 18:43:59,618 [INFO] Connecting to 127.0.0.1:4002 with clientId 3...
+2026-08-09 18:44:01,662 [INFO] Disconnecting
+2026-08-09 18:44:01,663 [ERROR] API connection failed: ConnectionRefusedError(22, 'The remote computer refused the network connection', None, 1225, None)
+2026-08-09 18:44:01,664 [ERROR] Make sure API port on TWS/IBG is open
