@@ -411,6 +411,23 @@ def main() -> None:
     _report(results, args, split_date)
 
 
+def _lisible(cle: str, valeur) -> str:
+    """Les trois façons dont un axe peut valoir « désactivé » ne se lisent pas
+    d'elles-mêmes : un momentum à NaN (le filtre est absent, pas indéfini), un
+    stop à -100% et une prise de gain à +10000% sont des sentinelles, pas des
+    seuils qu'on pourrait atteindre. Les afficher bruts laisserait croire à un
+    réglage extrême là où il n'y a tout simplement plus de règle."""
+    if cle == "momentum_min_pct" and (valeur is None or pd.isna(valeur)):
+        return "désactivé (aucun filtre momentum)"
+    if cle == "stop_loss_pct" and valeur is not None and valeur <= STOP_LOSS_OFF:
+        return f"{valeur} -> désactivé (hors d'atteinte)"
+    if cle == "take_profit_pct" and valeur is not None and valeur >= TAKE_PROFIT_OFF:
+        return f"{valeur} -> désactivé (hors d'atteinte)"
+    if cle == "rebalance_band_pct" and valeur == 0:
+        return "0 (aucune zone de non-négociation)"
+    return str(valeur)
+
+
 def _reference_combo(strategy_name: str) -> dict:
     """La configuration EN PRODUCTION, celle que la grille doit contenir pour
     que le classement dise si le changement proposé est un gain -- et non
@@ -532,7 +549,7 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
     logger.info("--- Meilleur point ---")
     for key in ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct", "momentum_min_pct",
                 "rebalance_band_pct", "max_weight_pct"):
-        logger.info("  %s = %s", key, best.get(key))
+        logger.info("  %s = %s", key, _lisible(key, best.get(key)))
     if split_date is not None and pd.notna(best.get("test_sharpe_ratio")):
         logger.info(
             "Sharpe apprentissage %.3f -> test %.3f (coupure %s). C'est le SECOND chiffre qui "

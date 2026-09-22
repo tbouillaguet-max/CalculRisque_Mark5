@@ -8,9 +8,13 @@
 PYTHON  ?= python3
 LIMIT   ?=
 STRATEGY?= valuation_gap_multiples_options
+# Strategie ACTIONS, distincte de STRATEGY (options) : les deux registres sont
+# separes, et un nom de l'un n'est pas valide dans l'autre.
+STRATEGY_ACTIONS ?= valuation_gap_dcf
 MULTIPLE ?= EV/EBITDA
 GROUPING ?= millesime
 START   ?= 2015-01-01
+WORKERS ?= 4
 
 # --limit n'est transmis que s'il est renseigné (make daily LIMIT=10).
 LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
@@ -18,7 +22,7 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
         compare report test install universe bootstrap slippage merite lfs lfs-apply \
-        backtest-distant
+        backtest-distant optimize-actions
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -32,6 +36,7 @@ help:
 	@echo "  BACKTEST ET ANALYSE"
 	@echo "    make backtest      Backtest options (STRATEGY=$(STRATEGY), START=$(START))"
 	@echo "    make backtest-actions   Backtest de la strategie actions (DCF)"
+	@echo "    make optimize-actions   Grid-search des reglages actions (long : ~1 h)"
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"
@@ -82,6 +87,17 @@ backtest:
 
 backtest-actions:
 	$(PYTHON) 09_backtest.py --strategy valuation_gap_dcf --start-date $(START)
+
+# Grid-search sur les cinq reglages de la strategie actions a la fois. Long
+# (576 combinaisons par defaut, ~1 h sur 4 coeurs) : le classement se fait sur
+# la seule fenetre d'apprentissage, et le CSV porte le resultat hors
+# echantillon a cote. WORKERS=4 pour paralleliser,
+# STRATEGY_ACTIONS=valuation_gap_sector_neutral pour l'autre strategie.
+# Relire un CSV deja produit sans rien relancer :
+#   python 16_optimize_strategie_actions.py --report-only <csv>
+optimize-actions:
+	$(PYTHON) 16_optimize_strategie_actions.py --strategy $(STRATEGY_ACTIONS) \
+	    --start-date $(START) --workers $(WORKERS)
 
 # Relit les sorties du dernier run (quelques secondes) : couverture des
 # signaux, theses reelles derriere le win-rate, sous-periodes glissantes.
