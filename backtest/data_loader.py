@@ -303,6 +303,52 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     return renamed[cols]
 
 
+def build_combined_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataFrame:
+    """Même schéma que `build_signal_events`, mais alimenté par la
+    VALORISATION COMBINÉE de 06b au lieu du DCF seul.
+
+    POURQUOI CE CONSTRUCTEUR EXISTE. Les deux moteurs ne lisaient pas le même
+    signal, et rien ne le disait : `09_backtest.py` (actions) charge
+    `dcf_historique.parquet`, `10_backtest_options.py` charge
+    `valorisation_combinee_historique.parquet` -- multiples sectoriels par
+    année EN PRIORITÉ, DCF seulement en repli quand le secteur a trop peu de
+    pairs. Or c'est le second que le projet décrit comme le meilleur estimateur
+    (cross-sectionnel, point-in-time, agrégé par moyenne harmonique et par
+    hiérarchie de fiabilité). Le côté actions s'en privait, sans qu'aucune
+    décision ne l'ait jamais tranché.
+
+    `valuation_dcf_per_share` reçoit ici la valeur THÉORIQUE COMBINÉE, et non
+    le DCF : le nom est celui qu'attendent l'engine et les stratégies, la
+    grandeur est celle de 06b. Renommer la colonne partout aurait cassé la
+    compatibilité des runs archivés pour un gain cosmétique."""
+    to_rename = {"filed_date": "published_date", "close": "close_at_filing"}
+    if "fiscal_year" not in valorisation_combinee.columns:
+        to_rename["year"] = "fiscal_year"
+    renamed = valorisation_combinee.rename(columns=to_rename)
+    renamed = renamed.assign(
+        valuation_dcf_per_share=renamed["valuation_theoretical_per_share"])
+    cols = ["symbol", "published_date", "fiscal_year", "sector", "close_at_filing",
+            "valuation_dcf_per_share", "gap_pct"]
+    for facultative in ("period_type", "source"):
+        if facultative in renamed.columns:
+            cols.append(facultative)
+    return renamed[cols].dropna(subset=["gap_pct", "published_date"])
+
+
+def build_strategy_signal_events(signal_source: str) -> pd.DataFrame:
+    """Événements de signal correspondant à la source déclarée par une
+    stratégie (cf. `Strategy.signal_source`). Point d'entrée unique, pour que
+    ni 09_backtest.py ni l'optimiseur n'aient à connaître les tables."""
+    if signal_source == "combinee":
+        return build_combined_signal_events(load_valorisation_combinee_history())
+    if signal_source == "dcf":
+        return build_signal_events(load_dcf_history())
+    raise ValueError(
+        f"Source de signal inconnue : {signal_source!r}. Attendu 'dcf' ou 'combinee' "
+        "(cf. backtest.strategies.base.Strategy.signal_source)."
+    )
+
+
 class MaterialEventResolver:
     """Dates de dépôt des 8-K jugés MATÉRIELS par 04c_recuperation_8k.py,
     indexées par symbole pour une interrogation en O(log n) par jour simulé.

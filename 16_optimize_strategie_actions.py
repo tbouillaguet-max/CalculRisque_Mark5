@@ -114,6 +114,7 @@ DEFAULT_MAX_WEIGHT_GRID = [10.0, 20.0]
 # MOTEUR et se lisent identiquement partout.
 DEFAULT_ENTRY_GRIDS = {
     "valuation_gap_dcf": [15.0, 20.0, 30.0],
+    "valuation_gap_combined": [15.0, 20.0, 30.0],
     "valuation_gap_sector_neutral": [5.0, 10.0, 20.0],
 }
 
@@ -136,12 +137,13 @@ def _pool_initializer(data: dict) -> None:
     _DATA = data
 
 
-def _load_data(benchmark_symbol: str) -> dict:
+def _load_data(benchmark_symbol: str, signal_source: str = "dcf") -> dict:
     logger.info("Chargement des données (une seule fois pour toute la grille)...")
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)
-    dcf_history = data_loader.load_dcf_history()
-    signal_events = data_loader.build_signal_events(dcf_history)
+    # Source déclarée par la stratégie balayée (cf. Strategy.signal_source) :
+    # une grille sur valuation_gap_combined doit lire 06b, pas le DCF.
+    signal_events = data_loader.build_strategy_signal_events(signal_source)
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
     material_events = data_loader.load_material_events_8k()
@@ -397,7 +399,7 @@ def main() -> None:
     logger.info("Grille : %d combinaisons, stratégie '%s'.", len(grid), args.strategy)
 
     global _DATA
-    _DATA = _load_data(args.benchmark_symbol)
+    _DATA = _load_data(args.benchmark_symbol, STRATEGY_REGISTRY[args.strategy].signal_source)
 
     start_date = pd.Timestamp(args.start_date) if args.start_date else None
     end_date = pd.Timestamp(args.end_date) if args.end_date else None

@@ -187,6 +187,17 @@ class Strategy(ABC):
     """params : hyperparamètres de la stratégie, exposés tels quels dans
     run_config.json (09_backtest.py) pour la reproductibilité d'un run."""
 
+    # Table de valorisation dont cette stratégie tire son signal :
+    #   "dcf"      -> dcf_historique.parquet (07), DCF seul ;
+    #   "combinee" -> valorisation_combinee_historique.parquet (06b), multiples
+    #                 sectoriels par année en priorité, DCF en repli.
+    # Déclaré par la STRATÉGIE et non choisi par la CLI : c'est une propriété
+    # de la thèse, pas une option d'exécution. Sans cet attribut, 09_backtest
+    # devrait tester le nom de la stratégie en dur, et toute stratégie ajoutée
+    # ensuite exigerait de le modifier -- exactement ce que le registre sert à
+    # éviter.
+    signal_source: str = "dcf"
+
     def __init__(self, **params):
         self.params = params
 

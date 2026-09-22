@@ -128,8 +128,12 @@ def main() -> None:
     logger.info("Chargement des données...")
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)
-    dcf_history = data_loader.load_dcf_history()
-    signal_events = data_loader.build_signal_events(dcf_history)
+    # La source du signal est déclarée par la STRATÉGIE (Strategy.signal_source)
+    # et non choisie ici : c'est une propriété de sa thèse. Tester le nom de la
+    # stratégie en dur obligerait à modifier ce fichier à chaque ajout, ce que
+    # le registre sert précisément à éviter.
+    signal_events = data_loader.build_strategy_signal_events(
+        STRATEGY_REGISTRY[args.strategy].signal_source)
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
     material_events = data_loader.load_material_events_8k()
