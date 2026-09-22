@@ -112,6 +112,8 @@ class BacktestEngine:
         # propre défaut (cf. config).
         momentum_min_pct: Optional[float] = config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
         rebalance_band_pct: float = config.BACKTEST_REBALANCE_BAND_PCT,
+        vol_lookback_days: int = config.BACKTEST_VOL_LOOKBACK_DAYS,
+        max_plausible_gap_pct: float = config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
@@ -152,6 +154,8 @@ class BacktestEngine:
         self.signal_max_age_days = signal_max_age_days
         self.momentum_min_pct = momentum_min_pct
         self.rebalance_band_pct = rebalance_band_pct or 0.0
+        self.vol_lookback_days = vol_lookback_days or 0
+        self.max_plausible_gap_pct = max_plausible_gap_pct or 0.0
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
@@ -641,6 +645,17 @@ class BacktestEngine:
         stop-loss/take-profit uniquement."""
         if symbol not in self.universe.asof(today):
             return False
+        # Un écart absurde n'est pas une conviction, c'est une erreur de
+        # valorisation (cf. config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT : l'archive
+        # en contient jusqu'à +1 817 436 625%). Écarté ICI, au niveau du
+        # moteur, et non dans chaque stratégie : le classement des candidates
+        # se fait sur cette grandeur, donc une seule stratégie qui oublierait
+        # le filtre se retrouverait à choisir ses plus fortes convictions
+        # parmi des nombres cassés.
+        if self.max_plausible_gap_pct:
+            gap = signal.get("gap_pct")
+            if gap is not None and gap == gap and abs(gap) > self.max_plausible_gap_pct:
+                return False
         max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
         if (today - signal["published_date"]).days > max_age:
             return False
@@ -657,6 +672,21 @@ class BacktestEngine:
         ])
         if eligible_signals.empty:
             return
+
+        # VOLATILITÉ POINT-IN-TIME, ajoutée par le moteur et non par la
+        # stratégie : c'est le moteur qui détient le panel de cours, et la
+        # séparation des rôles veut que la stratégie ne voie que des signaux
+        # (cf. docstring du module strategies). Une colonne de plus qu'une
+        # stratégie est libre d'ignorer -- les trois existantes le faisaient
+        # avant que la pondération par le risque n'existe.
+        #
+        # `realized_vol_at` lit un panel précalculé en une passe vectorisée et
+        # mis en cache : le coût par ligne est un accès tableau, pas un calcul.
+        if self.vol_lookback_days:
+            eligible_signals = eligible_signals.assign(realized_vol=[
+                self.prices.realized_vol_at(symbol, today, self.vol_lookback_days)
+                for symbol in eligible_signals["symbol"]
+            ])
 
         target_weights = self.strategy.generate_target_weights(eligible_signals, set(self.positions))
         target_weights = {s: w for s, w in target_weights.items() if s not in exclude and w > 0}

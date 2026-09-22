@@ -211,10 +211,15 @@ def test_les_parametres_sont_exposes_pour_la_reproductibilite():
     strategie = ValuationGapSectorNeutralStrategy(
         entry_threshold_pct=7.0, min_absolute_gap_pct=3.0,
         max_weight_per_sector_pct=25.0, max_weight_pct=15.0,
+        vol_weight_exponent=0.5, max_positions=40, rank_weighting=True,
     )
     assert strategie.params == {
         "entry_threshold_pct": 7.0, "min_absolute_gap_pct": 3.0,
         "max_weight_per_sector_pct": 25.0, "max_weight_pct": 15.0,
+        # Les trois réglages de construction de portefeuille ajoutés depuis :
+        # ils changent les poids, donc ils doivent être consignés, sinon un run
+        # cesse d'être reproductible -- exactement ce que ce test protège.
+        "vol_weight_exponent": 0.5, "max_positions": 40, "rank_weighting": True,
     }
 
 

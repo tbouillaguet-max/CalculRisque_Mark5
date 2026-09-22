@@ -36,47 +36,23 @@ python 09_backtest.py --strategy valuation_gap_combined --start-date 2015-01-01
 
 from __future__ import annotations
 
-import pandas as pd
-
-import config
-from backtest.strategies.base import Strategy, capped_weights, inflation_adjusted_gap, register_strategy
+from backtest.strategies.base import register_strategy
+from backtest.strategies.valuation_gap import ValuationGapDCFStrategy
 
 
 @register_strategy("valuation_gap_combined")
-class ValuationGapCombinedStrategy(Strategy):
-    """`entry_threshold_pct` se lit comme celui de `valuation_gap_dcf` : un
-    écart au COURS, en pourcentage. Les deux signaux produisent la même
-    grandeur (100 x (théorique - cours) / cours), seule la façon d'établir la
-    valeur théorique diffère -- ce qui rend le seuil directement comparable
-    d'une stratégie à l'autre, contrairement à celui de
-    `valuation_gap_sector_neutral`."""
+class ValuationGapCombinedStrategy(ValuationGapDCFStrategy):
+    """Elle HÉRITE de `ValuationGapDCFStrategy` et ne redéfinit que la source
+    du signal. C'est le point : la comparaison entre les deux ne doit mesurer
+    QUE le changement de valorisation, et dupliquer la logique aurait laissé
+    les deux implémentations diverger au premier réglage ajouté à l'une.
+
+    `entry_threshold_pct` se lit donc exactement comme celui de
+    `valuation_gap_dcf` : un écart au COURS, en pourcentage. Les deux signaux
+    produisent la même grandeur -- 100 x (théorique - cours) / cours -- seule
+    la façon d'établir la valeur théorique diffère, ce qui rend le seuil
+    directement comparable d'une stratégie à l'autre (contrairement à celui de
+    `valuation_gap_sector_neutral`, qui porte sur l'écart à la médiane du
+    secteur)."""
 
     signal_source = "combinee"
-
-    def __init__(
-        self,
-        entry_threshold_pct: float = config.BACKTEST_ENTRY_THRESHOLD_PCT,
-        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
-        **kwargs,
-    ):
-        super().__init__(
-            entry_threshold_pct=entry_threshold_pct,
-            max_weight_pct=max_weight_pct,
-            **kwargs,
-        )
-        self.entry_threshold_pct = entry_threshold_pct
-        self.max_weight_pct = max_weight_pct
-
-    def generate_target_weights(self, signals: pd.DataFrame, current_positions: set[str]) -> dict[str, float]:
-        # Strictement la même mécanique que valuation_gap_dcf, pour que la
-        # comparaison entre les deux ne mesure que le changement de signal.
-        signals = signals.assign(gap_pct=inflation_adjusted_gap(
-            signals["gap_pct"], signals["published_date"],
-            config.INFLATION_HORIZON_YEARS_STOCKS,
-        ))
-        candidates = signals[signals["gap_pct"] >= self.entry_threshold_pct]
-        if candidates.empty:
-            return {}
-
-        weights = capped_weights(candidates["gap_pct"], cap_pct=self.max_weight_pct)
-        return dict(zip(candidates["symbol"], weights))

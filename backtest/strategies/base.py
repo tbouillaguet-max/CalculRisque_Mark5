@@ -115,6 +115,41 @@ def inflation_adjusted_log_gap(
     return log_gap + np.log1p(inflation) * horizon_years * 100
 
 
+def risk_adjusted_conviction(
+    conviction: pd.Series,
+    realized_vol: pd.Series | None,
+    exponent: float,
+) -> pd.Series:
+    """Conviction divisée par la volatilité réalisée, élevée à `exponent`.
+
+    POURQUOI. Les poids ne portaient aucun terme de risque : deux entreprises
+    au même écart de valorisation recevaient le même capital, que l'une bouge
+    de 15% par an et l'autre de 60%. Le portefeuille concentrait donc son
+    RISQUE là où la conviction n'était pas plus forte -- seulement plus
+    volatile. Diviser par la volatilité est la correction standard, et à
+    exposant 1 elle égalise la contribution de chaque ligne à la variance
+    (parité de risque).
+
+    Ce n'est pas un réglage ajusté aux données : à 0 comme à 1, l'exposant
+    applique un raisonnement, pas un ajustement. C'est ce qui le distingue des
+    autres axes de l'étude et le rend peu coûteux en degrés de liberté.
+
+    UNE VOLATILITÉ MANQUANTE NE FAIT PAS SORTIR LA LIGNE. Un titre trop
+    récemment coté n'a pas d'historique suffisant, et l'écarter pour cela
+    reviendrait à faire du filtre de risque un filtre de signal -- la même
+    erreur que la zone de non-négociation a déjà failli commettre sur les
+    entrées neuves. La ligne garde sa conviction brute, comme si l'exposant
+    valait 0 pour elle seule : c'est l'hypothèse neutre."""
+    if not exponent or realized_vol is None:
+        return conviction
+    vol = pd.to_numeric(realized_vol, errors="coerce").reindex(conviction.index)
+    # Une volatilité nulle ou négative n'a pas de sens et ferait exploser la
+    # division : traitée comme manquante.
+    vol = vol.where(vol > 0)
+    facteur = vol.pow(exponent)
+    return conviction / facteur.where(facteur.notna(), 1.0)
+
+
 def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter: int = 20) -> pd.Series:
     """Poids proportionnels à `conviction`, aucun ne dépassant cap_pct % du
     portefeuille (config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT par défaut).
@@ -172,6 +207,104 @@ def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter
             break
         valeurs[en_dessous] += excedent * valeurs[en_dessous] / place
     return pd.Series(valeurs, index=weights.index, name=weights.name)
+
+
+def top_n_candidates(candidates: pd.DataFrame, conviction: pd.Series, max_positions: int | None) -> pd.Index:
+    """Index des `max_positions` meilleures convictions, ou tout l'index si le
+    plafond est absent ou inatteignable.
+
+    POURQUOI UN PLAFOND DE NOMBRE. Le moteur ne borne pas le nombre de lignes :
+    toutes les candidates au-dessus du seuil sont ouvertes, et seul le plafond
+    par position limite la concentration. Un portefeuille de 200 lignes n'est
+    pas plus diversifié qu'un de 60 -- au-delà d'un certain point on n'ajoute
+    plus que du coût de transaction et des convictions marginales, puisque les
+    lignes entrent par ordre décroissant d'écart.
+
+    Ce plafond est donc l'exact symétrique du plafond par position : l'un borne
+    ce qu'une ligne peut peser, l'autre combien de lignes peuvent exister."""
+    if not max_positions or max_positions <= 0 or len(candidates) <= max_positions:
+        return candidates.index
+    return conviction.nlargest(max_positions).index
+
+
+def cap_per_sector(weights: pd.Series, sectors: pd.Series, cap_pct: float | None) -> pd.Series:
+    """Plafond de poids CUMULÉ par secteur.
+
+    Le plafond par position ne borne rien à ce niveau : vingt technos à 4%
+    chacune font 80% du portefeuille sur un seul secteur sans qu'aucune ligne
+    ne dépasse son plafond individuel.
+
+    L'excédent d'un secteur plafonné n'est PAS redistribué : la somme des poids
+    descend et l'engine laisse le reste en cash (il ne force jamais la somme à
+    1). Redistribuer reviendrait à concentrer davantage sur les secteurs
+    restants -- l'inverse du but.
+
+    Extrait de valuation_gap_sector_neutral, où il vivait seul : le besoin
+    n'avait rien de propre à la neutralité sectorielle, et `valuation_gap_dcf`
+    n'avait aucun garde-fou de ce niveau."""
+    if not cap_pct or cap_pct <= 0:
+        return weights
+    cap = cap_pct / 100
+    secteur = sectors.where(sectors.notna(), "_inconnu")
+    total_par_secteur = weights.groupby(secteur.values).transform("sum")
+    facteur = (cap / total_par_secteur).clip(upper=1.0)
+    return weights * facteur
+
+
+def construire_poids(
+    candidates: pd.DataFrame,
+    conviction: pd.Series,
+    *,
+    max_weight_pct: float | None = None,
+    max_positions: int | None = None,
+    max_weight_per_sector_pct: float | None = None,
+    vol_weight_exponent: float = 0.0,
+    rank_weighting: bool = False,
+) -> dict[str, float]:
+    """Étapes de construction de portefeuille communes aux stratégies ACTIONS,
+    dans l'ordre où elles doivent s'appliquer.
+
+    L'ORDRE N'EST PAS ARBITRAIRE :
+      1. la correction par le risque modifie la CONVICTION, donc elle doit
+         précéder toute sélection -- sinon on garderait les N plus fortes
+         convictions brutes puis on les repondérerait, ce qui n'est pas la même
+         chose que garder les N meilleures une fois le risque pris en compte ;
+      2. le plafond de NOMBRE réduit l'ensemble avant la normalisation, sans
+         quoi les lignes écartées auraient déjà consommé une part du total ;
+      3. le plafond par POSITION normalise et écrête ;
+      4. le plafond par SECTEUR vient en dernier et ne redistribue rien --
+         l'excédent va en cash.
+
+    Factorisé ici parce que les trois stratégies actions ne diffèrent que par
+    la façon d'établir leur conviction, pas par la façon de la transformer en
+    portefeuille."""
+    conviction = risk_adjusted_conviction(
+        conviction, candidates.get("realized_vol"), vol_weight_exponent)
+
+    if rank_weighting:
+        # PONDÉRATION PAR RANG : la conviction devient la place dans le
+        # classement, pas son ampleur. Un écart de 400% ne pèse alors que d'un
+        # cran de plus qu'un écart de 300%, là où l'ampleur brute lui donnerait
+        # 33% de capital en plus.
+        #
+        # L'intérêt est la robustesse aux valeurs extrêmes : une valorisation
+        # erronée reste une erreur de RANG (elle passe devant), pas une erreur
+        # d'AMPLEUR (elle capte tout). Le filtre de plausibilité du moteur
+        # (config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT) traite déjà le gros du
+        # problème en amont ; le rang est la ceinture après les bretelles, et
+        # il coûte l'information contenue dans l'ampleur -- d'où un réglage,
+        # pas un défaut.
+        conviction = conviction.rank(method="average", ascending=True)
+
+    retenues = top_n_candidates(candidates, conviction, max_positions)
+    candidates, conviction = candidates.loc[retenues], conviction.loc[retenues]
+    if candidates.empty:
+        return {}
+
+    weights = capped_weights(conviction, cap_pct=max_weight_pct)
+    if "sector" in candidates.columns:
+        weights = cap_per_sector(weights, candidates["sector"], max_weight_per_sector_pct)
+    return dict(zip(candidates["symbol"], weights))
 
 
 def register_strategy(name: str):

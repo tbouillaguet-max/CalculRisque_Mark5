@@ -438,6 +438,50 @@ BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 # Les stratégies ACTIONS ont leur propre valeur juste en dessous.
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
 
+# Écart de valorisation au-delà duquel un signal est tenu pour une ERREUR et
+# non pour une opportunité. En pourcentage du cours.
+#
+# CE QUI L'A RENDU NÉCESSAIRE. La valorisation combinée (06b) produit des
+# écarts dont la distribution a une queue absurde : sur l'archive du dépôt,
+# médiane -38%, 99e centile +875%... et MAXIMUM +1 817 436 625%. Une valeur
+# théorique par action de plusieurs millions de dollars n'est pas une
+# sous-évaluation, c'est un multiple appliqué à un dénominateur proche de zéro.
+#
+# Le plafond de pondération (capped_weights) bornait le DIMENSIONNEMENT de ces
+# lignes, mais pas leur CLASSEMENT -- et le classement décide de qui entre.
+# Mesuré : en ne retenant que les 5 plus fortes convictions, l'écart médian des
+# lignes détenues passe de 233% à 813% et leur 90e centile à 102 654%. Le
+# « gain » qu'on croyait tirer d'une plus grande sélectivité venait donc de
+# titres choisis sur des nombres cassés.
+#
+# 500% (valeur théorique à six fois le cours) est volontairement LARGE : une
+# vraie décote de 300% existe sur une société en difficulté temporaire, et le
+# filtre ne doit écarter que ce qui n'est explicable par aucune thèse. Même
+# esprit que MULTIPLE_PLAUSIBLE_RANGE côté multiples. 0 ou None le désactive.
+BACKTEST_MAX_PLAUSIBLE_GAP_PCT = 500.0
+
+# Fenêtre de volatilité réalisée servant à la pondération par le risque des
+# stratégies ACTIONS (cf. BACKTEST_VOL_WEIGHT_EXPONENT). 252 séances, soit un
+# an : une fenêtre courte suivrait les à-coups de marché et ferait tourner le
+# portefeuille au rythme de la volatilité plutôt qu'à celui de la thèse, ce
+# qui est l'inverse du but. Distincte de OPTIONS_REALIZED_VOL_LOOKBACK_DAYS
+# (60 jours), qui sert à PRICER une option à 2 ans -- pas le même usage.
+BACKTEST_VOL_LOOKBACK_DAYS = 252
+
+# Exposant de la pondération par le risque : poids proportionnel à
+# `écart / volatilité^exposant`.
+#   0   -> pondération par la seule conviction (comportement d'origine)
+#   1   -> parité de risque : chaque ligne contribue autant à la variance
+#   0,5 -> compromis
+#
+# POURQUOI CET AXE EXISTE. Les poids ne portaient AUCUN terme de risque : deux
+# entreprises au même écart de valorisation recevaient le même capital, que
+# l'une bouge de 15% par an et l'autre de 60%. C'est le levier de Sharpe le
+# plus classique qui manquait, et le seul de toute l'étude à ne coûter AUCUN
+# degré de liberté supplémentaire quand il est fixé a priori à 0 ou 1 -- il
+# ne s'ajuste pas aux données, il applique un raisonnement.
+BACKTEST_VOL_WEIGHT_EXPONENT = 0.0
+
 # Filtre momentum des backtests ACTIONS : DÉSACTIVÉ.
 #
 # C'est le résultat le plus inattendu de la grille, et le mieux établi de toute
