@@ -32,6 +32,12 @@ data/backtest_options/
 logs/grille_*.log
 logs/grilles_terminees.txt
 
+# Signal ALTERNATIF produit pour comparaison (06b --multiple-method warranted,
+# --output). Même raison : c'est un résultat, pas une entrée. Le signal de
+# référence, lui, reste versionné -- c'est celui que les stratégies lisent.
+# `06b --multiple-method warranted` le reproduit à l'identique.
+data/multiples/valorisation_combinee_merite.parquet
+
 # Python
 __pycache__/
 *.pyc
