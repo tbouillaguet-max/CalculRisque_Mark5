@@ -80,17 +80,24 @@ class ValuationGapSectorNeutralStrategy(Strategy):
         entry_threshold_pct: float = config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT,
         min_absolute_gap_pct: float = config.BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT,
         max_weight_per_sector_pct: float = config.BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT,
+        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
         **kwargs,
     ):
         super().__init__(
             entry_threshold_pct=entry_threshold_pct,
             min_absolute_gap_pct=min_absolute_gap_pct,
             max_weight_per_sector_pct=max_weight_per_sector_pct,
+            max_weight_pct=max_weight_pct,
             **kwargs,
         )
         self.entry_threshold_pct = entry_threshold_pct
         self.min_absolute_gap_pct = min_absolute_gap_pct
         self.max_weight_per_sector_pct = max_weight_per_sector_pct
+        # Plafond PAR POSITION, à distinguer de max_weight_per_sector_pct qui
+        # borne le CUMUL d'un secteur. Exposé pour la même raison que dans
+        # valuation_gap : c'est un réglage de diversification, donc de Sharpe,
+        # et le laisser dans config seul le rendait non balayable.
+        self.max_weight_pct = max_weight_pct
 
     # ------------------------------------------------------------------ #
     def _sector_baseline(self, signals: pd.DataFrame) -> pd.Series:
@@ -144,7 +151,7 @@ class ValuationGapSectorNeutralStrategy(Strategy):
         if (conviction <= 0).any():
             conviction = conviction - conviction.min() + 1e-9
 
-        weights = capped_weights(conviction)
+        weights = capped_weights(conviction, cap_pct=self.max_weight_pct)
         weights = self._cap_per_sector(weights, candidates["sector"])
         return dict(zip(candidates["symbol"], weights))
 

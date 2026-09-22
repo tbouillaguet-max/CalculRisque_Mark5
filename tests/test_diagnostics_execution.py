@@ -116,6 +116,12 @@ def test_les_diagnostics_sont_produits():
     assert set(diagnostics) == {
         "buy_orders_count", "truncated_orders_count", "truncated_orders_pct",
         "unfilled_dollar_pct", "avg_cash_pct",
+        # Zone de non-négociation du rebalancement : son réglage et ce qu'il a
+        # filtré (cf. engine._drift_is_material). Les trois clés sont produites
+        # même quand la zone est désactivée -- une colonne qui apparaît et
+        # disparaît selon le réglage rendrait les metrics.json incomparables
+        # d'un run à l'autre.
+        "rebalance_band_pct", "rebalance_days_count", "rebalance_skipped_days_pct",
         "signal_coverage_avg_ratio", "signal_coverage_min_ratio", "signal_coverage_min_year",
     }
     assert diagnostics["buy_orders_count"] > 0

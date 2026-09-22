@@ -193,13 +193,20 @@ def test_un_seuil_negatif_ne_divise_pas_par_zero():
 
 
 def test_les_parametres_sont_exposes_pour_la_reproductibilite():
-    """run_config.json doit porter de quoi rejouer le run à l'identique."""
+    """run_config.json doit porter de quoi rejouer le run à l'identique.
+
+    `max_weight_pct` (plafond PAR POSITION, à ne pas confondre avec
+    `max_weight_per_sector_pct` qui borne le cumul d'un secteur) y figure
+    depuis qu'il est balayable par 16_optimize_strategie_actions.py : un
+    réglage qui change le résultat et ne serait pas consigné rendrait
+    précisément irreproductible ce que ce test protège."""
     strategie = ValuationGapSectorNeutralStrategy(
-        entry_threshold_pct=7.0, min_absolute_gap_pct=3.0, max_weight_per_sector_pct=25.0,
+        entry_threshold_pct=7.0, min_absolute_gap_pct=3.0,
+        max_weight_per_sector_pct=25.0, max_weight_pct=15.0,
     )
     assert strategie.params == {
         "entry_threshold_pct": 7.0, "min_absolute_gap_pct": 3.0,
-        "max_weight_per_sector_pct": 25.0,
+        "max_weight_per_sector_pct": 25.0, "max_weight_pct": 15.0,
     }
 
 

@@ -14,9 +14,10 @@ son CSV, et n'annonçait qu'un « toutes les combinaisons ont échoué ».
 
 Ces tests forcent explicitement le contexte "spawn" pour être discriminants
 même lancés sur Linux (où fork() masquerait le bug : _DATA hérité par
-copy-on-write fonctionnerait même SANS l'initializer). Ils couvrent LES
-QUATRE grid-search : ils partagent le même schéma « charger une fois dans le
-parent, lire _DATA dans le worker », donc le même défaut."""
+copy-on-write fonctionnerait même SANS l'initializer). Ils couvrent LES CINQ
+grid-search -- les quatre côté options et celui de la stratégie ACTIONS : ils
+partagent le même schéma « charger une fois dans le parent, lire _DATA dans le
+worker », donc le même défaut."""
 
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ SCRIPTS = [
     "11b_optimize_rebalance_threshold",
     "11c_optimize_convergence_fraction",
     "11d_optimize_entry_threshold",
+    "16_optimize_strategie_actions",
 ]
 
 _opt = importlib.import_module("11_optimize_options_stops")

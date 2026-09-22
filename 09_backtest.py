@@ -93,6 +93,12 @@ def main() -> None:
         "--no-momentum-filter", dest="momentum_min_pct", action="store_const", const=None,
         help="Désactive le filtre momentum.",
     )
+    parser.add_argument(
+        "--rebalance-band-pct", type=float, default=config.BACKTEST_REBALANCE_BAND_PCT,
+        help="Zone de non-négociation, en POINTS DE NAV : le portefeuille n'est repesé que les "
+             "jours où il faudrait faire bouger au moins ce %%%% de sa valeur. Sans elle, un seul "
+             "dépôt SEC repèse tout le portefeuille (défaut: %(default)s, 0 désactive).",
+    )
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de sortie (défaut: horodatage).")
     parser.add_argument("--risk-free-rate", type=float, default=config.RISK_FREE_RATE)
     parser.add_argument(
@@ -154,6 +160,7 @@ def main() -> None:
         stop_loss_pct=args.stop_loss_pct,
         take_profit_pct=args.take_profit_pct,
         momentum_min_pct=args.momentum_min_pct,
+        rebalance_band_pct=args.rebalance_band_pct,
         material_events_8k=material_events,
         start_date=start_date,
         end_date=end_date,
@@ -194,6 +201,7 @@ def main() -> None:
         "initial_capital": args.initial_capital, "commission_bps": args.commission_bps,
         "slippage_bps": args.slippage_bps, "stop_loss_pct": args.stop_loss_pct,
         "take_profit_pct": args.take_profit_pct,
+        "momentum_min_pct": args.momentum_min_pct, "rebalance_band_pct": args.rebalance_band_pct,
         "start_date": str(engine.calendar[0].date()), "end_date": str(engine.calendar[-1].date()),
         "risk_free_rate": args.risk_free_rate, "has_pit_universe": universe_history is not None,
         "benchmark_symbol": args.benchmark_symbol, "benchmark_label": benchmark_label,

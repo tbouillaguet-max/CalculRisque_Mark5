@@ -397,6 +397,20 @@ BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 # états financiers publiés ne montrent pas encore.
 # None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
+
+# Zone de NON-NÉGOCIATION du rebalancement, en POINTS DE NAV : le portefeuille
+# n'est repesé que les jours où il faudrait faire bouger au moins ce
+# pourcentage de sa valeur (cf. engine.BacktestEngine._drift_is_material, qui
+# détaille aussi pourquoi le seuil porte sur la dérive TOTALE et non ligne à
+# ligne).
+#
+# Les poids sont proportionnels à l'écart de valorisation RAPPORTÉ À LA SOMME
+# des écarts des candidates : un seul dépôt SEC change ce dénominateur, donc la
+# cible de TOUTES les lignes. Des dépôts tombent 2624 jours sur 2936 séances
+# entre 2015 et 2026 -- sans zone de non-négociation, le portefeuille est
+# repesé en entier 9 séances sur 10, chaque miette payant cost_bps à l'aller et
+# au retour. 0 la désactive (comportement d'avant l'ajout du réglage).
+BACKTEST_REBALANCE_BAND_PCT = 0.0
 # Capital simulé au départ des backtests (actions et options : voir
 # OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
 # portefeuille selon qu'on l'investit en actions ou en options).

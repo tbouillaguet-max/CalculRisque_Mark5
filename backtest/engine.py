@@ -107,6 +107,7 @@ class BacktestEngine:
         take_profit_pct: float,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
         momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
+        rebalance_band_pct: float = config.BACKTEST_REBALANCE_BAND_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
@@ -139,6 +140,7 @@ class BacktestEngine:
         self.take_profit_pct = take_profit_pct
         self.signal_max_age_days = signal_max_age_days
         self.momentum_min_pct = momentum_min_pct
+        self.rebalance_band_pct = rebalance_band_pct or 0.0
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
@@ -164,6 +166,12 @@ class BacktestEngine:
         # comptent pareil dans truncated_orders_count, pas ici.
         self.demanded_dollar = 0.0
         self.unfilled_dollar = 0.0
+        # Jours où un repesage était possible, et ceux que la zone de
+        # non-négociation a laissés passer (cf. _drift_is_material) : la mesure
+        # de ce que le réglage fait réellement, à lire avec
+        # annualized_turnover_pct.
+        self.rebalance_days_count = 0
+        self.rebalance_skipped_days = 0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -531,6 +539,16 @@ class BacktestEngine:
             # pèsent identiquement dans le premier, pas dans le second.
             "unfilled_dollar_pct": float(unfilled_pct),
             "avg_cash_pct": float(avg_cash_pct) if avg_cash_pct is not None else None,
+            # Ce que la bande de non-négociation a réellement filtré. À lire
+            # avec annualized_turnover_pct : c'est le même phénomène vu des
+            # deux bouts, la part des redimensionnements évités d'un côté, ce
+            # qu'ils coûtaient de l'autre.
+            "rebalance_band_pct": float(self.rebalance_band_pct),
+            "rebalance_days_count": int(self.rebalance_days_count),
+            "rebalance_skipped_days_pct": float(
+                self.rebalance_skipped_days / self.rebalance_days_count * 100
+                if self.rebalance_days_count else 0.0
+            ),
             **self._signal_coverage_diagnostics(),
         }
 
@@ -656,8 +674,71 @@ class BacktestEngine:
         if total_weight > 1:
             target_weights = {s: w / total_weight for s, w in target_weights.items()}
 
-        for symbol, weight in target_weights.items():
-            self._queue_order(symbol, weight * active_budget, "rebalance", today)
+        targets = {symbol: weight * active_budget for symbol, weight in target_weights.items()}
+
+        self.rebalance_days_count += 1
+        if not self._drift_is_material(targets, today, nav_now):
+            self.rebalance_skipped_days += 1
+            return
+
+        for symbol, target_dollar in targets.items():
+            self._queue_order(symbol, target_dollar, "rebalance", today)
+
+    def _drift_is_material(self, targets: dict[str, float], today: pd.Timestamp, nav: float) -> bool:
+        """Le portefeuille s'est-il assez éloigné de sa cible pour qu'il vaille
+        la peine de le repeser ? Zone de non-négociation, mesurée sur la
+        DÉRIVE TOTALE en % du NAV.
+
+        POURQUOI CE RÉGLAGE EXISTE. `_rebalance` est appelé dès qu'un signal
+        est publié, et les poids sont proportionnels à l'écart de valorisation
+        RAPPORTÉ À LA SOMME des écarts des candidates (cf.
+        base.capped_weights). Un seul 10-Q déposé change donc ce dénominateur,
+        et avec lui la cible de TOUTES les lignes du portefeuille -- pas
+        seulement celle de l'entreprise qui a publié. Mesuré sur 2015-2026 :
+        des dépôts tombent 2624 jours sur 2936, soit un repesage intégral 9
+        séances sur 10, pour 722% de rotation annualisée et 62836 exécutions
+        au service de 1934 thèses seulement. Chacune paie `cost_bps` à l'aller
+        comme au retour, pour un ajustement de poids que la thèse n'a pas
+        demandé.
+
+        POURQUOI LA DÉRIVE TOTALE, ET NON UNE BANDE PAR LIGNE. Une bande
+        appliquée ligne à ligne -- ne toucher une position que si SA cible
+        s'écarte de plus de x% de SA valeur -- a été essayée et mesurée
+        d'abord : elle divise bien les exécutions par 15, mais elle filtre
+        aussi les ALLÈGEMENTS, qui sont exactement ce qui finance les achats du
+        même jour (cf. `_execute_pending_orders`, les ventes passent avant les
+        achats précisément pour cela). Le portefeuille se retrouve alors sans
+        cash pour ses entrées neuves : mesuré, 52% du montant d'achat demandé
+        devenait infinançable, contre 5% sans bande. Le filtre doit donc porter
+        sur la DÉCISION DE REPESER, pas sur les lignes une à une : ou bien on
+        rebalance le portefeuille en entier -- et les ventes financent les
+        achats comme avant --, ou bien on n'y touche pas du tout.
+
+        Le seuil se lit donc en POINTS DE NAV : à 5, on ne repèse que les jours
+        où il faudrait faire bouger au moins 5% du portefeuille. Une entrée
+        neuve compte sa cible entière dans la dérive, si bien qu'un signal
+        vraiment neuf déclenche lui-même le repesage au lieu d'être retardé ;
+        et une journée sautée ne remet rien à zéro, la dérive continuant de
+        s'accumuler jusqu'à franchir le seuil.
+
+        Sans effet sur les sorties par stop-loss/take-profit, qui ne passent
+        pas par ici (cf. `_check_stop_loss_take_profit`), ni sur la règle des
+        positions gelées. 0 le désactive et rend au moteur son comportement
+        d'avant l'ajout du réglage.
+
+        Côté options, le même bruit est traité par
+        `OPTIONS_REBALANCE_LOG_GAP_THRESHOLD`, qui filtre sur le mouvement du
+        SIGNAL depuis le dernier trade. Ici c'est la cible qui bouge sans que
+        le signal de la ligne ait changé : le filtre doit donc porter sur la
+        cible, pas sur le signal."""
+        if self.rebalance_band_pct <= 0 or nav <= 0:
+            return True
+        drift = 0.0
+        for symbol, target_dollar in targets.items():
+            pos = self.positions.get(symbol)
+            current = pos.shares * self._mark_price(pos, today) if pos is not None else 0.0
+            drift += abs(target_dollar - current)
+        return drift / nav * 100 >= self.rebalance_band_pct
 
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne

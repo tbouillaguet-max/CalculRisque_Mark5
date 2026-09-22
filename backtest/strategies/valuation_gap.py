@@ -24,10 +24,21 @@ class ValuationGapDCFStrategy(Strategy):
     def __init__(
         self,
         entry_threshold_pct: float = config.BACKTEST_ENTRY_THRESHOLD_PCT,
+        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
         **kwargs,
     ):
-        super().__init__(entry_threshold_pct=entry_threshold_pct, **kwargs)
+        super().__init__(
+            entry_threshold_pct=entry_threshold_pct,
+            max_weight_pct=max_weight_pct,
+            **kwargs,
+        )
         self.entry_threshold_pct = entry_threshold_pct
+        # Plafond de concentration, jusqu'ici lu directement dans config par
+        # capped_weights. L'exposer en paramètre de stratégie le rend
+        # balayable par un grid-search sans toucher au module de config --
+        # c'est un arbitrage de diversification, donc un réglage de Sharpe au
+        # même titre que le seuil d'entrée. Le défaut ne change rien.
+        self.max_weight_pct = max_weight_pct
 
     def generate_target_weights(self, signals: pd.DataFrame, current_positions: set[str]) -> dict[str, float]:
         # Écart corrigé de l'inflation attendue sur l'horizon de convergence
@@ -46,5 +57,5 @@ class ValuationGapDCFStrategy(Strategy):
         # classement reste fait sur l'écart brut, seul le DIMENSIONNEMENT est
         # borné -- un écart de plusieurs milliers de % est une conviction
         # légitime, pas une raison de mettre 90% du capital sur une ligne.
-        weights = capped_weights(candidates["gap_pct"])
+        weights = capped_weights(candidates["gap_pct"], cap_pct=self.max_weight_pct)
         return dict(zip(candidates["symbol"], weights))
