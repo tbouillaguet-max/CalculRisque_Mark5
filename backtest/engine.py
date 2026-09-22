@@ -85,6 +85,11 @@ class Position:
     # perte depuis l'ouverture de la THÈSE.
     stop_reference_price: float = 0.0
 
+    # Plus haut atteint depuis l'ouverture de la thèse, pour le stop SUIVEUR.
+    # Distinct de stop_reference_price (figé à l'entrée) et de entry_price
+    # (moyenné à chaque renfort) : trois références, trois usages.
+    peak_price: float = 0.0
+
 
 @dataclass
 class _PendingOrder:
@@ -114,6 +119,12 @@ class BacktestEngine:
         rebalance_band_pct: float = config.BACKTEST_REBALANCE_BAND_PCT,
         vol_lookback_days: int = config.BACKTEST_VOL_LOOKBACK_DAYS,
         max_plausible_gap_pct: float = config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT,
+        # Les trois sorties FACULTATIVES, toutes désactivées par défaut : le
+        # moteur se comporte exactement comme avant tant qu'aucune n'est
+        # demandée (cf. leurs méthodes respectives pour le raisonnement).
+        trailing_stop_pct: Optional[float] = config.BACKTEST_TRAILING_STOP_PCT,
+        max_holding_days: Optional[int] = config.BACKTEST_MAX_HOLDING_DAYS,
+        exit_gap_threshold_pct: Optional[float] = config.BACKTEST_EXIT_GAP_THRESHOLD_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
@@ -156,6 +167,9 @@ class BacktestEngine:
         self.rebalance_band_pct = rebalance_band_pct or 0.0
         self.vol_lookback_days = vol_lookback_days or 0
         self.max_plausible_gap_pct = max_plausible_gap_pct or 0.0
+        self.trailing_stop_pct = trailing_stop_pct
+        self.max_holding_days = max_holding_days
+        self.exit_gap_threshold_pct = exit_gap_threshold_pct
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
@@ -402,14 +416,81 @@ class BacktestEngine:
             reference = pos.stop_reference_price or pos.entry_price
             if price is None or not reference:
                 continue
+            # Plus haut atteint depuis l'ouverture de la thèse : sert au stop
+            # SUIVEUR, et se met à jour même quand aucune règle ne se déclenche.
+            pos.peak_price = max(pos.peak_price or price, price)
+
             move_pct = (price - reference) / reference * 100
+            raison = None
             if move_pct <= self.stop_loss_pct:
-                self._queue_order(symbol, 0.0, "stop_loss", today)
-                triggered.add(symbol)
+                raison = "stop_loss"
             elif move_pct >= self.take_profit_pct:
-                self._queue_order(symbol, 0.0, "take_profit", today)
+                raison = "take_profit"
+            elif self._trailing_stop_touche(pos, price):
+                raison = "trailing_stop"
+            elif self._detention_trop_longue(pos, today):
+                raison = "max_holding"
+            elif self._these_refermee(symbol, today):
+                raison = "signal_lost"
+
+            if raison:
+                self._queue_order(symbol, 0.0, raison, today)
                 triggered.add(symbol)
         return triggered
+
+    def _trailing_stop_touche(self, pos: Position, price: float) -> bool:
+        """Stop SUIVEUR : recul depuis le plus haut atteint DEPUIS L'ENTRÉE, et
+        non depuis le prix d'entrée.
+
+        Le stop fixe mesure la perte par rapport à l'ouverture de la thèse : une
+        ligne montée de 60% puis redescendue de 55% n'a jamais approché son stop
+        alors qu'elle a rendu presque tout son gain. Le stop suiveur protège le
+        chemin parcouru ; en contrepartie il sort d'un titre volatil qui n'a rien
+        fait de mal, ce qui est exactement le reproche fait au stop serré sur une
+        stratégie *value*. D'où un réglage désactivé par défaut, pas une règle."""
+        if not self.trailing_stop_pct or not pos.peak_price:
+            return False
+        return (price - pos.peak_price) / pos.peak_price * 100 <= self.trailing_stop_pct
+
+    def _detention_trop_longue(self, pos: Position, today: pd.Timestamp) -> bool:
+        """Durée de détention maximale. Une thèse de convergence qui ne s'est
+        pas réalisée en N ans n'est plus une thèse : c'est une position gelée
+        que rien ne ferme, puisque seuls les stops le peuvent. Équivalent
+        actions de OPTIONS_MIN_HOLDING_DAYS côté options, pris par l'autre
+        bout."""
+        if not self.max_holding_days:
+            return False
+        return (today - pos.entry_date).days >= self.max_holding_days
+
+    def _these_refermee(self, symbol: str, today: pd.Timestamp) -> bool:
+        """Sortie sur PERTE DE SIGNAL : l'écart de valorisation qui justifiait
+        la position s'est refermé sous le seuil de sortie.
+
+        DÉSACTIVÉ PAR DÉFAUT, et ce n'est pas une prudence de façade. La règle
+        des positions gelées -- une ligne n'est JAMAIS vendue parce que son
+        écart s'est refermé, seuls un stop-loss ou une prise de gain la
+        ferment -- est un choix explicite de l'utilisateur, documenté comme tel
+        dans le README et dans la docstring du module. Ce réglage rend ce choix
+        MESURABLE sans le renverser : à None, le moteur se comporte exactement
+        comme avant.
+
+        Le seuil est en points d'écart, comme celui d'entrée : à 0, on sort dès
+        que la valeur théorique repasse sous le cours."""
+        if self.exit_gap_threshold_pct is None:
+            return False
+        signal = self.known_signals.get(symbol)
+        if signal is None:
+            return False
+        gap = signal.get("gap_pct")
+        if gap is None or gap != gap:
+            return False
+        # Un signal PÉRIMÉ ne dit plus rien : il ne doit pas déclencher une
+        # sortie au motif que sa dernière valeur connue était basse. La
+        # péremption gèle la ligne, elle ne la vend pas (cf. _signal_is_actionable).
+        max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
+        if (today - signal["published_date"]).days > max_age:
+            return False
+        return gap < self.exit_gap_threshold_pct
 
     def _handle_stale_symbols(self, today: pd.Timestamp) -> set[str]:
         """Ferme IMMÉDIATEMENT (au dernier cours connu, pas via

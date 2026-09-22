@@ -99,6 +99,21 @@ def main() -> None:
              "jours où il faudrait faire bouger au moins ce %%%% de sa valeur. Sans elle, un seul "
              "dépôt SEC repèse tout le portefeuille (défaut: %(default)s, 0 désactive).",
     )
+    parser.add_argument(
+        "--trailing-stop-pct", type=float, default=config.BACKTEST_TRAILING_STOP_PCT,
+        help="Stop SUIVEUR : recul maximal depuis le plus haut atteint depuis l'entrée "
+             "(négatif, ex. -25). Défaut: désactivé.",
+    )
+    parser.add_argument(
+        "--max-holding-days", type=int, default=config.BACKTEST_MAX_HOLDING_DAYS,
+        help="Durée de détention maximale, en jours. Défaut: désactivé.",
+    )
+    parser.add_argument(
+        "--exit-gap-threshold-pct", type=float, default=config.BACKTEST_EXIT_GAP_THRESHOLD_PCT,
+        help="Vend une ligne dont l'écart est repassé sous ce seuil. TOUCHE À LA RÈGLE DES "
+             "POSITIONS GELÉES (une position n'est sinon jamais vendue sur refermeture de "
+             "l'écart) : désactivé par défaut, à activer en connaissance de cause.",
+    )
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de sortie (défaut: horodatage).")
     parser.add_argument("--risk-free-rate", type=float, default=config.RISK_FREE_RATE)
     parser.add_argument(
@@ -165,6 +180,9 @@ def main() -> None:
         take_profit_pct=args.take_profit_pct,
         momentum_min_pct=args.momentum_min_pct,
         rebalance_band_pct=args.rebalance_band_pct,
+        trailing_stop_pct=args.trailing_stop_pct,
+        max_holding_days=args.max_holding_days,
+        exit_gap_threshold_pct=args.exit_gap_threshold_pct,
         material_events_8k=material_events,
         start_date=start_date,
         end_date=end_date,

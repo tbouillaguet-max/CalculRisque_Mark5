@@ -438,6 +438,47 @@ BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 # Les stratégies ACTIONS ont leur propre valeur juste en dessous.
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
 
+# ----------------------------------------------------------------------------
+# Sorties FACULTATIVES du moteur actions, toutes désactivées par défaut
+# ----------------------------------------------------------------------------
+# Le moteur ne ferme une position que sur stop-loss ou prise de gain : un écart
+# qui se referme ne vend pas, la ligne devient GELÉE. C'est un choix explicite
+# de l'utilisateur, documenté dans le README. Les trois réglages ci-dessous le
+# rendent MESURABLE sans le renverser -- à None, le moteur se comporte
+# exactement comme avant leur ajout.
+
+# Stop SUIVEUR : recul maximal toléré depuis le plus haut atteint DEPUIS
+# L'ENTRÉE. Le stop fixe mesure la perte depuis l'ouverture de la thèse : une
+# ligne montée de 60% puis redescendue de 55% n'approche jamais son stop alors
+# qu'elle a rendu tout son gain.
+#
+# ACTIVÉ à -20, et c'est le seul réglage de sortie que l'étude ait retenu. Ce
+# qui le rend crédible n'est pas son Sharpe mais sa forme : l'effet est une
+# DOSE-RÉPONSE lisse et monotone, nul à -35 (le stop ne se déclenche jamais) et
+# croissant jusqu'à -15, ce qu'un pic de bruit ne produit pas. Sur la fenêtre
+# de TEST, écart apparié +0,120 (IC [+0,025, +0,198], p = 0,008) pour
+# valuation_gap_combined.
+#
+# LA RÉSERVE, à garder en tête : il n'est significatif que sur UNE des trois
+# stratégies actions (+0,070 p = 0,07 sur DCF, +0,033 p = 0,29 sur la neutre au
+# secteur), même si la direction est la même partout. Et -20 est un choix de
+# MILIEU de plage : la fenêtre d'apprentissage ne départage pas les valeurs
+# entre -15 et -30 (Sharpe de 0,966 à 0,995, pour une erreur-type de 0,46), et
+# retenir la meilleure sur le test reviendrait à consommer la fenêtre qui sert
+# à juger. None le désactive.
+BACKTEST_TRAILING_STOP_PCT = -20.0
+
+# Durée de détention maximale, en jours. Une thèse de convergence qui ne s'est
+# pas réalisée en N ans n'est plus une thèse : c'est une position que plus rien
+# ne ferme, puisque seuls les stops le peuvent.
+BACKTEST_MAX_HOLDING_DAYS = None
+
+# Sortie sur PERTE DE SIGNAL : seuil d'écart sous lequel une ligne détenue est
+# vendue. En points d'écart, comme le seuil d'entrée -- à 0, on sort dès que la
+# valeur théorique repasse sous le cours. C'est le réglage qui touche
+# directement à la règle des positions gelées : il reste à None.
+BACKTEST_EXIT_GAP_THRESHOLD_PCT = None
+
 # Écart de valorisation au-delà duquel un signal est tenu pour une ERREUR et
 # non pour une opportunité. En pourcentage du cours.
 #
