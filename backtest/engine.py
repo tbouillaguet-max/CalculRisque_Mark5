@@ -106,7 +106,11 @@ class BacktestEngine:
         stop_loss_pct: float,
         take_profit_pct: float,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
-        momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
+        # BACKTEST_STOCKS_MOMENTUM_MIN_PCT et non BACKTEST_MOMENTUM_MIN_PCT :
+        # ce moteur est celui des ACTIONS, et la grille qui a désactivé le
+        # filtre n'a rien mesuré du côté options, dont le moteur garde son
+        # propre défaut (cf. config).
+        momentum_min_pct: Optional[float] = config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
         rebalance_band_pct: float = config.BACKTEST_REBALANCE_BAND_PCT,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
@@ -736,7 +740,25 @@ class BacktestEngine:
         drift = 0.0
         for symbol, target_dollar in targets.items():
             pos = self.positions.get(symbol)
-            current = pos.shares * self._mark_price(pos, today) if pos is not None else 0.0
+            if pos is None:
+                # UNE ENTRÉE NEUVE N'EST JAMAIS UN AJUSTEMENT DE CONFORT, et la
+                # zone ne gouverne que le RE-DIMENSIONNEMENT. Compter sa cible
+                # dans la dérive et s'arrêter là avait un défaut que seul un
+                # portefeuille à candidate unique révèle : avec un plafond par
+                # ligne à 10% du NAV et une zone à 15 points, une candidate
+                # SEULE pèse 10 points de dérive, donc reste sous le seuil --
+                # et comme rien d'autre ne bouge, elle n'est JAMAIS achetée. La
+                # zone cessait d'être un filtre de coût pour devenir un filtre
+                # de signal, ce qu'elle n'a jamais eu vocation à être.
+                #
+                # En portefeuille fourni le cas ne se voit pas (la dérive
+                # agrégée franchit le seuil de toute façon) : c'est précisément
+                # ce qui en faisait un défaut latent, visible seulement dans les
+                # régimes à signal rare.
+                if target_dollar >= MIN_TRADE_DOLLAR:
+                    return True
+                continue
+            current = pos.shares * self._mark_price(pos, today)
             drift += abs(target_dollar - current)
         return drift / nav * 100 >= self.rebalance_band_pct
 

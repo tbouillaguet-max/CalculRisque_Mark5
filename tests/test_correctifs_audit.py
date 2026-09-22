@@ -890,7 +890,11 @@ def test_C7_le_moteur_actions_ne_remonte_jamais_les_poids_vers_1():
 
     nav = equity.set_index("date")["nav"]
     poids = positions["market_value"] / positions["date"].map(nav) * 100
-    plafond = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
+    # Le plafond des stratégies ACTIONS, pas celui partagé avec les options :
+    # ValuationGapDCFStrategy lit BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
+    # depuis que la grille l'a porté à 10%. Lire l'autre ferait passer ce test
+    # pour la mauvaise raison -- il vérifierait un plafond deux fois trop large.
+    plafond = config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
     # Marge : la position dérive avec le cours entre deux rebalancements, mais
     # elle ne doit jamais partir de 100% du NAV.
     assert poids.max() < plafond * 2, (

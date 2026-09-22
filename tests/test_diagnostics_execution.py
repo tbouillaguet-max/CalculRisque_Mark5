@@ -105,6 +105,13 @@ def _moteur_actions(n: int = 60) -> BacktestEngine:
         initial_capital=1_000_000.0, cost_bps=10.0,
         stop_loss_pct=-95.0, take_profit_pct=1000.0,
         momentum_min_pct=None,
+        # Zone de non-négociation désactivée EXPLICITEMENT : ces tests portent
+        # sur la troncature des achats et le décompte des ordres, c'est-à-dire
+        # sur ce qui se passe QUAND le portefeuille est repesé. Avec le défaut
+        # (15 points de NAV), la plupart des repesages du scénario sont sautés
+        # et le phénomène mesuré ne se produit plus -- le test passerait pour
+        # une raison qui n'a rien à voir avec ce qu'il vérifie.
+        rebalance_band_pct=0.0,
     )
 
 

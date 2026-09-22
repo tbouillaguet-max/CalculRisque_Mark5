@@ -96,25 +96,35 @@ def _scenario(n: int = 60):
 
 
 def test_zone_a_zero_reproduit_exactement_le_comportement_dorigine():
-    """LE test de non-régression : un moteur construit sans le paramètre et un
-    moteur construit avec la valeur 0 doivent produire la MÊME courbe de NAV,
-    les mêmes trades et le même cash."""
+    """LE test de non-régression : à 0, le moteur doit se comporter comme si la
+    zone n'existait pas du tout.
+
+    Le point de comparaison ne peut plus être « un moteur construit sans le
+    paramètre » : depuis que la grille a porté le défaut à 15, ne pas le passer
+    ACTIVE la zone. On court-circuite donc explicitement le filtre -- un moteur
+    dont `_drift_is_material` répond toujours oui EST le moteur d'avant
+    l'ajout du réglage -- et on exige l'égalité stricte avec la valeur 0."""
     panel, events = _scenario()
-    sans = _moteur(panel, events, _ToutesAPoidsEgaux())
+    dorigine = _moteur(panel, events, _ToutesAPoidsEgaux(), rebalance_band_pct=0.0)
+    dorigine._drift_is_material = lambda targets, today, nav: True
     avec_zero = _moteur(panel, events, _ToutesAPoidsEgaux(), rebalance_band_pct=0.0)
-    sans.run()
+    dorigine.run()
     avec_zero.run()
 
-    assert [r["nav"] for r in sans.equity_curve_rows] == [r["nav"] for r in avec_zero.equity_curve_rows]
-    assert len(sans.trades) == len(avec_zero.trades)
-    assert sans.cash == avec_zero.cash
+    assert [r["nav"] for r in dorigine.equity_curve_rows] == [r["nav"] for r in avec_zero.equity_curve_rows]
+    assert len(dorigine.trades) == len(avec_zero.trades)
+    assert dorigine.cash == avec_zero.cash
     assert avec_zero.rebalance_skipped_days == 0
 
 
 def test_le_defaut_du_moteur_est_celui_de_config():
+    """Et ce défaut n'est plus neutre : la grille l'a porté à 15 points de NAV.
+    Un moteur actions construit sans rien préciser FILTRE donc désormais ses
+    repesages -- c'est le comportement voulu, mais il doit être explicite."""
     panel, events = _scenario()
     moteur = _moteur(panel, events, _ToutesAPoidsEgaux())
     assert moteur.rebalance_band_pct == config.BACKTEST_REBALANCE_BAND_PCT
+    assert config.BACKTEST_REBALANCE_BAND_PCT > 0
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +142,37 @@ def test_une_zone_large_supprime_les_repesages_sans_objet():
 
     assert large.rebalance_skipped_days > 0, "la zone n'a rien filtré : le scénario ne reproduit rien"
     assert len(large.trades) < len(serre.trades)
+
+
+def test_une_candidate_SEULE_est_achetee_meme_sous_la_zone():
+    """LE cas que la première version ratait, et que seul un portefeuille à
+    candidate unique révèle.
+
+    Avec un plafond par ligne à 10% du NAV et une zone à 15 points, une
+    candidate SEULE pèse 10 points de dérive : elle reste sous le seuil, et
+    comme rien d'autre ne bouge, elle n'est jamais achetée -- jamais, pas
+    « plus tard ». La zone cessait d'être un filtre de coût pour devenir un
+    filtre de signal.
+
+    Le test précédent ne l'attrapait pas : ses trois titres entraient le même
+    jour, pour 100 points de dérive. C'est un portefeuille FOURNI qui masque le
+    défaut, d'où ce contrôle à candidate unique."""
+    dates = pd.bdate_range("2020-01-01", periods=40)
+    panel = _panel({"AAA": [100.0] * 40, "BBB": [100.0] * 40}, dates)
+    # BBB n'a pas de signal : AAA est la seule candidate de tout le run.
+    events = pd.DataFrame([_evt("AAA", dates[1])])
+
+    class UneSeuleLignePlafonnee(Strategy):
+        def generate_target_weights(self, signals, current_positions):
+            return {s: 0.10 for s in signals["symbol"]}
+
+    moteur = _moteur(panel, events, UneSeuleLignePlafonnee(), rebalance_band_pct=15.0)
+    moteur.run()
+
+    assert "AAA" in moteur.positions, (
+        "la candidate unique n'a jamais été achetée : la zone de non-négociation "
+        "filtre le SIGNAL et non le coût"
+    )
 
 
 def test_la_zone_n_empeche_jamais_une_entree_neuve():
@@ -205,13 +246,33 @@ def _signaux_deux_lignes() -> pd.DataFrame:
     ])
 
 
-def test_le_plafond_par_defaut_reste_celui_de_config():
+def test_le_plafond_par_defaut_est_celui_des_strategies_actions():
+    """Les deux stratégies actions lisent BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
+    (10%) et NON BACKTEST_MAX_WEIGHT_PER_POSITION_PCT (20%), qui reste celui de
+    base.capped_weights et donc des stratégies OPTIONS. La grille n'a rien
+    mesuré du côté options : confondre les deux constantes déplacerait en
+    silence la concentration de trois stratégies jamais évaluées."""
+    attendu = config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
     for nom in ("valuation_gap_dcf", "valuation_gap_sector_neutral"):
         strategie = STRATEGY_REGISTRY[nom]()
-        assert strategie.max_weight_pct == config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
+        assert strategie.max_weight_pct == attendu
         # Le paramètre doit aussi apparaître dans params : c'est lui qui est
         # consigné dans run_config.json, donc ce qui rend un run reproductible.
-        assert strategie.params["max_weight_pct"] == config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
+        assert strategie.params["max_weight_pct"] == attendu
+    assert attendu != config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT, (
+        "les deux constantes ont convergé : ce test ne distingue plus rien"
+    )
+
+
+def test_le_filtre_momentum_des_actions_est_distinct_de_celui_des_options():
+    """Même séparation pour le momentum : le moteur ACTIONS le désactive par
+    défaut depuis la grille, le moteur options garde le sien."""
+    panel, events = _scenario()
+    moteur = _moteur(panel, events, _ToutesAPoidsEgaux(), momentum_min_pct=config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT)
+    assert moteur.momentum_min_pct is None
+    assert config.BACKTEST_MOMENTUM_MIN_PCT is not None, (
+        "le filtre des OPTIONS a été désactivé au passage -- aucune mesure ne le justifie"
+    )
 
 
 def test_un_plafond_plus_bas_borne_vraiment_les_poids():

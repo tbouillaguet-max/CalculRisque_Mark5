@@ -365,7 +365,16 @@ VALUATION_GAP_THRESHOLD_PCT = 20.0
 # significative). Ajustable via --entry-threshold-pct sur 09_backtest.py.
 BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
 BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
-BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
+
+# Prise de gain portée de 30% à 60% par la grille de 16_optimize_strategie_actions.py
+# (576 combinaisons par stratégie, apprentissage 2015-2021, test 2022-2026).
+# 60 figure dans le plateau des DEUX stratégies actions, et c'est la valeur la
+# moins coûteuse en rotation parmi celles que l'apprentissage ne départage pas :
+# la rotation tombe de ~560% à ~360% par an sans perte de Sharpe. Vendre un
+# gagnant à +30% le rachetait souvent quelques semaines plus tard, l'écart de
+# valorisation n'ayant pas disparu -- deux fois cost_bps pour revenir au même
+# titre. Voir README, « Optimisation des réglages actions ».
+BACKTEST_TAKE_PROFIT_PCT = 60.0
 
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
@@ -373,7 +382,25 @@ BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 3
 # zéro -> plusieurs milliers de %) capte à lui seul l'essentiel du capital.
 # Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
 # concentration du portefeuille. 0 ou None le désactive.
+#
+# PARTAGÉ AVEC LES STRATÉGIES OPTIONS : c'est le plafond par défaut de
+# base.capped_weights, que valuation_gap_multiples_options utilise aussi. Il
+# reste donc à 20 -- la grille actions ne mesure rien du côté options, et
+# changer ici déplacerait en silence la concentration de trois stratégies qui
+# n'ont pas été évaluées. Les stratégies ACTIONS ont leur propre valeur
+# ci-dessous.
 BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
+
+# Plafond par position des deux stratégies ACTIONS, distinct du précédent.
+#
+# 10% est le SEUL axe sur lequel les plateaux des deux grilles soient unanimes :
+# sur les 17 combinaisons indiscernables du maximum côté DCF et les 39 côté
+# neutre au secteur, toutes retiennent 10 et aucune 20. C'est aussi le résultat
+# le moins surprenant de l'étude -- diviser par deux la taille maximale d'une
+# ligne sur un portefeuille dont le nombre de positions n'est pas plafonné, c'est
+# de la diversification pure, et la diversification est ce qui améliore un Sharpe
+# sans rien promettre sur le rendement.
+BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT = 10.0
 
 # Plafond de poids CUMULÉ par secteur (stratégie valuation_gap_sector_neutral).
 # Le plafond par position ne borne rien à ce niveau : vingt technos à 4%
@@ -386,7 +413,12 @@ BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT = 30.0
 # SECTEUR (10 points d'excès sur ses pairs est bien plus sélectif que 10%
 # d'écart au cours), le second est le garde-fou absolu qui empêche d'acheter
 # la "moins pire" d'un secteur entièrement survalorisé.
-BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 10.0
+# Seuil porté de 10 à 20 par la grille : à plafond, stop et zone de
+# non-négociation fixés, 20 domine 10 sur l'apprentissage (0,994 contre 0,980),
+# sur le test (0,787 contre 0,712) et sur la rotation (355% contre 366%). Le
+# garde-fou absolu ci-dessous, lui, ne bouge pas : il ne mesure pas la même
+# chose (écart au cours, pas excès sur les pairs) et rien ne l'a évalué.
+BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 20.0
 BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 
 # Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
@@ -396,7 +428,29 @@ BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 # s'élargit parce que le marché intègre une dégradation que les derniers
 # états financiers publiés ne montrent pas encore.
 # None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
+#
+# PARTAGÉ AVEC LE MOTEUR OPTIONS (options_engine, 10, 11, 11b, 11c, 11d, 13) :
+# il reste à -10 pour la même raison que le plafond de concentration ci-dessus.
+# Les stratégies ACTIONS ont leur propre valeur juste en dessous.
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
+
+# Filtre momentum des backtests ACTIONS : DÉSACTIVÉ.
+#
+# C'est le résultat le plus inattendu de la grille, et le mieux établi après le
+# plafond de concentration : sur le plateau DCF, les 17 combinaisons
+# indiscernables du maximum l'écartent TOUTES. L'effet marginal est net dans les
+# deux sens (Sharpe d'apprentissage 0,903 sans filtre contre 0,869 avec ; test
+# 0,743 contre 0,722).
+#
+# L'explication tient à ce que le filtre écarte. Un titre dont le cours a chuté
+# de plus de 10% sur un an est precisément celui dont l'écart de valorisation
+# vient de s'élargir -- c'est-à-dire la candidate la plus attrayante de la
+# thèse. Le garde-fou anti-value-trap supprimait donc une partie du signal en
+# même temps que le piège, et le moteur a déjà DEUX protections contre la value
+# trap qui, elles, ne coûtent pas de signal : la péremption du signal (un écart
+# qui ne se rafraîchit plus cesse d'être finançable) et le stop-loss à -15%.
+# None, pas 0.0 : 0.0 serait le filtre le plus strict, pas son absence.
+BACKTEST_STOCKS_MOMENTUM_MIN_PCT = None
 
 # Zone de NON-NÉGOCIATION du rebalancement, en POINTS DE NAV : le portefeuille
 # n'est repesé que les jours où il faudrait faire bouger au moins ce
@@ -410,7 +464,14 @@ BACKTEST_MOMENTUM_MIN_PCT = -10.0
 # entre 2015 et 2026 -- sans zone de non-négociation, le portefeuille est
 # repesé en entier 9 séances sur 10, chaque miette payant cost_bps à l'aller et
 # au retour. 0 la désactive (comportement d'avant l'ajout du réglage).
-BACKTEST_REBALANCE_BAND_PCT = 0.0
+#
+# 15 points de NAV retenus par la grille : la valeur la moins coûteuse en
+# rotation parmi celles que l'apprentissage ne départage pas. Le Sharpe
+# d'apprentissage est plat sur 0, 5 et 15 (0,890 / 0,887 / 0,881) quand la
+# rotation, elle, tombe de 379% à 240%. Une zone de non-négociation n'est pas
+# un pari sur le marché : elle évite de payer pour des ajustements que la
+# thèse n'a pas demandés.
+BACKTEST_REBALANCE_BAND_PCT = 15.0
 # Capital simulé au départ des backtests (actions et options : voir
 # OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
 # portefeuille selon qu'on l'investit en actions ou en options).

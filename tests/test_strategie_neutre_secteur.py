@@ -72,14 +72,22 @@ def test_l_anomalie_est_trouvee_dans_le_secteur_le_moins_bien_note():
 def test_le_niveau_absolu_d_un_secteur_ne_biaise_plus_l_allocation():
     """Même dispersion INTERNE dans les deux secteurs, seul leur niveau
     diffère -- exactement ce que produit SECTOR_DCF_PARAMS. L'allocation doit
-    être symétrique."""
+    être symétrique.
+
+    Le seuil est passé EXPLICITEMENT (10, l'ancien défaut) : ce test mesure la
+    symétrie entre deux secteurs, pas la sélectivité. Depuis que la grille a
+    porté le défaut à 20, une dispersion de 30 points ne produit plus d'excès
+    sectoriel assez large pour qu'une seule candidate passe -- le test
+    échouerait sur l'absence de candidates, sans rien dire de la symétrie qu'il
+    vérifie."""
     dispersion = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0]
     signaux = _signaux({
         "Technologie": [35.0 + d for d in dispersion],
         "Agro-alimentaire et boissons": [8.0 + d for d in dispersion],
     })
     poids = _poids_par_secteur(
-        ValuationGapSectorNeutralStrategy().generate_target_weights(signaux, set()), signaux,
+        ValuationGapSectorNeutralStrategy(entry_threshold_pct=10.0)
+        .generate_target_weights(signaux, set()), signaux,
     )
     assert poids["Technologie"] == pytest.approx(poids["Agro-alimentaire et boissons"], rel=1e-6)
 

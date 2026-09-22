@@ -85,7 +85,7 @@ def main() -> None:
     )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE", help="Paramètre supplémentaire spécifique à la stratégie (répétable).")
     parser.add_argument(
-        "--momentum-min-pct", type=float, default=config.BACKTEST_MOMENTUM_MIN_PCT,
+        "--momentum-min-pct", type=float, default=config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
         help="Momentum 12-1 minimal (en %%) pour une NOUVELLE entrée, filtre anti-value-trap. "
              "Ex: -10. Utiliser --no-momentum-filter pour le désactiver.",
     )

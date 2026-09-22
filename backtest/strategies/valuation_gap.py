@@ -24,7 +24,7 @@ class ValuationGapDCFStrategy(Strategy):
     def __init__(
         self,
         entry_threshold_pct: float = config.BACKTEST_ENTRY_THRESHOLD_PCT,
-        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
+        max_weight_pct: float = config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT,
         **kwargs,
     ):
         super().__init__(
