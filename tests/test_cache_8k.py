@@ -69,18 +69,32 @@ def test_un_8k_deja_classifie_n_est_ni_retelecharge_ni_reanalyse(sec, tmp_path):
     assert rows2[0]["from_cache"] is True
 
 
-def test_un_verdict_manquant_n_est_pas_memorise(sec, tmp_path, monkeypatch):
-    """Quota Mistral épuisé -> category="non_evalue". Le mémoriser gèlerait
-    définitivement le trou : ce 8-K ne serait plus jamais reproposé."""
+def test_sans_modele_le_document_est_classe_par_regles(sec, tmp_path, monkeypatch):
+    """Quota Mistral épuisé ou clé absente : le 8-K est désormais classé à
+    partir de SON TEXTE plutôt que journalisé `non_evalue`.
+
+    L'ancienne version de ce test figeait le comportement inverse, et ce
+    comportement avait un coût mesuré : sur l'archive du dépôt, 100% des
+    99 147 dépôts étaient `non_evalue`, si bien que le filtre d'événements
+    matériels du moteur ne s'appliquait à rien. Le document était téléchargé --
+    la partie coûteuse -- puis jeté faute de jugement.
+
+    Ce que le test d'origine protégeait reste protégé, mais ailleurs : un repli
+    mémorisé ne doit pas devenir un plafond. C'est `load_llm_cache` qui le
+    garantit en remettant ces lignes en jeu dès qu'une clé est disponible
+    (cf. test_classification_8k_par_regles.py)."""
     monkeypatch.setattr(module_04c.sft, "analyser_texte_mistral", lambda *a, **k: None)
 
     cache = {}
     rows, _ = module_04c.process_ticker_8k(
         "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
 
-    assert rows[0]["category"] == "non_evalue"
-    assert cache == {}
-    assert not module_04c.llm_cache_path(tmp_path).exists()
+    assert rows[0]["category"] != "non_evalue"
+    assert rows[0]["classification_source"] == "regles_document"
+    # Mémorisé, car déterministe : c'est le TÉLÉCHARGEMENT qu'on évite de
+    # repayer, pas le calcul de la règle.
+    assert len(cache) == 1
+    assert module_04c.llm_cache_path(tmp_path).exists()
 
 
 def test_no_llm_cache_force_la_reanalyse(sec, tmp_path):

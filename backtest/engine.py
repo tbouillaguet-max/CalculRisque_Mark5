@@ -295,6 +295,14 @@ class BacktestEngine:
         demanded = notional * (1 + cost_rate)
         self.buy_orders_count += len(buys)
 
+        # Compté AVANT toute sortie anticipée : la version précédente
+        # incrémentait `unfilled_dollar` puis sortait sur `cash <= 0` sans
+        # jamais ajouter ce lot au dénominateur. Le ratio ratait donc
+        # exactement les journées de pénurie TOTALE -- les pires -- et
+        # `unfilled_dollar_pct` en ressortait surestimé, d'autant plus que la
+        # pénurie était grave.
+        self.demanded_dollar += demanded
+
         scale = 1.0
         if demanded > self.cash:
             # Backtest NON margé : on n'achète jamais à crédit.
@@ -315,7 +323,6 @@ class BacktestEngine:
             if self.cash <= 0:
                 return
             scale = self.cash / demanded
-        self.demanded_dollar += demanded
 
         for symbol, shares_delta, price, reason in buys:
             if shares_delta * price * scale < MIN_TRADE_DOLLAR:

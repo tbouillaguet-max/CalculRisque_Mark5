@@ -518,6 +518,61 @@ BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD = {"FY": 270, "TTM": 120}
 QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
 
 # ----------------------------------------------------------------------------
+# Matérialité d'un 8-K par CODE D'ITEM SEC, sans LLM
+# ----------------------------------------------------------------------------
+# POURQUOI CE REPLI EXISTE. 04c classe la matérialité d'un 8-K par appel à un
+# modèle, et journalise `non_evalue` quand MISTRAL_API_KEY est absente. Mesuré
+# sur l'archive du dépôt : 99 147 dépôts, `category` à `non_evalue` sur 100%
+# des lignes et `materiality` vide partout. Le filtre d'événements matériels --
+# l'une des deux protections anti-value-trap que le moteur documente -- ne
+# tournait donc pas du tout, en silence à un avertissement près.
+#
+# Or la SEC NORMALISE le motif de dépôt : chaque 8-K porte ses `item_codes`,
+# déjà collectés par 04c et déjà présents dans l'archive. La matérialité d'un
+# « Item 4.02 » (non-fiabilité des états financiers publiés) ne demande aucun
+# jugement de langage -- elle est dans la définition du code. Ce repli rend donc
+# le filtre opérant sans clé d'API, de façon DÉTERMINISTE et auditable, là où
+# la classification par modèle restait invérifiable d'un run à l'autre.
+#
+# Les codes retenus sont ceux qui invalident les FONDAMENTAUX sur lesquels le
+# signal repose, pas ceux qui font l'actualité :
+# Codes MATÉRIELS PAR DÉFINITION, et la catégorie qu'ils portent. Table unique,
+# consommée par 04c (qui lui ajoute la lecture du texte) ET par
+# backtest.data_loader (qui, relisant une archive déjà écrite, n'a que les
+# codes). Deux tables auraient fini par diverger en silence.
+MATERIAL_8K_ITEM_CATEGORIES = {
+    "1.03": "procedure_judiciaire",  # faillite ou mise sous séquestre
+    "2.01": "fusion_acquisition",    # acquisition ou cession d'actifs réalisée
+    "2.03": "autre_materiel",        # nouvelle obligation financière directe (levier)
+    "2.04": "autre_materiel",        # déchéance du terme d'une dette
+    "2.05": "autre_materiel",        # coûts de restructuration ou de cession
+    "2.06": "autre_materiel",        # dépréciation d'actifs significative
+    "3.01": "autre_materiel",        # avis de radiation / non-respect des règles de cotation
+    "4.01": "autre_materiel",        # changement de commissaire aux comptes
+    "4.02": "autre_materiel",        # NON-FIABILITÉ d'états financiers déjà publiés
+}
+MATERIAL_8K_ITEM_CODES = tuple(MATERIAL_8K_ITEM_CATEGORIES)
+
+# Codes que SEUL LE TEXTE peut trancher. 04c les résout en lisant le document ;
+# la relecture d'archive, elle, ne les compte PAS -- sans le texte, les
+# supposer matériels périmerait des signaux sur la foi d'un code qui ne dit
+# rien. Mieux vaut un filtre qui rate un événement qu'un filtre qui invente.
+AMBIGUOUS_8K_ITEM_CODES = (
+    "1.01",  # accord significatif : fusion, ou contrat de fourniture ?
+    "1.02",  # résiliation d'un accord : même ambiguïté
+    "5.02",  # départ d'un dirigeant, ou élection routinière d'un administrateur ?
+    "7.01",  # Regulation FD : fourre-tout de communication
+    "8.01",  # « autres événements » : fourre-tout, parfois décisif
+    "2.02",  # résultats trimestriels (21 455 dépôts) : révision de guidance, ou routine ?
+)
+# Délibérément absents des DEUX listes, chacun pour une raison précise :
+#   9.01 (43 373 dépôts, le plus fréquent) ne fait que déclarer des pièces
+#       jointes -- purement administratif ;
+#   5.07 (vote en assemblée) et 5.03 (statuts) sont de la routine annuelle.
+# `MATERIAL_8K_ITEM_CATEGORIES = {}` désactive le repli et rend au filtre son
+# comportement d'avant (inerte sans classification par modèle).
+
+# ----------------------------------------------------------------------------
 # Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)
 # ----------------------------------------------------------------------------
 # Reprend le même seuil d'entrée que 08 (écart significatif = ±20%), mais ici

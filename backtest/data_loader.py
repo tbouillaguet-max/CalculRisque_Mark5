@@ -23,6 +23,7 @@ consommés par backtest/engine.py :
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Optional
 
@@ -332,24 +333,87 @@ class MaterialEventResolver:
         return bool(hi > lo)  # bool natif, pas un numpy.bool_
 
 
+_ITEM_CODE_RE = re.compile(r"(\d+\.\d+)")
+
+
+def _material_by_item_code(df: pd.DataFrame, codes: tuple) -> pd.Series:
+    """Matérialité déduite des CODES D'ITEM SEC, sans appel à un modèle.
+
+    La SEC normalise le motif de dépôt d'un 8-K : le caractère matériel d'un
+    « Item 4.02 » (non-fiabilité d'états financiers déjà publiés) tient à la
+    définition du code, pas à la lecture du communiqué. Voir
+    config.MATERIAL_8K_ITEM_CODES pour les codes retenus et, surtout, pour ceux
+    qui en sont délibérément absents.
+
+    L'extraction passe par une expression régulière sur le NUMÉRO et non par
+    une égalité de chaîne : l'archive contient « Item 9.01 », « Item  9.01 » et
+    « Item\\n9.01 » comme trois valeurs distinctes, et une comparaison littérale
+    n'en verrait qu'une."""
+    voulus = {str(c).strip() for c in codes}
+    if not voulus:
+        return pd.Series(False, index=df.index)
+
+    def materiel(valeur) -> bool:
+        if valeur is None:
+            return False
+        items = valeur if isinstance(valeur, (list, tuple, np.ndarray)) else [valeur]
+        for item in items:
+            trouve = _ITEM_CODE_RE.search(str(item))
+            if trouve and trouve.group(1) in voulus:
+                return True
+        return False
+
+    return df["item_codes"].map(materiel)
+
+
 def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
-    """8-K jugés matériels (04c). None si 04c n'a jamais tourné, ou si aucune
-    ligne n'est marquée matérielle -- notamment quand MISTRAL_API_KEY n'est pas
-    définie : 04c écrit alors materiality=None partout (aucune classification),
-    et le filtre reste sans effet plutôt que d'écarter tous les signaux."""
+    """8-K matériels. Deux sources, dans cet ordre :
+
+    1. la classification de 04c (`materiality`), quand elle a tourné avec une
+       clé d'API ;
+    2. à défaut, les CODES D'ITEM SEC (config.MATERIAL_8K_ITEM_CODES).
+
+    Le repli 2 existe parce que le cas 1 échouait en silence : sans
+    MISTRAL_API_KEY, 04c écrit `non_evalue` partout et `materiality` reste
+    vide. Mesuré sur l'archive du dépôt, c'était 100% des 99 147 dépôts -- le
+    filtre d'événements matériels, l'une des deux protections anti-value-trap
+    du moteur, ne s'appliquait à rien. Un avertissement le disait, mais un
+    avertissement n'est pas une protection.
+
+    None si 04c n'a jamais tourné, ou si aucune des deux voies ne désigne le
+    moindre événement : le filtre reste alors sans effet plutôt que d'écarter
+    tous les signaux."""
     path = path or config.MATERIAL_EVENTS_8K_FILE
     if not path.exists():
         return None
     df = pd.read_parquet(path)
-    if "materiality" not in df.columns or "filed_date" not in df.columns:
+    if "filed_date" not in df.columns:
         return None
-    df = df[df["materiality"].fillna(False).astype(bool)].copy()
+
+    source = "classification 04c"
+    retenus = (
+        df["materiality"].fillna(False).astype(bool)
+        if "materiality" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    if not retenus.any() and "item_codes" in df.columns:
+        codes = getattr(config, "MATERIAL_8K_ITEM_CODES", ())
+        retenus = _material_by_item_code(df, codes)
+        source = f"codes d'item SEC {tuple(codes)}"
+
+    df = df[retenus].copy()
     if df.empty:
         logger.info(
-            "%s ne contient aucun 8-K classé matériel (MISTRAL_API_KEY non définie lors du "
-            "run de 04c ?) : le filtre d'événements matériels reste sans effet.", path,
+            "%s ne désigne aucun 8-K matériel, ni par la classification de 04c "
+            "(MISTRAL_API_KEY non définie lors du run ?) ni par les codes d'item : "
+            "le filtre d'événements matériels reste sans effet.", path,
         )
         return None
+
+    logger.info(
+        "Filtre d'événements matériels actif sur %d dépôts 8-K (source : %s).",
+        len(df), source,
+    )
     df["filed_date"] = config.to_naive_day(df["filed_date"])
     return df.dropna(subset=["symbol", "filed_date"])
 

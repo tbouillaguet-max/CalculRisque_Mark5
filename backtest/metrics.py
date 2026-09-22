@@ -203,6 +203,88 @@ def deflated_sharpe_ratio(
         returns, benchmark_sharpe=expected_maximum_sharpe(n_trials, sharpe_std))
 
 
+def paired_sharpe_difference(
+    returns_a: pd.Series,
+    returns_b: pd.Series,
+    n_bootstrap: int = 4000,
+    block_days: int = 21,
+    seed: int = 12345,
+) -> dict:
+    """Le Sharpe de B dépasse-t-il celui de A, ou est-ce du bruit ?
+
+    POURQUOI UN TEST APPARIÉ, ET PAS L'ERREUR-TYPE HABITUELLE. L'erreur-type
+    d'un Sharpe estimé sur sept ans vaut ~0,46 (cf. le pavé sur le Sharpe
+    déflaté) : lue seule, elle dit qu'aucune variante n'est distinguable
+    d'aucune autre, et elle a raison -- pour deux stratégies INDÉPENDANTES.
+    Deux variantes d'un même backtest ne le sont pas : mesuré sur ce dépôt,
+    leurs courbes de NAV sont corrélées à 0,97. Ce qui les sépare est un écart
+    APPARIÉ, dont la dispersion est bien plus faible que celle de chaque terme.
+    Comparer deux Sharpe à l'aune de l'erreur-type marginale revient à jeter
+    cette information et à déclarer « non significatif » absolument tout.
+
+    POURQUOI UN BOOTSTRAP PAR BLOCS, ET PAS UNE FORMULE. Jobson-Korkie corrigé
+    par Memmel donne la variance de l'écart en forme fermée, mais sous
+    normalité et indépendance sérielle -- deux hypothèses fausses sur des
+    rendements quotidiens (queues épaisses, volatilité groupée). Le
+    rééchantillonnage par blocs de `block_days` séances conserve
+    l'autocorrélation ET, en rééchantillonnant les MÊMES dates pour les deux
+    séries, la corrélation entre elles. C'est cette seconde propriété qui rend
+    le test apparié ; tirer les deux séries indépendamment le détruirait.
+
+    Retourne l'écart observé, son intervalle de confiance à 95% et
+    `p_value`, la fraction des rééchantillonnages où l'écart est nul ou
+    négatif -- c'est-à-dire la probabilité que B ne vaille pas mieux que A."""
+    rng = np.random.default_rng(seed)
+    dates = returns_a.index.intersection(returns_b.index)
+    a = returns_a.loc[dates].to_numpy(dtype=float)
+    b = returns_b.loc[dates].to_numpy(dtype=float)
+    n_obs = len(a)
+    if n_obs <= block_days or n_bootstrap <= 0:
+        return {}
+
+    annualise = math.sqrt(TRADING_DAYS_PER_YEAR)
+
+    def sharpe(x: np.ndarray) -> float:
+        ecart_type = x.std()
+        return float(x.mean() / ecart_type * annualise) if ecart_type > 0 else float("nan")
+
+    observe = sharpe(b) - sharpe(a)
+    n_blocs = int(np.ceil(n_obs / block_days))
+    ecarts = np.empty(n_bootstrap)
+    for k in range(n_bootstrap):
+        departs = rng.integers(0, n_obs - block_days, n_blocs)
+        indices = np.concatenate([np.arange(d, d + block_days) for d in departs])[:n_obs]
+        ecarts[k] = sharpe(b[indices]) - sharpe(a[indices])
+
+    bas, haut = np.percentile(ecarts, [2.5, 97.5])
+    return {
+        "sharpe_a": sharpe(a),
+        "sharpe_b": sharpe(b),
+        "sharpe_difference": observe,
+        "difference_ci_low": float(bas),
+        "difference_ci_high": float(haut),
+        "p_value": float((ecarts <= 0).mean()),
+        "correlation": float(np.corrcoef(a, b)[0, 1]) if n_obs > 1 else float("nan"),
+        "n_observations": int(n_obs),
+        "n_bootstrap": int(n_bootstrap),
+        "block_days": int(block_days),
+    }
+
+
+def daily_returns_of(equity_curve: pd.DataFrame, start=None, end=None) -> pd.Series:
+    """Rendements quotidiens d'une courbe de NAV, indexés par date, prêts pour
+    `paired_sharpe_difference`. `start`/`end` découpent une sous-période (la
+    fenêtre de test, typiquement) avant le calcul."""
+    courbe = equity_curve.sort_values("date")
+    dates = pd.DatetimeIndex(courbe["date"])
+    if start is not None:
+        courbe = courbe[dates > pd.Timestamp(start)]
+        dates = pd.DatetimeIndex(courbe["date"])
+    if end is not None:
+        courbe = courbe[dates <= pd.Timestamp(end)]
+    return courbe.set_index("date")["nav"].pct_change(fill_method=None).dropna()
+
+
 def _position_level_metrics(trades: pd.DataFrame) -> dict:
     """Mêmes trades, regroupés par THÈSE (une entrée, ses renforts, ses
     allègements, sa sortie) au lieu d'une ligne par exécution.

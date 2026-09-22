@@ -151,15 +151,167 @@ def compute_search_windows(ttm: pd.DataFrame, symbol: str, today: datetime) -> L
     return windows
 
 
+# ----------------------------------------------------------------------------
+# Classification SANS modèle, à partir du texte du document
+# ----------------------------------------------------------------------------
+# POURQUOI. Sans MISTRAL_API_KEY, `classify_8k` renvoyait `non_evalue` et jetait
+# le texte qu'il venait de télécharger. Mesuré sur l'archive du dépôt : 99 147
+# dépôts, `category` à `non_evalue` sur 100% des lignes, `materiality` et
+# `summary` vides partout. Le filtre d'événements matériels -- l'une des deux
+# protections anti-value-trap du moteur -- ne s'appliquait donc à RIEN, en
+# silence à un avertissement près. Le coûteux (télécharger le document) était
+# déjà payé ; seul le jugement manquait.
+#
+# CE QUE LA RÈGLE LIT, ET POURQUOI C'EST LE DOCUMENT. Deux niveaux, tous deux
+# extraits du texte :
+#   1. les CODES D'ITEM que le déposant déclare lui-même en tête du 8-K
+#      (`extract_item_codes` les parse depuis le document). La SEC les
+#      normalise : la matérialité d'un « Item 4.02 » -- non-fiabilité d'états
+#      financiers déjà publiés -- tient à la définition du code, pas à une
+#      lecture ;
+#   2. des FORMULATIONS caractéristiques, cherchées dans le corps du document,
+#      qui tranchent là où le code seul est ambigu. C'est le cas décisif de
+#      l'Item 5.02, qui couvre aussi bien le départ d'un directeur général que
+#      l'élection routinière d'un administrateur.
+#
+# Déterministe et auditable, donc reproductible d'un run à l'autre -- ce que la
+# classification par modèle n'était pas. Elle reste prioritaire quand une clé
+# est disponible : la règle est un repli, pas un remplacement.
+
+# Tables lues depuis config : la relecture d'archive (backtest.data_loader) se
+# sert des mêmes, et deux copies auraient fini par diverger en silence.
+# `_ITEMS_MATERIELS` : matériels par définition SEC, le texte n'ajoute rien.
+# `_ITEMS_AMBIGUS` : le texte décide -- un Item 1.01 peut annoncer une fusion
+# comme un contrat de fourniture, un Item 5.02 un départ de dirigeant comme une
+# élection d'administrateur.
+_ITEMS_MATERIELS = dict(config.MATERIAL_8K_ITEM_CATEGORIES)
+_ITEMS_AMBIGUS = frozenset(config.AMBIGUOUS_8K_ITEM_CODES)
+
+# Formulations cherchées dans le CORPS du document. L'ordre compte : la
+# première catégorie dont un motif est trouvé l'emporte, du plus spécifique au
+# plus général.
+_MOTIFS_PAR_CATEGORIE = (
+    ("fusion_acquisition", (
+        r"merger agreement", r"agreement and plan of merger", r"business combination",
+        r"definitive agreement to (?:acquire|purchase)", r"tender offer",
+        r"agreed to (?:acquire|be acquired)", r"asset purchase agreement",
+    )),
+    ("procedure_judiciaire", (
+        r"chapter 11", r"chapter 7", r"bankruptcy", r"receivership",
+        r"class action", r"securities litigation", r"sec investigation",
+        r"department of justice", r"subpoena", r"consent decree",
+        r"settlement agreement", r"civil penalty",
+    )),
+    ("changement_guidance", (
+        r"(?:revis|updat|lower|rais|reduc|increas)\w*\s+(?:its\s+)?(?:full[- ]year\s+)?(?:financial\s+)?(?:guidance|outlook)",
+        r"withdraw\w*\s+(?:its\s+)?(?:guidance|outlook)",
+        r"no longer expects", r"now expects", r"suspend\w*\s+(?:its\s+)?guidance",
+    )),
+    ("rachat_actions", (
+        r"share repurchase (?:program|authorization)", r"stock repurchase (?:program|authorization)",
+        r"repurchase up to", r"authorized the repurchase", r"buyback program",
+    )),
+    ("depart_dirigeant", (
+        # Restreint aux dirigeants exécutifs ET à un départ : une élection
+        # d'administrateur au conseil ne change pas une thèse de valorisation.
+        r"(?:chief executive officer|chief financial officer|president|chairman)[^.]{0,120}?"
+        r"(?:resign|step(?:ped|ping)? down|depart|terminat|will leave|retire)",
+        r"(?:resign|step(?:ped|ping)? down|depart|terminat)\w*[^.]{0,120}?"
+        r"(?:chief executive officer|chief financial officer)",
+    )),
+    ("autre_materiel", (
+        r"impairment charge", r"goodwill impairment", r"restructuring (?:plan|charge|program)",
+        r"non[- ]reliance", r"should no longer be relied upon", r"material weakness",
+        r"restate\w*\s+(?:its\s+)?(?:financial statements|prior)",
+        r"delisting", r"notice of noncompliance", r"going concern",
+        r"dismissed\s+\w+\s+as (?:its\s+)?independent registered public accounting firm",
+    )),
+)
+
+_MOTIFS_COMPILES = tuple(
+    (categorie, tuple(re.compile(motif, re.IGNORECASE) for motif in motifs))
+    for categorie, motifs in _MOTIFS_PAR_CATEGORIE
+)
+
+# Une phrase du document, reprise telle quelle comme résumé. Vaut mieux qu'un
+# résumé fabriqué : c'est vérifiable contre la source.
+_PHRASE = re.compile(r"[^.\n]{40,400}\.")
+
+
+def _numero_item(code: str) -> str:
+    """"Item 5.02" -> "5.02". L'archive contient "Item 9.01", "Item  9.01" et
+    "Item\\n9.01" comme trois valeurs distinctes : comparer les chaînes
+    entières n'en verrait qu'une."""
+    trouve = re.search(r"(\d+\.\d+)", str(code))
+    return trouve.group(1) if trouve else ""
+
+
+def classify_8k_par_regles(item_codes: List[str], text: str) -> dict:
+    """Catégorie, matérialité et résumé déduits du DOCUMENT, sans modèle.
+
+    Voir le pavé ci-dessus pour le raisonnement. Rend les mêmes clés que la
+    voie modèle, plus `classification_source` -- sans quoi on ne saurait plus,
+    en relisant le parquet, lequel des deux chemins a produit une ligne."""
+    numeros = {_numero_item(c) for c in item_codes}
+    corps = text or ""
+
+    categorie = None
+    preuve = None
+    for candidate, motifs in _MOTIFS_COMPILES:
+        for motif in motifs:
+            trouve = motif.search(corps)
+            if trouve:
+                categorie, preuve = candidate, trouve
+                break
+        if categorie:
+            break
+
+    # Le texte n'a rien dit : les codes non ambigus tranchent seuls.
+    if categorie is None:
+        for numero in sorted(numeros):
+            if numero in _ITEMS_MATERIELS:
+                categorie = _ITEMS_MATERIELS[numero]
+                break
+
+    # Un motif trouvé dans un document qui ne déclare QUE des codes
+    # administratifs (9.01 pièces jointes, 5.07 vote en assemblée) est très
+    # probablement une mention de passage, pas l'objet du dépôt.
+    if categorie and not (numeros & (set(_ITEMS_MATERIELS) | _ITEMS_AMBIGUS)):
+        categorie = None
+
+    if categorie is None:
+        return {
+            "item_codes": item_codes, "category": "non_materiel", "materiality": False,
+            "summary": None, "classification_source": "regles_document",
+        }
+
+    resume = None
+    if preuve is not None:
+        fenetre = corps[max(0, preuve.start() - 200): preuve.end() + 200]
+        phrase = _PHRASE.search(fenetre)
+        resume = " ".join(phrase.group(0).split())[:300] if phrase else None
+
+    return {
+        "item_codes": item_codes, "category": categorie, "materiality": True,
+        "summary": resume, "classification_source": "regles_document",
+    }
+
+
 def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
+    """Classification d'un 8-K à partir de son texte.
+
+    Le modèle est prioritaire quand une clé est disponible ; à défaut, la
+    règle documentaire (`classify_8k_par_regles`) prend le relais plutôt que de
+    renvoyer `non_evalue` et de jeter le document. Voir le pavé plus haut."""
     item_codes = extract_item_codes(text)
     prompt = build_prompt(symbol, filed_date, item_codes, text)
     result = sft.analyser_texte_mistral(prompt)
     if result is None or "category" not in result:
-        return {"item_codes": item_codes, "category": "non_evalue", "materiality": None, "summary": None}
+        return classify_8k_par_regles(item_codes, text)
     return {
         "item_codes": item_codes, "category": result.get("category"),
         "materiality": result.get("materiality"), "summary": result.get("summary"),
+        "classification_source": "mistral",
     }
 
 
@@ -176,9 +328,15 @@ def cache_key(symbol: str, accession_number: str) -> str:
 
 
 def is_cacheable(classification: dict) -> bool:
-    """Vrai seulement si Mistral a rendu un verdict exploitable. Mémoriser un
+    """Vrai seulement si un verdict exploitable a été rendu. Mémoriser un
     "non_evalue" reviendrait à graver dans le marbre l'échec du jour (quota
-    Mistral atteint) : le 8-K ne serait plus jamais reproposé à l'analyse."""
+    Mistral atteint) : le 8-K ne serait plus jamais reproposé à l'analyse.
+
+    Un verdict PAR RÈGLES est mémorisé comme les autres -- il est déterministe,
+    et c'est le téléchargement du document qu'on évite de repayer, pas le
+    calcul. Il reste distingué par `classification_source`, ce dont
+    `load_llm_cache` se sert pour le remettre en jeu le jour où une clé d'API
+    devient disponible (cf. sa docstring)."""
     return classification.get("category") not in NON_CACHEABLE_CATEGORIES
 
 
@@ -188,12 +346,19 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
     Tolérant aux lignes corrompues (un run tué en plein write laisse une ligne
     tronquée) : on ignore la ligne fautive plutôt que de perdre tout le cache
     -- une entrée manquante coûte un appel Mistral, un cache illisible en
-    coûte des milliers."""
+    coûte des milliers.
+
+    Les verdicts rendus PAR RÈGLES (`classification_source == "regles_document"`)
+    sont ignorés dès qu'une clé d'API est disponible : ils ont été produits
+    faute de mieux, et les garder empêcherait le modèle de reprendre la main
+    le jour où la clé arrive -- un repli qui se transformerait en plafond."""
     path = llm_cache_path(output_dir)
     if not path.exists():
         return {}
     cache: Dict[str, dict] = {}
     ignorees = 0
+    llm_disponible = bool(os.environ.get(sft.MISTRAL_API_KEY_ENV))
+    remis_en_jeu = 0
     with path.open(encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -208,11 +373,19 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
             if not symbol or not accession:
                 ignorees += 1
                 continue
+            if llm_disponible and entry.get("classification_source") == "regles_document":
+                remis_en_jeu += 1
+                continue
             # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
             # remplace l'ancien verdict sans qu'il faille réécrire le fichier.
             cache[cache_key(symbol, accession)] = entry
     if ignorees:
         logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    if remis_en_jeu:
+        logger.info(
+            "%d 8-K classés par règles remis en jeu : MISTRAL_API_KEY est définie, "
+            "le modèle reprend la main dessus.", remis_en_jeu,
+        )
     logger.info("Mémoire des classifications : %d 8-K déjà analysés dans %s.", len(cache), path)
     return cache
 
@@ -238,6 +411,10 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
         "category": entry.get("category"),
         "materiality": entry.get("materiality"),
         "summary": entry.get("summary"),
+        # Reporté depuis le cache : sans lui, une ligne relue ne dirait plus
+        # lequel des deux chemins l'a produite, et le parquet deviendrait
+        # ininterprétable dès qu'un run mélange les deux.
+        "classification_source": entry.get("classification_source"),
         "fetch_timestamp": entry.get("fetch_timestamp"),
         "from_cache": True,
     }
