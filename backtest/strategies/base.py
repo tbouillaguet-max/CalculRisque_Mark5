@@ -152,18 +152,26 @@ def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter
     if cap * len(weights) <= 1:
         return pd.Series(cap, index=weights.index)
 
+    # ITÉRATION EN NUMPY, pas en pandas. Le point fixe est identique -- mêmes
+    # opérations, même ordre, mêmes arrondis flottants -- mais chaque tour
+    # construisait auparavant trois Series intermédiaires via `.where()`.
+    # Mesuré au profileur sur un run complet : `capped_weights` pesait 15,7 s
+    # sur 45 s, soit 35% du temps du backtest actions, pour une fonction
+    # appelée à chaque dépôt SEC (2624 jours sur 2936). C'est le plafond de
+    # taille de toute étude un peu large, d'où la réécriture.
+    valeurs = weights.to_numpy(dtype=float, copy=True)
     for _ in range(max_iter):
-        over = weights > cap
-        if not over.any():
+        au_dessus = valeurs > cap
+        if not au_dessus.any():
             break
-        excess = float((weights[over] - cap).sum())
-        weights = weights.where(~over, cap)
-        under = ~over
-        room = float(weights[under].sum())
-        if room <= 0:
+        excedent = float((valeurs[au_dessus] - cap).sum())
+        valeurs[au_dessus] = cap
+        en_dessous = ~au_dessus
+        place = float(valeurs[en_dessous].sum())
+        if place <= 0:
             break
-        weights = weights.where(over, weights + excess * weights / room)
-    return weights
+        valeurs[en_dessous] += excedent * valeurs[en_dessous] / place
+    return pd.Series(valeurs, index=weights.index, name=weights.name)
 
 
 def register_strategy(name: str):

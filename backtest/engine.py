@@ -117,7 +117,14 @@ class BacktestEngine:
         end_date: Optional[pd.Timestamp] = None,
     ):
         self.prices = price_panel
-        self.last_valid_date = price_panel.last_valid_date
+        # DICT et non la Series de price_panel : `_handle_stale_symbols`
+        # interroge cette table pour CHAQUE position à CHAQUE séance, et un
+        # `Series.get(symbole)` reconstruit tout un chemin d'indexation pandas
+        # à chaque appel. Mesuré au profileur sur un run complet : 371 301
+        # appels pour 7,3 s, soit 17% du temps total, à ne lire qu'une date.
+        # Le dict rend exactement les mêmes valeurs (Timestamp ou NaT, None si
+        # absent), donc aucun changement de comportement.
+        self.last_valid_date = dict(price_panel.last_valid_date)
         # Les événements sont triés par date de publication une fois pour
         # toutes, puis consommés au fil de la boucle (cf. _events_up_to) : les
         # rechercher par masque booléen sur la table complète à chacun des

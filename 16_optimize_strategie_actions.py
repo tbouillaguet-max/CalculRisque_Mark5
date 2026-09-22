@@ -73,11 +73,13 @@ from __future__ import annotations
 import argparse
 import itertools
 import logging
+import math
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -185,6 +187,7 @@ def _run_one(
     end_date: Optional[pd.Timestamp],
     split_date: Optional[pd.Timestamp],
     n_trials: int = 1,
+    garder_courbe: bool = False,
 ) -> dict:
     """Un run complet pour cette combinaison. Fonction de MODULE (et non
     méthode ni closure) pour rester picklable par ProcessPoolExecutor -- les
@@ -262,6 +265,15 @@ def _run_one(
             counts = trades["exit_reason"].value_counts().to_dict()
             for reason in ("stop_loss", "take_profit", "rebalance", "data_gap"):
                 row[f"exits_{reason}"] = int(counts.get(reason, 0))
+
+        if garder_courbe:
+            # La courbe de NAV permet de RE-DÉCOUPER après coup, en autant de
+            # fenêtres qu'on veut, sans relancer un seul backtest : c'est ce
+            # qui rend le walk-forward abordable (une passe de grille au lieu
+            # d'une par fenêtre). 576 courbes de ~3000 points tiennent dans
+            # une quinzaine de mégaoctets.
+            row["_nav"] = equity_curve["nav"].to_numpy(dtype=float)
+            row["_dates"] = pd.DatetimeIndex(equity_curve["date"])
     except Exception as exc:  # noqa: BLE001 -- une combinaison qui plante ne doit pas tuer la grille
         logger.exception("Échec pour %s", combo)
         row["error"] = str(exc)
@@ -327,6 +339,22 @@ def main() -> None:
              "LE MOINS parmi elles, pas celui dont l'estimation est la plus haute -- l'erreur-type "
              "d'un Sharpe sur sept ans dépasse 0,45. 0 rétablit l'argmax strict.",
     )
+    parser.add_argument(
+        "--n-trials-prior", type=int, default=0,
+        help="Nombre de combinaisons DÉJÀ essayées avant cette grille, dans les études "
+             "précédentes. Ajouté à la taille de la grille pour le Sharpe déflaté. Le "
+             "surapprentissage se compte sur le PROGRAMME DE RECHERCHE entier, pas sur la "
+             "dernière grille : repartir de zéro à chaque lancement revient à effacer le "
+             "compteur juste avant de le lire.",
+    )
+    parser.add_argument(
+        "--walk-forward", action="store_true",
+        help="Évalue en plus la performance hors échantillon CONCATÉNÉE sur fenêtres "
+             "glissantes : chaque fenêtre choisit sa combinaison sur son seul passé. Une "
+             "coupure unique ne laisse que 4,7 ans hors échantillon, trop peu pour trancher.",
+    )
+    parser.add_argument("--wf-annees-apprentissage", type=float, default=5.0)
+    parser.add_argument("--wf-annees-test", type=float, default=1.0)
     parser.add_argument("--stop-loss-grid", type=float, nargs="+", default=None)
     parser.add_argument("--take-profit-grid", type=float, nargs="+", default=None)
     parser.add_argument("--entry-threshold-grid", type=float, nargs="+", default=None)
@@ -381,6 +409,14 @@ def main() -> None:
     }
     fixed_strategy_params: dict = {}
 
+    # Le surapprentissage se compte sur le PROGRAMME entier (cf.
+    # --n-trials-prior) : la grille du jour n'en est qu'une tranche.
+    n_trials = len(grid) + max(args.n_trials_prior, 0)
+    if args.n_trials_prior:
+        logger.info(
+            "Sharpe deflate calcule sur %d essais : %d dans cette grille, %d anterieurs.",
+            n_trials, len(grid), args.n_trials_prior)
+
     rows: list[dict] = []
     if args.workers > 1:
         # initializer/initargs : cf. le commentaire sur _pool_initializer.
@@ -390,7 +426,7 @@ def main() -> None:
             futures = {
                 pool.submit(
                     _run_one, combo, args.strategy, fixed_strategy_params, engine_kwargs,
-                    start_date, end_date, split_date, len(grid),
+                    start_date, end_date, split_date, n_trials, args.walk_forward,
                 ): combo
                 for combo in grid
             }
@@ -402,12 +438,18 @@ def main() -> None:
         for i, combo in enumerate(grid, 1):
             rows.append(_run_one(
                 combo, args.strategy, fixed_strategy_params, engine_kwargs,
-                start_date, end_date, split_date, len(grid),
+                start_date, end_date, split_date, n_trials, args.walk_forward,
             ))
             if i % 10 == 0 or i == len(grid):
                 logger.info("  %d/%d combinaisons", i, len(grid))
 
-    results = pd.DataFrame(rows)
+    # Les courbes de NAV servent au walk-forward et n'ont rien à faire dans le
+    # CSV (une colonne de 3000 nombres par ligne le rendrait illisible et
+    # énorme) : elles restent en mémoire, sous des clés préfixées d'un
+    # underscore, et sont retirées avant écriture.
+    resultat_wf = walk_forward(rows, args, args.plateau_tolerance) if args.walk_forward else None
+
+    results = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
     output = args.output or (
         config.DIR_BACKTEST / f"optimize_actions_{args.strategy}_{datetime.now():%Y%m%d_%H%M%S}.csv"
     )
@@ -416,6 +458,50 @@ def main() -> None:
     logger.info("Grille complète écrite dans %s", output)
 
     _report(results, args, split_date)
+
+    if resultat_wf:
+        logger.info(
+            "--- Walk-forward : %d fenêtres, %d séances hors échantillon ---\n"
+            "Sharpe HORS ÉCHANTILLON concaténé : %.3f\n"
+            "Chaque fenêtre a choisi sa combinaison sur son seul passé ; aucune portion de "
+            "cette courbe n'a servi à choisir le réglage qui la produit.",
+            resultat_wf["n_fenetres"], resultat_wf["n_jours"],
+            resultat_wf["sharpe_hors_echantillon"],
+        )
+        logger.info(
+            "Combinaison retenue par fenêtre :\n%s",
+            pd.DataFrame(resultat_wf["choix"]).to_string(index=False),
+        )
+
+
+def fenetres_walk_forward(
+    debut: pd.Timestamp, fin: pd.Timestamp,
+    annees_apprentissage: float = 5.0, annees_test: float = 1.0,
+) -> list[tuple]:
+    """Fenêtres glissantes (début_apprentissage, coupure, fin_test).
+
+    POURQUOI, À CÔTÉ DE LA COUPURE UNIQUE. Une seule coupure 2015/2022 ne
+    laisse que 4,7 ans hors échantillon, sur lesquels l'erreur-type d'un Sharpe
+    dépasse 0,5 : c'est trop court pour trancher, et c'est ce qui rendait
+    l'écart mesuré (+0,08) non significatif à lui seul. Le walk-forward
+    réutilise CHAQUE année comme fenêtre de test à son tour, après un
+    apprentissage qui ne voit que son passé. La performance hors échantillon
+    est alors la concaténation de toutes ces années -- toute la période moins
+    le premier apprentissage, au lieu d'un tiers.
+
+    Ce n'est pas une astuce pour obtenir plus : c'est la même exigence
+    appliquée plus souvent. Un réglage qui ne tient que sur une fenêtre
+    particulière apparaît ici pour ce qu'il est."""
+    fenetres = []
+    coupure = debut + pd.DateOffset(years=int(annees_apprentissage))
+    pas = pd.DateOffset(years=int(annees_test)) if annees_test >= 1 else pd.DateOffset(months=int(annees_test * 12))
+    while coupure < fin:
+        fin_test = min(coupure + pas, fin)
+        if (fin_test - coupure).days < 60:
+            break
+        fenetres.append((debut, coupure, fin_test))
+        coupure = fin_test
+    return fenetres
 
 
 def _erreur_type_sharpe(sharpe: float, annees: float) -> float:
@@ -519,6 +605,83 @@ def _lire_le_plateau(
         else:
             retenues = ", ".join(_lisible(axe, v) for v in sorted(valeurs.index, key=lambda x: (pd.isna(x), x)))
             logger.info("  %-20s indécis : %s", axe, retenues)
+
+
+def _sharpe_fenetre(nav: "np.ndarray", dates: pd.DatetimeIndex, debut, fin) -> float:
+    """Sharpe annualisé sur ]debut, fin], calculé depuis la courbe de NAV."""
+    masque = (dates > pd.Timestamp(debut)) & (dates <= pd.Timestamp(fin))
+    valeurs = nav[masque]
+    if len(valeurs) < 20:
+        return float("nan")
+    rendements = np.diff(valeurs) / valeurs[:-1]
+    ecart_type = rendements.std()
+    if not ecart_type > 0:
+        return float("nan")
+    return float(rendements.mean() / ecart_type * math.sqrt(metrics_mod.TRADING_DAYS_PER_YEAR))
+
+
+def walk_forward(rows: list[dict], args, tolerance: float) -> Optional[dict]:
+    """Performance hors échantillon CONCATÉNÉE sur des fenêtres glissantes.
+
+    Pour chaque fenêtre, la combinaison est choisie sur le SEUL apprentissage
+    de cette fenêtre-là (même règle de plateau que le reste du script), puis
+    ses rendements de la fenêtre de test sont conservés. Mis bout à bout, ces
+    segments forment une courbe qu'aucune de ses portions n'a servi à choisir.
+
+    Le départage sur le plateau reste la ROTATION GLOBALE de la combinaison,
+    faute de rotation par fenêtre dans le tableau. C'est une approximation
+    assumée : la rotation est une propriété assez stable d'un réglage, et elle
+    ne sert qu'à départager des combinaisons déjà jugées indiscernables."""
+    utilisables = [r for r in rows if r.get("error") is None and r.get("_nav") is not None]
+    if not utilisables:
+        return None
+
+    dates = utilisables[0]["_dates"]
+    fenetres = fenetres_walk_forward(
+        dates[0], dates[-1], args.wf_annees_apprentissage, args.wf_annees_test)
+    if not fenetres:
+        return None
+
+    segments, choix = [], []
+    for debut, coupure, fin_test in fenetres:
+        classees = []
+        for r in utilisables:
+            sharpe_train = _sharpe_fenetre(r["_nav"], r["_dates"], debut, coupure)
+            if not math.isnan(sharpe_train):
+                classees.append((sharpe_train, r))
+        if not classees:
+            continue
+        classees.sort(key=lambda t: -t[0])
+        plafond = classees[0][0]
+        plateau = [r for s, r in classees if s >= plafond - tolerance]
+        retenue = min(
+            plateau,
+            key=lambda r: r.get("annualized_turnover_pct") or float("inf"),
+        )
+
+        masque = (retenue["_dates"] > coupure) & (retenue["_dates"] <= fin_test)
+        valeurs = retenue["_nav"][masque]
+        if len(valeurs) >= 2:
+            segments.append(np.diff(valeurs) / valeurs[:-1])
+        choix.append({
+            "coupure": str(pd.Timestamp(coupure).date()),
+            "fin_test": str(pd.Timestamp(fin_test).date()),
+            **{axe: retenue.get(axe) for axe in AXES},
+        })
+
+    if not segments:
+        return None
+    rendements = np.concatenate(segments)
+    ecart_type = rendements.std()
+    return {
+        "sharpe_hors_echantillon": (
+            float(rendements.mean() / ecart_type * math.sqrt(metrics_mod.TRADING_DAYS_PER_YEAR))
+            if ecart_type > 0 else float("nan")
+        ),
+        "n_fenetres": len(choix),
+        "n_jours": int(len(rendements)),
+        "choix": choix,
+    }
 
 
 def _reference_combo(strategy_name: str) -> dict:

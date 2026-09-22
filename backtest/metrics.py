@@ -233,7 +233,13 @@ def paired_sharpe_difference(
 
     Retourne l'écart observé, son intervalle de confiance à 95% et
     `p_value`, la fraction des rééchantillonnages où l'écart est nul ou
-    négatif -- c'est-à-dire la probabilité que B ne vaille pas mieux que A."""
+    négatif -- c'est-à-dire la probabilité que B ne vaille pas mieux que A.
+
+    UNE RÉSERVE, mesurée : sur 60 paires de séries sans aucun écart réel, ce
+    test en rejette environ 10% au seuil de 5%. Un bootstrap par blocs est
+    légèrement LIBÉRAL -- il conclut un peu trop souvent. Une p-value juste
+    sous 0,05 ne vaut donc pas une preuve ; un intervalle franchement à droite
+    de zéro, oui."""
     rng = np.random.default_rng(seed)
     dates = returns_a.index.intersection(returns_b.index)
     a = returns_a.loc[dates].to_numpy(dtype=float)
