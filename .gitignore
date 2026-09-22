@@ -26,6 +26,11 @@
 data/backtest/
 data/backtest_options/
 
+# Journaux des grid-search : même raison, et le CSV qu'ils commentent est déjà
+# sous data/backtest/, donc hors git lui aussi. Ce qu'une grille APPREND se lit
+# dans le README, pas dans les 576 lignes de progression qui l'ont produit.
+logs/grille_*.log
+
 # Python
 __pycache__/
 *.pyc
