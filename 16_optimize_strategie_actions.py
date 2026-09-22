@@ -320,6 +320,13 @@ def main() -> None:
              "CSV, défaut: %(default)s). Un réglage très sélectif finit toujours par n'ouvrir "
              "que quelques positions chanceuses : sans ce plancher, il gagnerait sans rien prouver.",
     )
+    parser.add_argument(
+        "--plateau-tolerance", type=float, default=0.05,
+        help="Écart de Sharpe d'apprentissage en deçà duquel deux combinaisons sont tenues pour "
+             "indiscernables (défaut: %(default)s). Le meilleur point est alors celui qui NÉGOCIE "
+             "LE MOINS parmi elles, pas celui dont l'estimation est la plus haute -- l'erreur-type "
+             "d'un Sharpe sur sept ans dépasse 0,45. 0 rétablit l'argmax strict.",
+    )
     parser.add_argument("--stop-loss-grid", type=float, nargs="+", default=None)
     parser.add_argument("--take-profit-grid", type=float, nargs="+", default=None)
     parser.add_argument("--entry-threshold-grid", type=float, nargs="+", default=None)
@@ -411,6 +418,51 @@ def main() -> None:
     _report(results, args, split_date)
 
 
+def _erreur_type_sharpe(sharpe: float, annees: float) -> float:
+    """Erreur-type d'un Sharpe annualisé estimé sur `annees` années
+    (Lo, 2002) : `sqrt((1 + SR²/2) / n)`, n en années.
+
+    Elle répond à la seule question qui permette de lire un classement de
+    grille : l'écart entre le premier et le dixième est-il une différence, ou
+    du bruit d'estimation ? Sur 7 ans et un Sharpe de 1, elle vaut 0,46 --
+    c'est-à-dire que presque toute la grille est indiscernable de son
+    maximum."""
+    if annees <= 0:
+        return float("nan")
+    return ((1 + 0.5 * sharpe * sharpe) / annees) ** 0.5
+
+
+def _choisir_sur_le_plateau(
+    ranked: pd.DataFrame, rank_key: str, tolerance: float,
+) -> tuple[pd.Series, pd.DataFrame]:
+    """Meilleur point = le moins coûteux en ROTATION parmi ceux que la fenêtre
+    d'apprentissage ne sait pas départager.
+
+    POURQUOI PAS L'ARGMAX. Le Sharpe d'une combinaison est une ESTIMATION, et
+    son erreur-type sur sept ans dépasse 0,45 (cf. _erreur_type_sharpe).
+    Retenir le maximum d'une grille de plusieurs centaines de points revient
+    alors à retenir le tirage le plus chanceux d'un ensemble statistiquement
+    homogène : le premier du classement n'est pas meilleur que le dixième, il a
+    juste mieux collé à ce chemin-là.
+
+    LE DÉPARTAGE NE REGARDE PAS LA FENÊTRE DE TEST -- ce serait la consommer, et
+    elle ne vaut que tant qu'elle n'a rien choisi. Il porte sur la ROTATION, qui
+    n'est pas une mesure de performance mais d'EXPOSITION À UNE HYPOTHÈSE : tout
+    le backtest suppose 10 bps par aller simple. À 720% de rotation annuelle,
+    se tromper de 20 bps coûte 1,4 point de CAGR par an ; à 360%, 0,7. À
+    performance d'apprentissage indiscernable, la combinaison qui négocie moins
+    est celle dont le résultat dépend le moins d'un chiffre qu'on a supposé.
+
+    `tolerance` à 0 rétablit l'argmax strict."""
+    if tolerance <= 0 or ranked.empty:
+        return ranked.iloc[0], ranked.head(1)
+    plafond = float(ranked.iloc[0][rank_key])
+    plateau = ranked[ranked[rank_key] >= plafond - tolerance]
+    if "annualized_turnover_pct" not in plateau.columns or plateau["annualized_turnover_pct"].isna().all():
+        return plateau.iloc[0], plateau
+    return plateau.sort_values("annualized_turnover_pct").iloc[0], plateau
+
+
 def _lisible(cle: str, valeur) -> str:
     """Les trois façons dont un axe peut valoir « désactivé » ne se lisent pas
     d'elles-mêmes : un momentum à NaN (le filtre est absent, pas indéfini), un
@@ -426,6 +478,47 @@ def _lisible(cle: str, valeur) -> str:
     if cle == "rebalance_band_pct" and valeur == 0:
         return "0 (aucune zone de non-négociation)"
     return str(valeur)
+
+
+AXES = ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct",
+        "momentum_min_pct", "rebalance_band_pct", "max_weight_pct")
+
+
+def _lire_le_plateau(
+    ranked: pd.DataFrame, plateau: pd.DataFrame, rank_key: str, tolerance: float,
+) -> None:
+    """Ce que la grille établit vraiment, par opposition à ce qu'elle classe.
+
+    Un axe sur lequel TOUTES les combinaisons du plateau s'accordent est un
+    résultat : la fenêtre d'apprentissage ne sait pas départager le reste, mais
+    elle exclut l'autre valeur de cet axe-là. Un axe où le plateau reste partagé
+    ne conclut rien, et le dire évite de présenter comme un réglage optimisé ce
+    qui n'est qu'une valeur tirée au sort parmi des équivalentes."""
+    if tolerance <= 0 or plateau.empty:
+        return
+    meilleur = float(ranked.iloc[0][rank_key])
+    annees = 7.0
+    logger.info(
+        "--- Ce que la grille établit ---\n"
+        "Erreur-type d'un Sharpe estimé sur ~%.0f ans : %.2f. Sur %d combinaisons, %d sont à "
+        "moins d'une erreur-type du maximum : le classement ne les départage donc PAS.\n"
+        "Plateau retenu (à %.2f du maximum) : %d combinaisons.",
+        annees, _erreur_type_sharpe(meilleur, annees), len(ranked),
+        int((ranked[rank_key] >= meilleur - _erreur_type_sharpe(meilleur, annees)).sum()),
+        tolerance, len(plateau),
+    )
+    for axe in AXES:
+        if axe not in plateau.columns:
+            continue
+        # Les NaN de momentum_min_pct sont une VALEUR (« filtre désactivé »),
+        # pas une absence : dropna=False, sans quoi un plateau unanimement sans
+        # filtre passerait pour un axe vide.
+        valeurs = plateau[axe].value_counts(dropna=False)
+        if len(valeurs) == 1:
+            logger.info("  %-20s UNANIME : %s", axe, _lisible(axe, plateau[axe].iloc[0]))
+        else:
+            retenues = ", ".join(_lisible(axe, v) for v in sorted(valeurs.index, key=lambda x: (pd.isna(x), x)))
+            logger.info("  %-20s indécis : %s", axe, retenues)
 
 
 def _reference_combo(strategy_name: str) -> dict:
@@ -525,7 +618,7 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
         sys.exit(1)
 
     ranked = eligible.sort_values(rank_key, ascending=False)
-    best = ranked.iloc[0]
+    best, plateau = _choisir_sur_le_plateau(ranked, rank_key, args.plateau_tolerance)
 
     logger.info(
         "%d combinaisons retenues sur %d (%d écartées faute de thèses, %d faute de rendement).",
@@ -543,6 +636,8 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
     colonnes = [c for c in colonnes if c in ranked.columns]
     logger.info("--- Dix meilleures combinaisons ---\n%s",
                 ranked[colonnes].head(10).to_string(index=False))
+
+    _lire_le_plateau(ranked, plateau, rank_key, args.plateau_tolerance)
 
     _compare_a_la_reference(ok, best, args.strategy, rank_key, split_date)
 
