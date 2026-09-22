@@ -76,10 +76,16 @@ class PricePanel:
     telles quelles pour les usages non unitaires (calendrier, colonnes).
     """
 
-    def __init__(self, close: pd.DataFrame, open_: pd.DataFrame, last_valid_date: pd.Series):
+    def __init__(
+        self, close: pd.DataFrame, open_: pd.DataFrame, last_valid_date: pd.Series,
+        dollar_volume: Optional[pd.DataFrame] = None,
+    ):
         self.close = close
         self.open = open_
         self.last_valid_date = last_valid_date
+        self._dollar_volume_values = (
+            dollar_volume.to_numpy(dtype=float) if dollar_volume is not None else None
+        )
 
         self._close_values = close.to_numpy(dtype=float)
         self._open_values = open_.to_numpy(dtype=float)
@@ -110,6 +116,20 @@ class PricePanel:
             return None
         value = self._open_values[row, col]
         return None if value != value else float(value)
+
+    def dollar_volume_at(self, symbol: str, date: pd.Timestamp) -> Optional[float]:
+        """Volume quotidien moyen en dollars (60 séances) du symbole à `date`.
+        None si la colonne volume est absente des cours, ou si l'historique est
+        trop court : l'appelant renonce alors au modèle d'impact pour cette
+        ligne plutôt que d'inventer une liquidité."""
+        if self._dollar_volume_values is None:
+            return None
+        row = self._row_of_date.get(date)
+        col = self._close_col.get(symbol)
+        if row is None or col is None:
+            return None
+        value = self._dollar_volume_values[row, col]
+        return None if value != value or value <= 0 else float(value)
 
     def close_history(self, symbol: str, date: pd.Timestamp) -> np.ndarray:
         """Clôtures du symbole jusqu'à `date` INCLUSE (jamais au-delà : c'est
@@ -205,7 +225,22 @@ def build_price_panel(daily_prices: pd.DataFrame) -> PricePanel:
     last_valid_date = close_raw.apply(lambda col: col.last_valid_index())
 
     close_ffill = close_raw.ffill(limit=FORWARD_FILL_MAX_DAYS)
-    return PricePanel(close_ffill, open_raw, last_valid_date)
+
+    # VOLUME EN DOLLARS, moyenné sur 60 séances, pour le modèle d'impact de
+    # marché (cf. engine.impact_coefficient_bps). En dollars et non en titres :
+    # un volume de 10 millions d'actions ne dit rien tant qu'on ignore si
+    # l'action vaut 3 $ ou 300 $, et c'est bien un montant qu'on cherche à
+    # exécuter. Absent quand 03b n'a pas collecté la colonne (caches anciens) :
+    # le modèle d'impact se désactive alors de lui-même plutôt que d'échouer.
+    dollar_volume = None
+    if "volume" in daily_prices.columns:
+        volume_raw = daily_prices.assign(
+            dollar_volume=daily_prices["volume"] * daily_prices["close"]
+        ).pivot(index="date", columns="symbol", values="dollar_volume").sort_index()
+        dollar_volume = volume_raw.rolling(60, min_periods=5).mean().reindex(
+            columns=close_ffill.columns)
+
+    return PricePanel(close_ffill, open_raw, last_valid_date, dollar_volume)
 
 
 def _fill_missing_filed_dates(df: pd.DataFrame, path) -> pd.DataFrame:

@@ -1534,6 +1534,26 @@ MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
 # ce réglage permet de faire sans toucher au code.
 SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
 
+# Comment 06b établit le multiple de référence d'une ligne :
+#   "median"    -> agrégat des multiples de ses pairs (cf. l'agrégateur ci-dessus)
+#   "warranted" -> multiple MÉRITÉ, régression en coupe sur les fondamentaux
+#                  des pairs (marge, croissance, levier, ROIC, taille)
+#
+# CE QUE LA MESURE DIT. `15_test_multiple_merite.py` compare les deux HORS
+# ÉCHANTILLON sur les mêmes pairs point-in-time : erreur absolue médiane en log
+# de 0,5237 pour le sectoriel contre 0,3750 pour le mérité, soit 28,4% de
+# mieux, et l'avantage tient sur 62,3% des 17 682 observations. Le mérité
+# prédit donc nettement mieux le multiple observé.
+#
+# POURQUOI LE DÉFAUT RESTE "median" MALGRÉ CELA. Ce fichier alimente aussi les
+# TROIS stratégies options, qu'aucune de ces mesures n'a évaluées : basculer le
+# défaut changerait leur signal en silence. Mieux prédire un multiple observé
+# n'est d'ailleurs pas la même chose que mieux prédire un RENDEMENT -- c'est
+# précisément ce que l'A/B du backtest doit trancher, stratégie par stratégie.
+# `--multiple-method warranted` produit le signal alternatif sans toucher au
+# défaut.
+SECTOR_MULTIPLE_METHOD = "median"
+
 # ----------------------------------------------------------------------------
 # Combinaison des valeurs implicites des trois multiples
 # ----------------------------------------------------------------------------
@@ -1645,3 +1665,32 @@ def to_naive_day(values):
     if isinstance(series.dtype, pd.DatetimeTZDtype):
         series = series.dt.tz_convert("UTC").dt.tz_localize(None)
     return series.dt.normalize().astype("datetime64[us]")
+
+# ----------------------------------------------------------------------------
+# Impact de marché (modèle de capacité)
+# ----------------------------------------------------------------------------
+# Impact, en points de base, d'un ordre égal à 100% du volume quotidien moyen
+# du titre. L'impact réel d'un ordre suit la RACINE de la part de volume
+# consommée (forme empirique standard, Almgren et al.) : à 1% du volume, on en
+# paie le dixième.
+#
+# 0 PAR DÉFAUT, et c'est volontaire. À un million de dollars de capital simulé,
+# une ligne pèse quelques dizaines de milliers de dollars contre un volume
+# quotidien médian de 113 millions : l'impact est négligeable et l'activer ne
+# changerait rien aux résultats. Son intérêt est de répondre à une question que
+# le coût forfaitaire de 10 bps ne peut pas poser, puisqu'il ne dépend pas de
+# la taille : JUSQU'À QUEL ENCOURS cette stratégie tient-elle ? Voir
+# `09_backtest.py --impact-coefficient-bps 100 --initial-capital ...`.
+BACKTEST_IMPACT_COEFFICIENT_BPS = 0.0
+
+# Ciblage de VOLATILITÉ du portefeuille actions, en % annualisé. L'exposition
+# est réduite quand la volatilité réalisée récente dépasse la cible, et jamais
+# augmentée au-delà de 100% (le moteur n'est pas margé).
+#
+# Pourquoi cela peut améliorer un Sharpe sans rien prédire : la volatilité est
+# GROUPÉE -- une période agitée est suivie d'une période agitée -- et c'est
+# l'une des rares régularités robustes des marchés. Réduire l'exposition quand
+# ça secoue réduit la volatilité future plus sûrement que le rendement futur.
+# None désactive (comportement d'origine).
+BACKTEST_VOL_TARGET_PCT = None
+BACKTEST_VOL_TARGET_LOOKBACK_DAYS = 60

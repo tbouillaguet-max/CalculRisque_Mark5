@@ -114,6 +114,18 @@ def main() -> None:
              "POSITIONS GELÉES (une position n'est sinon jamais vendue sur refermeture de "
              "l'écart) : désactivé par défaut, à activer en connaissance de cause.",
     )
+    parser.add_argument(
+        "--impact-coefficient-bps", type=float, default=config.BACKTEST_IMPACT_COEFFICIENT_BPS,
+        help="Impact de marche, en bps, d'un ordre egal a 100%% du volume quotidien moyen du "
+             "titre (l'impact suit la RACINE de la part de volume consommee). 0 = desactive. "
+             "Sert surtout a chiffrer la CAPACITE : jusqu'a quel encours la strategie tient.",
+    )
+    parser.add_argument(
+        "--vol-target-pct", type=float, default=config.BACKTEST_VOL_TARGET_PCT,
+        help="Cible de volatilite annualisee du portefeuille, en %%. L'exposition est REDUITE "
+             "quand la volatilite realisee recente depasse la cible, jamais augmentee au-dela "
+             "de 100%% (le moteur n'est pas marge). Defaut: desactive.",
+    )
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de sortie (défaut: horodatage).")
     parser.add_argument("--risk-free-rate", type=float, default=config.RISK_FREE_RATE)
     parser.add_argument(
@@ -183,6 +195,8 @@ def main() -> None:
         trailing_stop_pct=args.trailing_stop_pct,
         max_holding_days=args.max_holding_days,
         exit_gap_threshold_pct=args.exit_gap_threshold_pct,
+        impact_coefficient_bps=args.impact_coefficient_bps,
+        vol_target_pct=args.vol_target_pct,
         material_events_8k=material_events,
         start_date=start_date,
         end_date=end_date,

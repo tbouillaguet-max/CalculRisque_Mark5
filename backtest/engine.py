@@ -32,9 +32,11 @@ coût réel d'un aller-retour sans bookkeeping séparé.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -125,6 +127,9 @@ class BacktestEngine:
         trailing_stop_pct: Optional[float] = config.BACKTEST_TRAILING_STOP_PCT,
         max_holding_days: Optional[int] = config.BACKTEST_MAX_HOLDING_DAYS,
         exit_gap_threshold_pct: Optional[float] = config.BACKTEST_EXIT_GAP_THRESHOLD_PCT,
+        impact_coefficient_bps: float = config.BACKTEST_IMPACT_COEFFICIENT_BPS,
+        vol_target_pct: Optional[float] = config.BACKTEST_VOL_TARGET_PCT,
+        vol_target_lookback_days: int = config.BACKTEST_VOL_TARGET_LOOKBACK_DAYS,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
@@ -170,6 +175,9 @@ class BacktestEngine:
         self.trailing_stop_pct = trailing_stop_pct
         self.max_holding_days = max_holding_days
         self.exit_gap_threshold_pct = exit_gap_threshold_pct
+        self.impact_coefficient_bps = impact_coefficient_bps or 0.0
+        self.vol_target_pct = vol_target_pct
+        self.vol_target_lookback_days = vol_target_lookback_days
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
@@ -354,8 +362,34 @@ class BacktestEngine:
                 continue
             self._execute_trade(symbol, shares_delta * scale, price, today, reason)
 
+    def _impact_bps(self, symbol: str, montant: float, today: pd.Timestamp) -> float:
+        """Impact de marché, en points de base, pour un ordre de `montant`
+        dollars sur ce symbole.
+
+        MODÈLE EN RACINE DE LA PARTICIPATION, la forme empirique standard
+        (Almgren et al.) : l'impact croît comme la racine de la part du volume
+        quotidien qu'on consomme. `impact_coefficient_bps` est l'impact d'un
+        ordre égal à 100% du volume quotidien moyen ; un ordre à 1% de ce
+        volume en paie donc le dixième.
+
+        POURQUOI CE N'EST PAS UN DÉFAUT. À un million de dollars de capital
+        simulé, une ligne pèse quelques dizaines de milliers de dollars contre
+        un volume quotidien médian de 113 millions : l'impact est
+        rigoureusement négligeable, et l'activer ne changerait rien. Son
+        intérêt est ailleurs -- il répond à « jusqu'à quel ENCOURS cette
+        stratégie tient », une question que le coût forfaitaire de 10 bps ne
+        peut pas poser, puisqu'il ne dépend pas de la taille."""
+        if not self.impact_coefficient_bps or montant <= 0:
+            return 0.0
+        volume = self.prices.dollar_volume_at(symbol, today)
+        if not volume:
+            return 0.0
+        return self.impact_coefficient_bps * math.sqrt(montant / volume)
+
     def _execute_trade(self, symbol: str, shares_delta: float, price: float, today: pd.Timestamp, reason: str) -> None:
-        cost_rate = self.cost_bps / 10_000
+        cost_rate = (
+            self.cost_bps + self._impact_bps(symbol, abs(shares_delta) * price, today)
+        ) / 10_000
         pos = self.positions.get(symbol)
 
         if shares_delta > 0:  # achat (nouvelle position ou renforcement)
@@ -803,7 +837,14 @@ class BacktestEngine:
         if total_weight > 1:
             target_weights = {s: w / total_weight for s, w in target_weights.items()}
 
-        targets = {symbol: weight * active_budget for symbol, weight in target_weights.items()}
+        # Ciblage de volatilité : un facteur commun à toutes les cibles, donc
+        # sans effet sur leurs poids RELATIFS -- il module l'exposition, pas la
+        # sélection (cf. _echelle_ciblage_volatilite). À 1, rien ne change.
+        echelle = self._echelle_ciblage_volatilite()
+        targets = {
+            symbol: weight * active_budget * echelle
+            for symbol, weight in target_weights.items()
+        }
 
         self.rebalance_days_count += 1
         if not self._drift_is_material(targets, today, nav_now):
@@ -812,6 +853,42 @@ class BacktestEngine:
 
         for symbol, target_dollar in targets.items():
             self._queue_order(symbol, target_dollar, "rebalance", today)
+
+    def _echelle_ciblage_volatilite(self) -> float:
+        """Facteur appliqué à TOUTES les cibles pour viser une volatilité de
+        portefeuille constante.
+
+        POURQUOI ÇA PEUT MARCHER SANS RIEN PRÉDIRE. La volatilité est
+        GROUPÉE : une période agitée est suivie d'une période agitée, et c'est
+        l'une des rares régularités robustes des marchés. Réduire l'exposition
+        quand la volatilité récente est haute réduit donc la volatilité FUTURE
+        plus sûrement qu'elle ne réduit le rendement futur -- ce qui est
+        exactement la définition d'un gain de Sharpe. Aucune prévision de
+        rendement n'y intervient.
+
+        BORNÉ À 1 : le portefeuille peut se désinvestir quand ça secoue, jamais
+        s'endetter quand c'est calme. Le moteur n'est pas margé (cf.
+        _execute_buys), et un ciblage qui lèverait du levier changerait la
+        nature du produit au lieu d'en lisser le risque.
+
+        La volatilité réalisée du PORTEFEUILLE est celle de sa courbe de NAV,
+        pas la moyenne de celles de ses lignes : c'est la seule qui tienne
+        compte de la diversification, et elle est déjà disponible sans calcul
+        supplémentaire. Elle est lue sur les DERNIÈRES séances enregistrées,
+        donc sur le passé du jour simulé -- la méthode ne prend volontairement
+        pas de date : elle ne peut lire que ce qui est déjà écrit, ce qui rend
+        un look-ahead impossible par construction plutôt que par vigilance."""
+        if not self.vol_target_pct:
+            return 1.0
+        fenetre = self.equity_curve_rows[-self.vol_target_lookback_days:]
+        if len(fenetre) < 30:
+            return 1.0  # historique trop court : on ne module rien
+        nav = np.array([row["nav"] for row in fenetre], dtype=float)
+        rendements = np.diff(nav) / nav[:-1]
+        realisee = float(rendements.std()) * math.sqrt(252) * 100
+        if not realisee > 0:
+            return 1.0
+        return min(1.0, self.vol_target_pct / realisee)
 
     def _drift_is_material(self, targets: dict[str, float], today: pd.Timestamp, nav: float) -> bool:
         """Le portefeuille s'est-il assez éloigné de sa cible pour qu'il vaille
