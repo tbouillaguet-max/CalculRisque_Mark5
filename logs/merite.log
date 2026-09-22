@@ -8,3 +8,4 @@
   result = getattr(ufunc, method)(*inputs, **kwargs)
 /usr/local/lib/python3.11/dist-packages/pandas/core/arraylike.py:402: RuntimeWarning: invalid value encountered in log
   result = getattr(ufunc, method)(*inputs, **kwargs)
+2026-09-22 21:36:44,182 [INFO] Valorisation combinée sauvegardée : data/multiples/valorisation_combinee_merite.parquet (27674 lignes, 483 entreprises ; 24094 via multiples sectoriels, 3580 en repli DCF).

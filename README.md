@@ -833,12 +833,36 @@ Sharpe 0,867 → 0,942, test **0,676 → 0,849**, écart apparié +0,162
 gelées**, qui est une décision de l'utilisateur et non un défaut technique :
 `--exit-gap-threshold-pct 0` l'active, la valeur par défaut reste `None`.
 
-**Le multiple mérité prédit 28,4 % mieux** le multiple observé, hors
-échantillon (`make merite`). `--multiple-method warranted` produit le signal
-correspondant. Le défaut reste `median` pour deux raisons : ce fichier alimente
-aussi les trois stratégies options, qu'aucune de ces mesures n'a évaluées ; et
-mieux prédire un multiple *observé* n'est pas encore mieux prédire un
-*rendement*.
+#### Le multiple mérité : mieux prédire, moins bien investir
+
+Le seul résultat de tout le programme où deux mesures rigoureuses se
+contredisent — et il mérite qu'on s'y arrête.
+
+`15_test_multiple_merite.py` est catégorique : la régression sur les
+fondamentaux prédit le multiple observé **28,4 % mieux** que la médiane
+sectorielle, hors échantillon, et gagne sur 62,3 % des 17 682 observations.
+Branchée dans `06b`, elle change 73,2 % des lignes. Puis l'A/B du backtest :
+
+| | signal médiane | signal mérité |
+|---|---|---|
+| Sharpe plein échantillon | **0,918** | 0,787 |
+| Sharpe hors échantillon | **0,795** | 0,616 |
+
+Écart apparié **−0,134** (IC [−0,235, −0,040], p = 0,996), dont **−0,184** hors
+échantillon (p = 0,990). Significativement **pire**, sur les deux fenêtres.
+
+L'explication est au cœur de l'idée de Bhojraj & Lee poussée jusqu'au bout : le
+multiple mérité **explique** la décote par les fondamentaux et ne laisse comme
+signal que le résidu. Or toute la thèse d'une stratégie *value* est qu'une
+partie de cette décote est une erreur de marché — et il se trouve que c'est la
+part **expliquée** qui prédisait les rendements. Retirer ce que les
+fondamentaux justifient retire le signal avec l'explication.
+
+**La régression est un meilleur modèle de multiple ; elle est un moins bon
+signal.** C'est précisément ce que le test hors backtest ne pouvait pas
+trancher seul — d'où sa conclusion « l'étape suivante est l'A/B ». Le défaut
+reste `median` ; `--multiple-method warranted` produit toujours le signal
+alternatif.
 
 #### Capacité : jusqu'à quel encours
 

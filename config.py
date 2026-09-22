@@ -1545,13 +1545,32 @@ SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
 # mieux, et l'avantage tient sur 62,3% des 17 682 observations. Le mérité
 # prédit donc nettement mieux le multiple observé.
 #
-# POURQUOI LE DÉFAUT RESTE "median" MALGRÉ CELA. Ce fichier alimente aussi les
-# TROIS stratégies options, qu'aucune de ces mesures n'a évaluées : basculer le
-# défaut changerait leur signal en silence. Mieux prédire un multiple observé
-# n'est d'ailleurs pas la même chose que mieux prédire un RENDEMENT -- c'est
-# précisément ce que l'A/B du backtest doit trancher, stratégie par stratégie.
-# `--multiple-method warranted` produit le signal alternatif sans toucher au
-# défaut.
+# ET POURTANT LE DÉFAUT RESTE "median", PARCE QUE L'A/B L'A TRANCHÉ. Mieux
+# prédire un multiple OBSERVÉ n'est pas la même chose que mieux prédire un
+# RENDEMENT, et sur ce jeu de données les deux vont en sens CONTRAIRE. Backtest
+# de valuation_gap_combined sur 2015-2026, signal médiane contre signal mérité :
+#
+#     Sharpe plein échantillon   0,918  ->  0,787
+#     Sharpe hors échantillon    0,795  ->  0,616
+#     écart apparié              -0,134 (IC [-0,235, -0,040], p = 0,996)
+#     dont hors échantillon      -0,184 (IC [-0,345, -0,021], p = 0,990)
+#
+# Significativement PIRE, sur les deux fenêtres. L'explication tient en une
+# phrase, et elle est au coeur de l'idée de Bhojraj & Lee poussée jusqu'au
+# bout : le multiple mérité EXPLIQUE la décote par les fondamentaux, et ne
+# laisse comme signal que le résidu. Or toute la thèse d'une stratégie *value*
+# est qu'une partie de cette décote est une erreur de marché -- et il se trouve
+# que c'est la part EXPLIQUÉE qui prédisait les rendements. Retirer ce que les
+# fondamentaux justifient retire donc le signal avec l'explication.
+#
+# La régression reste un meilleur MODÈLE de multiple ; elle est un moins bon
+# SIGNAL. C'est exactement la distinction que 15_test_multiple_merite.py ne
+# pouvait pas trancher seul, et pourquoi il concluait par « l'étape suivante est
+# l'A/B du signal sur le backtest ».
+#
+# `--multiple-method warranted` produit toujours le signal alternatif, pour qui
+# voudrait rejouer cette comparaison ou l'étendre aux stratégies options (que
+# ces mesures n'ont pas évaluées).
 SECTOR_MULTIPLE_METHOD = "median"
 
 # ----------------------------------------------------------------------------
