@@ -536,7 +536,7 @@ def _reference_combo(strategy_name: str) -> dict:
         "entry_threshold_pct": entry,
         "momentum_min_pct": config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
         "rebalance_band_pct": config.BACKTEST_REBALANCE_BAND_PCT,
-        "max_weight_pct": config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT,
+        "max_weight_pct": config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
     }
 
 

@@ -366,15 +366,20 @@ VALUATION_GAP_THRESHOLD_PCT = 20.0
 BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
 BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
 
-# Prise de gain portée de 30% à 60% par la grille de 16_optimize_strategie_actions.py
-# (576 combinaisons par stratégie, apprentissage 2015-2021, test 2022-2026).
-# 60 figure dans le plateau des DEUX stratégies actions, et c'est la valeur la
-# moins coûteuse en rotation parmi celles que l'apprentissage ne départage pas :
-# la rotation tombe de ~560% à ~360% par an sans perte de Sharpe. Vendre un
-# gagnant à +30% le rachetait souvent quelques semaines plus tard, l'écart de
-# valorisation n'ayant pas disparu -- deux fois cost_bps pour revenir au même
-# titre. Voir README, « Optimisation des réglages actions ».
-BACKTEST_TAKE_PROFIT_PCT = 60.0
+# INCHANGÉ à 30%, et c'est un résultat, pas un oubli. La grille de
+# 16_optimize_strategie_actions.py (576 combinaisons par stratégie) retient 30
+# à l'unanimité de son plateau d'apprentissage côté DCF. Une prise de gain plus
+# large (60%, 100%) fait l'inverse sur chaque fenêtre : elle DÉGRADE
+# l'apprentissage et AMÉLIORE le test, régulièrement, dans les deux stratégies
+# (DCF : test 0,744 -> 0,785 -> 0,810 de 30 à 100 ; sectorielle : 0,726 ->
+# 0,762 -> 0,801), en divisant la rotation par deux au passage.
+#
+# Ce n'est pas du bruit -- c'est trop régulier et trop monotone pour ça. Mais le
+# retenir reviendrait à CHOISIR SUR LA FENÊTRE DE TEST, qui ne vaut que tant
+# qu'elle n'a rien choisi : elle serait consommée, et il ne resterait plus rien
+# pour juger. Le sujet mérite son étude propre, avec une fenêtre de validation
+# neuve. Voir README, « Optimisation des réglages actions ».
+BACKTEST_TAKE_PROFIT_PCT = 30.0
 
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
@@ -383,24 +388,22 @@ BACKTEST_TAKE_PROFIT_PCT = 60.0
 # Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
 # concentration du portefeuille. 0 ou None le désactive.
 #
-# PARTAGÉ AVEC LES STRATÉGIES OPTIONS : c'est le plafond par défaut de
-# base.capped_weights, que valuation_gap_multiples_options utilise aussi. Il
-# reste donc à 20 -- la grille actions ne mesure rien du côté options, et
-# changer ici déplacerait en silence la concentration de trois stratégies qui
-# n'ont pas été évaluées. Les stratégies ACTIONS ont leur propre valeur
-# ci-dessous.
-BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
-
-# Plafond par position des deux stratégies ACTIONS, distinct du précédent.
+# INCHANGÉ à 20%, contre l'avis de l'apprentissage, et c'est le cas d'école de
+# ce que la fenêtre de test sert à empêcher.
 #
-# 10% est le SEUL axe sur lequel les plateaux des deux grilles soient unanimes :
-# sur les 17 combinaisons indiscernables du maximum côté DCF et les 39 côté
-# neutre au secteur, toutes retiennent 10 et aucune 20. C'est aussi le résultat
-# le moins surprenant de l'étude -- diviser par deux la taille maximale d'une
-# ligne sur un portefeuille dont le nombre de positions n'est pas plafonné, c'est
-# de la diversification pure, et la diversification est ce qui améliore un Sharpe
-# sans rien promettre sur le rendement.
-BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT = 10.0
+# 10% est le seul axe sur lequel les plateaux d'APPRENTISSAGE des deux grilles
+# soient unanimes : toutes les combinaisons indiscernables du maximum le
+# retiennent, et le gain y est le plus large de toute l'étude (Sharpe
+# d'apprentissage 0,924 -> 1,014 côté DCF). Sur la fenêtre de TEST, le même
+# changement fait PERDRE 0,05 (0,795 -> 0,744) côté DCF et 0,02 côté
+# sectorielle. Un gain massif en apprentissage qui s'inverse hors échantillon,
+# c'est la signature du sur-ajustement, pas celle d'un réglage.
+#
+# Le paramètre reste balayable par stratégie (`max_weight_pct`) : c'est la
+# VALEUR PAR DÉFAUT qui n'est pas changée, pas la possibilité de l'explorer.
+# Partagé avec base.capped_weights, donc avec les stratégies options -- raison
+# de plus de ne pas y toucher sur la foi d'une grille qui ne les mesure pas.
+BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
 
 # Plafond de poids CUMULÉ par secteur (stratégie valuation_gap_sector_neutral).
 # Le plafond par position ne borne rien à ce niveau : vingt technos à 4%
@@ -413,12 +416,13 @@ BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT = 30.0
 # SECTEUR (10 points d'excès sur ses pairs est bien plus sélectif que 10%
 # d'écart au cours), le second est le garde-fou absolu qui empêche d'acheter
 # la "moins pire" d'un secteur entièrement survalorisé.
-# Seuil porté de 10 à 20 par la grille : à plafond, stop et zone de
-# non-négociation fixés, 20 domine 10 sur l'apprentissage (0,994 contre 0,980),
-# sur le test (0,787 contre 0,712) et sur la rotation (355% contre 366%). Le
-# garde-fou absolu ci-dessous, lui, ne bouge pas : il ne mesure pas la même
-# chose (écart au cours, pas excès sur les pairs) et rien ne l'a évalué.
-BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 20.0
+# INCHANGÉ à 10 : la grille ne départage PAS cet axe. Sur les trois valeurs
+# balayées (5, 10, 20), le Sharpe d'apprentissage tient en 0,007 (0,908 / 0,907
+# / 0,915) et celui de test en 0,005 (0,747 / 0,742 / 0,742). Un axe plat est
+# une réponse : il n'y a rien à optimiser là, et bouger la valeur reviendrait à
+# présenter un tirage au sort comme un réglage. Même constat côté DCF (0,927 /
+# 0,924 / 0,930 en apprentissage).
+BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 10.0
 BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 
 # Filtre momentum : une entreprise dont le cours a chuté de plus de X% sur les
@@ -436,11 +440,11 @@ BACKTEST_MOMENTUM_MIN_PCT = -10.0
 
 # Filtre momentum des backtests ACTIONS : DÉSACTIVÉ.
 #
-# C'est le résultat le plus inattendu de la grille, et le mieux établi après le
-# plafond de concentration : sur le plateau DCF, les 17 combinaisons
-# indiscernables du maximum l'écartent TOUTES. L'effet marginal est net dans les
-# deux sens (Sharpe d'apprentissage 0,903 sans filtre contre 0,869 avec ; test
-# 0,743 contre 0,722).
+# C'est le résultat le plus inattendu de la grille, et le mieux établi de toute
+# l'étude : il est UNANIME sur le plateau d'apprentissage des DEUX stratégies,
+# et c'est le seul changement qui améliore nettement les DEUX fenêtres à la
+# fois. À lui seul il vaut +0,081 de Sharpe hors échantillon côté DCF
+# (0,698 -> 0,779) et +0,100 côté neutre au secteur (0,630 -> 0,730).
 #
 # L'explication tient à ce que le filtre écarte. Un titre dont le cours a chuté
 # de plus de 10% sur un an est precisément celui dont l'écart de valorisation
@@ -465,12 +469,16 @@ BACKTEST_STOCKS_MOMENTUM_MIN_PCT = None
 # repesé en entier 9 séances sur 10, chaque miette payant cost_bps à l'aller et
 # au retour. 0 la désactive (comportement d'avant l'ajout du réglage).
 #
-# 15 points de NAV retenus par la grille : la valeur la moins coûteuse en
-# rotation parmi celles que l'apprentissage ne départage pas. Le Sharpe
-# d'apprentissage est plat sur 0, 5 et 15 (0,890 / 0,887 / 0,881) quand la
-# rotation, elle, tombe de 379% à 240%. Une zone de non-négociation n'est pas
-# un pari sur le marché : elle évite de payer pour des ajustements que la
-# thèse n'a pas demandés.
+# 15 points de NAV retenus par la grille, et l'un des deux seuls changements
+# que l'étude ait établis. Le Sharpe d'apprentissage est plat sur 0, 5 et 15
+# (0,926 / 0,928 / 0,924 côté DCF) : la règle de départage retient donc la
+# valeur la moins coûteuse en rotation. Le test va dans le même sens
+# (0,779 / 0,786 / 0,795), ce qui est la seule chose qui permette de le
+# retenir sans se payer de mots.
+#
+# Ce n'est d'ailleurs pas un pari sur le marché : une zone de non-négociation
+# évite de payer pour des ajustements que la thèse n'a pas demandés, et rien
+# d'autre.
 BACKTEST_REBALANCE_BAND_PCT = 15.0
 # Capital simulé au départ des backtests (actions et options : voir
 # OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même

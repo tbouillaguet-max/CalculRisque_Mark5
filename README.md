@@ -635,6 +635,124 @@ l'autre — écart au cours pour `valuation_gap_dcf` (20 %), écart à la média
 secteur pour celle-ci (10 %). Ne pas le préciser laisse chaque stratégie
 appliquer le sien.
 
+### Optimisation des réglages actions (`16_optimize_strategie_actions.py`)
+
+```bash
+make optimize-actions                                    # DCF, 576 combinaisons, ~1 h sur 4 cœurs
+make optimize-actions STRATEGY_ACTIONS=valuation_gap_sector_neutral
+python 16_optimize_strategie_actions.py --report-only data/backtest/<csv>   # relire sans relancer
+```
+
+Grid-search sur **cinq axes à la fois** — stop-loss, take-profit, seuil
+d'entrée, filtre momentum, zone de non-négociation, plafond par ligne. Les
+quatre optimiseurs options font varier un paramètre par run, ce qui suffit
+quand les réglages sont séparables ; ici ils ne le sont pas (le stop et la
+prise de gain forment un couple, le seuil d'entrée déplace le nombre de lignes
+donc l'effet du plafond), et une descente axe par axe trouverait un optimum de
+coordonnée, pas un optimum.
+
+Le classement porte sur la **seule fenêtre d'apprentissage** (2015-2021), avec
+un plancher de rendement contre le SPY sur cette même fenêtre — maximiser un
+ratio autorise sinon à l'améliorer en désinvestissant. `test_sharpe_ratio`
+(2022-2026) est affiché à côté sans jamais entrer dans la sélection.
+
+#### Ce que la grille a changé, et ce qu'elle a refusé de changer
+
+| Réglage | Avant | Après | Pourquoi |
+|---|---|---|---|
+| `BACKTEST_STOCKS_MOMENTUM_MIN_PCT` | −10 % | **désactivé** | Unanime sur le plateau des **deux** stratégies, et gagne sur les **deux** fenêtres |
+| `BACKTEST_REBALANCE_BAND_PCT` | (n'existait pas) | **15** points de NAV | Apprentissage plat, rotation en baisse, test confirme |
+| `BACKTEST_STOP_LOSS_PCT` | −15 % | −15 % | La grille confirme la valeur en place |
+| `BACKTEST_TAKE_PROFIT_PCT` | +30 % | +30 % | Unanime sur le plateau ; l'élargir gagne en test mais **perd** en apprentissage |
+| `BACKTEST_MAX_WEIGHT_PER_POSITION_PCT` | 20 % | 20 % | Gain massif en apprentissage, **inversé** hors échantillon |
+| `BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT` | 10 | 10 | Axe **plat** : rien à optimiser |
+
+Résultat, sur `--start-date 2015-01-01` :
+
+| | `valuation_gap_dcf` | | `valuation_gap_sector_neutral` | |
+|---|---|---|---|---|
+| | avant | après | avant | après |
+| **Sharpe hors échantillon** (2022-2026) | 0,698 | **0,795** | 0,630 | **0,742** |
+| Sharpe apprentissage (2015-2021) | 0,837 | 0,924 | 0,831 | 0,907 |
+| Sharpe plein échantillon | 0,782 | 0,872 | 0,751 | 0,838 |
+| CAGR | 15,56 % | 18,05 % | 14,28 % | 16,55 % |
+| Alpha vs SPY | +3,57 % | +6,07 % | +2,30 % | +4,56 % |
+| Information ratio | 0,40 | 0,63 | 0,25 | 0,49 |
+
+Le gain résiste au durcissement des hypothèses de coût, sans se creuser
+(DCF, aller-retour) : 0,78 → 0,87 à 10 bps, 0,70 → 0,79 à 30 bps,
+0,63 → 0,71 à 50 bps.
+
+#### Le filtre momentum coûtait plus qu'il ne protégeait
+
+C'est le résultat le plus inattendu, et le mieux établi. Un titre dont le cours
+a chuté de plus de 10 % sur un an est **précisément celui dont l'écart de
+valorisation vient de s'élargir** — la candidate la plus attrayante de la
+thèse. Le garde-fou anti-*value trap* supprimait donc du signal en même temps
+que du piège, alors que le moteur a déjà deux protections qui, elles, ne
+coûtent pas de signal : la péremption du signal et le stop-loss.
+
+À lui seul, le désactiver vaut **+0,081** de Sharpe hors échantillon côté DCF
+et **+0,100** côté neutre au secteur.
+
+#### Le classement ne départage rien, et il faut le dire
+
+L'erreur-type d'un Sharpe estimé sur sept ans vaut **0,47** (Lo, 2002). Sur les
+576 combinaisons de chaque grille, **les 576 sont à moins d'une erreur-type du
+maximum**. Retenir le premier du classement, c'est retenir le tirage le plus
+chanceux d'un ensemble statistiquement homogène.
+
+Deux conséquences dans l'outil :
+
+- le meilleur point est, parmi les combinaisons indiscernables à
+  `--plateau-tolerance` près, celle qui **négocie le moins**. Le départage ne
+  regarde pas la fenêtre de test — ce serait la consommer — mais la rotation,
+  qui n'est pas une mesure de performance mais d'**exposition à une
+  hypothèse** : tout le backtest suppose 10 bps par aller simple ;
+- le rapport dit ce que la grille **établit** (un axe sur lequel tout le
+  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les six axes,
+  deux seulement sont unanimes.
+
+#### Deux gains d'apprentissage écartés, et pourquoi
+
+Le plafond par ligne à 10 % et une prise de gain élargie **gagnent en
+apprentissage et perdent en test**. C'est la signature du sur-ajustement, et
+c'est exactement ce que la fenêtre de validation sert à intercepter : ils ne
+sont pas retenus.
+
+Le cas de la prise de gain mérite d'être noté, parce qu'il n'a pas l'air d'un
+accident : de 30 % à 100 %, le Sharpe de test monte régulièrement (DCF 0,744 →
+0,785 → 0,810 ; sectorielle 0,726 → 0,762 → 0,801) pendant que celui
+d'apprentissage descend, et la rotation est divisée par deux. C'est trop
+monotone et trop reproductible d'une stratégie à l'autre pour être du bruit.
+Mais le retenir reviendrait à **choisir sur la fenêtre de test**, qui ne vaut
+que tant qu'elle n'a rien choisi : elle serait consommée, et il ne resterait
+plus rien pour juger. Le sujet mérite son étude propre, avec une fenêtre de
+validation neuve.
+
+#### Ce que la zone de non-négociation corrige
+
+Les poids sont proportionnels à l'écart de valorisation **rapporté à la somme**
+des écarts des candidates : un seul dépôt SEC change ce dénominateur, donc la
+cible de **toutes** les lignes. Des dépôts tombent 2624 jours sur 2936 séances
+entre 2015 et 2026 — le portefeuille était repesé en entier 9 séances sur 10,
+pour 722 % de rotation annualisée et 62 836 exécutions au service de 1 934
+thèses seulement.
+
+Le seuil porte sur la **dérive totale** et non ligne à ligne, et ce point a
+demandé une mesure. Une bande par ligne divise bien les exécutions par 15, mais
+elle filtre du même coup les **allègements**, qui sont exactement ce qui
+finance les achats du même jour : 52 % du montant d'achat demandé devenait
+infinançable, contre 5 % sans bande. Ou bien on repèse tout le portefeuille —
+et les ventes financent les achats —, ou bien on n'y touche pas.
+
+Une **entrée neuve** n'est jamais filtrée, et ce n'est pas un détail : avec un
+plafond par ligne à 10 % et une zone à 15 points, une candidate seule pèse 10
+points de dérive, reste sous le seuil, et n'est donc jamais achetée — jamais,
+pas « plus tard ». En portefeuille fourni le cas est invisible, ce qui en
+faisait un défaut latent ; il est couvert par un test à candidate unique
+(`tests/test_reglages_sharpe_actions.py`).
+
 ### Ajouter une nouvelle stratégie
 
 Créer un fichier dans `backtest/strategies/`, y définir une classe héritant

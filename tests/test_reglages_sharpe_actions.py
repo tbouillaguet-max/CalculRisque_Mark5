@@ -246,22 +246,19 @@ def _signaux_deux_lignes() -> pd.DataFrame:
     ])
 
 
-def test_le_plafond_par_defaut_est_celui_des_strategies_actions():
-    """Les deux stratégies actions lisent BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
-    (10%) et NON BACKTEST_MAX_WEIGHT_PER_POSITION_PCT (20%), qui reste celui de
-    base.capped_weights et donc des stratégies OPTIONS. La grille n'a rien
-    mesuré du côté options : confondre les deux constantes déplacerait en
-    silence la concentration de trois stratégies jamais évaluées."""
-    attendu = config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT
+def test_le_plafond_par_defaut_reste_celui_de_config():
+    """Le plafond par position n'a PAS été changé par l'étude, et le test le
+    fige pour cette raison : la grille le porte à 10% à l'unanimité de son
+    plateau d'apprentissage, mais le même changement fait perdre 0,05 de Sharpe
+    sur la fenêtre de test. C'est le paramètre, pas sa valeur par défaut, que
+    l'étude a rendu explorable."""
+    attendu = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT
     for nom in ("valuation_gap_dcf", "valuation_gap_sector_neutral"):
         strategie = STRATEGY_REGISTRY[nom]()
         assert strategie.max_weight_pct == attendu
         # Le paramètre doit aussi apparaître dans params : c'est lui qui est
         # consigné dans run_config.json, donc ce qui rend un run reproductible.
         assert strategie.params["max_weight_pct"] == attendu
-    assert attendu != config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT, (
-        "les deux constantes ont convergé : ce test ne distingue plus rien"
-    )
 
 
 def test_le_filtre_momentum_des_actions_est_distinct_de_celui_des_options():

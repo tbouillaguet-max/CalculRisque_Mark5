@@ -80,7 +80,7 @@ class ValuationGapSectorNeutralStrategy(Strategy):
         entry_threshold_pct: float = config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT,
         min_absolute_gap_pct: float = config.BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT,
         max_weight_per_sector_pct: float = config.BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT,
-        max_weight_pct: float = config.BACKTEST_STOCKS_MAX_WEIGHT_PER_POSITION_PCT,
+        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
         **kwargs,
     ):
         super().__init__(
