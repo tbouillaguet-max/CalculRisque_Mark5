@@ -753,6 +753,114 @@ pas « plus tard ». En portefeuille fourni le cas est invisible, ce qui en
 faisait un défaut latent ; il est couvert par un test à candidate unique
 (`tests/test_reglages_sharpe_actions.py`).
 
+### Second programme : ce que dix-huit pistes ont donné
+
+La première étude n'avait balayé que des réglages. Celle-ci a repris le
+problème par la mesure, la qualité du signal, la construction de portefeuille,
+les sorties, les coûts et le risque — dix-huit pistes. **Quatre changements
+seulement en sont sortis**, et trois découvertes valent plus que les gains.
+
+#### Les découvertes
+
+**1. Un faux positif spectaculaire, et ce qui l'a démasqué.** Plafonner le
+nombre de candidates faisait monter le Sharpe de façon *monotone sur les deux
+fenêtres* (0,908 → 1,192), avec un test apparié significatif jusque hors
+échantillon. Tout indiquait un vrai effet. La volatilité annualisée a tranché :
+**18,7 % que le portefeuille tienne 115 lignes ou 12** — impossible pour une
+vraie concentration. En réalité le réglage ne concentrait rien (poids maximal
+13,4 % contre 13,8 %) ; il changeait *qui* entrait, en gardant les plus fortes
+convictions. Or la distribution des écarts monte jusqu'à **+1 817 436 625 %** :
+plus on restreignait aux « meilleures » convictions, plus le portefeuille était
+piloté par des valorisations cassées (90ᵉ centile des lignes détenues : 2 331 %
+en illimité, **102 654 %** à cinq lignes).
+
+`BACKTEST_MAX_PLAUSIBLE_GAP_PCT` (500 %) les écarte au niveau du moteur. Le
+plafond de pondération bornait leur *dimensionnement*, pas leur *classement* —
+et c'est le classement qui décide qui entre. Après le filtre, l'effet disparaît
+(p = 0,42) et le Sharpe de référence tombe de 0,908 à 0,867. **Un filtre honnête
+baisse le chiffre affiché.**
+
+**2. Deux protections documentées ne tournaient pas.** `04c` télécharge le
+texte de chaque 8-K puis le *jette* faute de clé d'API : 99 147 dépôts, 100 %
+en `non_evalue`. Le filtre d'événements matériels ne s'appliquait à rien. Il
+est maintenant classé **à partir du document**, sans modèle de langage — codes
+d'item SEC que le déposant déclare, plus des formulations cherchées dans le
+corps du texte là où le code seul est ambigu (un Item 5.02 couvre aussi bien la
+démission d'un PDG que l'élection routinière d'un administrateur).
+
+**3. Le classement d'une grille ne départage rien.** L'erreur-type d'un Sharpe
+sur sept ans vaut 0,47 ; les 576 combinaisons de chaque grille y tiennent.
+`metrics.paired_sharpe_difference` compare donc deux variantes par bootstrap
+**apparié** — leurs courbes sont corrélées à 0,97, et les juger à l'aune de
+l'erreur-type marginale revient à déclarer « non significatif » absolument tout.
+
+#### Ce qui a été retenu
+
+| Changement | Effet mesuré |
+|---|---|
+| **Signal sur la valorisation combinée** (`valuation_gap_combined`) | Couverture de l'univers **77 % → 94 %** |
+| **Filtre de plausibilité** des écarts (500 %) | Sharpe 0,908 → 0,867 — *il retire de la performance fictive* |
+| **Filtre 8-K** rendu opérant (5 646 événements) | Sharpe −0,015 : c'est le prix d'une protection |
+| **Stop suiveur** à −20 % | Test **+0,120** (IC [+0,025, +0,198], p = 0,008) |
+
+Le signal combiné n'a **pas** été retenu pour son Sharpe (+0,05, p = 0,25, non
+significatif) mais pour sa couverture : un DCF n'existe pas pour une entreprise
+à flux négatifs ni pour un métier de bilan, un multiple sectoriel si. Choisir
+parmi 77 % de l'indice en étant jugé contre 100 % surestime l'alpha ; à 94 %,
+l'alpha de +6,96 % est plus **solide** que celui de +5,58 %, indépendamment de
+leur écart.
+
+#### Ce qui a été réfuté, dont deux de mes propres recommandations
+
+| Piste | Attendu | Mesuré |
+|---|---|---|
+| Pondération par le risque (`gap/σ`) | « la meilleure idée non testée » | **0,877** (k=0,5), **0,846** (k=1) contre 0,908 |
+| Pondération par rang | robustesse aux extrêmes | **0,798** contre 0,867, IC [−0,115, −0,026] |
+| Prise de gain élargie | piste la plus prometteuse | **−0,037** à 60 %, **−0,072** à 100 % |
+| Allonger l'historique à 2012 | +26 % d'observations | couverture 73 % → 67,6 % : **de la puissance payée en biais** |
+| Seuil d'entrée, âge du signal | — | axes **plats**, rien à optimiser |
+
+Sur une stratégie *value*, là où l'écart est le plus large est aussi là où la
+volatilité est la plus forte : diviser par elle retire le signal en même temps
+que le risque. Et la prise de gain élargie ne tenait qu'au signal DCF et aux
+valorisations cassées — une fois les deux corrigés, elle est négative.
+
+#### Deux résultats qui attendent une décision
+
+**La sortie sur perte de signal est le plus gros gain de tout le programme** :
+Sharpe 0,867 → 0,942, test **0,676 → 0,849**, écart apparié +0,162
+(IC [+0,065, +0,255], p = 0,001). Elle renverse la **règle des positions
+gelées**, qui est une décision de l'utilisateur et non un défaut technique :
+`--exit-gap-threshold-pct 0` l'active, la valeur par défaut reste `None`.
+
+**Le multiple mérité prédit 28,4 % mieux** le multiple observé, hors
+échantillon (`make merite`). `--multiple-method warranted` produit le signal
+correspondant. Le défaut reste `median` pour deux raisons : ce fichier alimente
+aussi les trois stratégies options, qu'aucune de ces mesures n'a évaluées ; et
+mieux prédire un multiple *observé* n'est pas encore mieux prédire un
+*rendement*.
+
+#### Capacité : jusqu'à quel encours
+
+Le coût forfaitaire de 10 bps ne dépend pas de la taille de l'ordre, donc ne
+peut pas poser la question. `--impact-coefficient-bps 100` ajoute un impact en
+racine de la part de volume consommée :
+
+| Encours | 1 M$ | 100 M$ | 1 Md$ | 5 Md$ | 20 Md$ |
+|---|---|---|---|---|---|
+| CAGR | 17,7 % | 16,9 % | 14,6 % | 11,2 % | 6,2 % |
+| Sharpe | 0,914 | 0,875 | 0,762 | 0,583 | 0,319 |
+
+**La stratégie cesse de battre l'indice (11,99 %) vers 2 à 3 milliards de
+dollars.**
+
+#### Ce qui reste bloqué
+
+`04c` et `07b` ont besoin d'un accès à EDGAR pour reconstruire leurs fichiers à
+partir des documents. Le filtre 8-K fonctionne en attendant sur l'archive déjà
+écrite, par les seuls codes d'item — il n'y retient que ceux qui sont matériels
+**par définition**, un code ambigu sans son texte ne disant rien.
+
 ### Ajouter une nouvelle stratégie
 
 Créer un fichier dans `backtest/strategies/`, y définir une classe héritant
