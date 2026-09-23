@@ -207,6 +207,10 @@ class BacktestEngine:
         # jamais sur perte de signal", le portefeuille dériverait vers un
         # buy-and-hold de positions périmées sans que rien ne le signale.
         self.buy_orders_count = 0
+        # Friction réellement payée, toutes exécutions confondues : commission,
+        # glissement, impact de marché et commission minimum.
+        self.total_friction_dollar = 0.0
+        self.executions_count = 0
         self.truncated_orders_count = 0
         # Le sous-investissement en DOLLARS, seule mesure économiquement
         # lisible : un ordre "tronqué" de 0,1% et un ordre non exécuté du tout
@@ -494,6 +498,11 @@ class BacktestEngine:
                 if cost < MIN_TRADE_DOLLAR:
                     return
             self.cash -= cost
+            # Comptabilisé APRÈS le redimensionnement au cash, sur ce qui part
+            # vraiment : la friction d'un ordre rogné est celle de l'ordre
+            # rogné, pas celle de l'ordre demandé.
+            self.total_friction_dollar += shares_delta * price * cost_rate
+            self.executions_count += 1
             if pos is None:
                 self.positions[symbol] = Position(
                     symbol, shares_delta, effective_price, today,
@@ -514,6 +523,8 @@ class BacktestEngine:
         effective_price = price * (1 - cost_rate)
         proceeds = sold_shares * effective_price
         self.cash += proceeds
+        self.total_friction_dollar += sold_shares * price * cost_rate
+        self.executions_count += 1
         pnl = (effective_price - pos.entry_price) * sold_shares
         self.trades.append({
             "symbol": symbol, "entry_date": pos.entry_date, "exit_date": today,
@@ -754,6 +765,23 @@ class BacktestEngine:
             )
 
         return {
+            # CE QUE LA STRATÉGIE A RÉELLEMENT PAYÉ, en dollars et en nombre.
+            # Le moteur facturait sa friction sans jamais la totaliser, si bien
+            # qu'on ne pouvait pas répondre à la question la plus naturelle :
+            # « moins de transactions, est-ce moins de frais ? ». La réponse
+            # n'est pas évidente, et c'est pour ça qu'il faut la mesurer -- la
+            # friction suit les DOLLARS NÉGOCIÉS, pas le nombre d'ordres, et
+            # supprimer beaucoup de petits ordres peut n'économiser presque
+            # rien. Le moteur options tient ce compte depuis toujours
+            # (total_commission / total_slippage) ; celui-ci ne le tenait pas.
+            "total_friction_dollar": float(self.total_friction_dollar),
+            "total_friction_pct_of_initial": float(
+                self.total_friction_dollar / self.initial_capital * 100
+            ) if self.initial_capital else None,
+            "executions_count": int(self.executions_count),
+            "avg_friction_per_execution_dollar": float(
+                self.total_friction_dollar / self.executions_count
+            ) if self.executions_count else None,
             "buy_orders_count": self.buy_orders_count,
             "truncated_orders_count": self.truncated_orders_count,
             "truncated_orders_pct": float(truncated_pct),

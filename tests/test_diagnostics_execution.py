@@ -121,6 +121,12 @@ def test_les_diagnostics_sont_produits():
     diagnostics = engine.execution_diagnostics()
 
     assert set(diagnostics) == {
+        # Friction RÉELLEMENT payée, en dollars et par exécution. Le moteur la
+        # facturait sans jamais la totaliser : on ne pouvait pas répondre à
+        # « moins d'ordres, est-ce moins de frais ? », dont la réponse est non
+        # -- la friction suit les dollars négociés, pas le nombre d'ordres.
+        "total_friction_dollar", "total_friction_pct_of_initial",
+        "executions_count", "avg_friction_per_execution_dollar",
         "buy_orders_count", "truncated_orders_count", "truncated_orders_pct",
         "unfilled_dollar_pct", "avg_cash_pct",
         # Zone de non-négociation du rebalancement : son réglage et ce qu'il a
@@ -134,6 +140,11 @@ def test_les_diagnostics_sont_produits():
     assert diagnostics["buy_orders_count"] > 0
     assert 0.0 <= diagnostics["avg_cash_pct"] <= 100.0
     assert diagnostics["truncated_orders_count"] <= diagnostics["buy_orders_count"]
+    assert diagnostics["executions_count"] > 0
+    assert diagnostics["total_friction_dollar"] > 0
+    assert diagnostics["avg_friction_per_execution_dollar"] == pytest.approx(
+        diagnostics["total_friction_dollar"] / diagnostics["executions_count"]
+    )
 
 
 def test_les_ordres_tronques_sont_comptes():

@@ -1127,14 +1127,69 @@ la significativité n'y est pas.
 encore largement le SPY (54 913 $ contre 37 492 $, alpha +3,72 %), mais elle
 n'est plus la même.
 
-**Et l'ancrage s'inverse.** À 10 000 $ sous tarification réelle, la stratégie
-**ancrée fait significativement moins bien que la combinée d'origine** :
-−0,063 de Sharpe, IC [−0,115, −0,013], p = 0,994 — l'intervalle exclut zéro.
-L'explication tient en une phrase : les planchers de taille font déjà le
-travail que l'ancrage était censé faire, et l'ancrage n'apporte plus que son
-coût, les entrées différées. **Deux mécanismes qui suppriment les mêmes ordres
-ne s'additionnent pas ; le second se contente de retirer du signal.** À 1 M$ la
-question ne se pose pas, les deux étant confortablement au-dessus des planchers.
+**Sur 2015-2026, l'ancrage ressortait perdant à 10 000 $** : −0,063 de Sharpe
+contre la combinée, IC [−0,115, −0,013], p = 0,994. **Ce résultat ne survit pas
+au changement de fenêtre**, et il faut le dire avant de le citer.
+
+#### Le même test sur 10 ans glissants, et pourquoi il faut se méfier
+
+Fenêtre 2016-09-06 → 2026-09-04 (2 514 séances), tarification réelle des deux
+côtés, seule la stratégie change :
+
+| | Sharpe | Sortino | Calmar | max DD | CAGR | alpha | exécutions | ordre moyen | NAV finale |
+|---|---|---|---|---|---|---|---|---|---|
+| **ancrée · 10 000 $** | 0,972 | 1,406 | 0,562 | −33,35 % | 18,75 % | +5,34 % | 5 153 | 296 $ | 55 696 $ |
+| combinée · 10 000 $ | 0,948 | 1,367 | 0,544 | −34,32 % | 18,67 % | +5,26 % | 5 716 | 264 $ | 55 336 $ |
+| **ancrée · 1 M$** | 1,017 | 1,472 | 0,594 | **−34,36 %** | 20,41 % | +7,00 % | **12 348** | 15 304 $ | 6 398 866 $ |
+| combinée · 1 M$ | 1,017 | 1,473 | 0,584 | −36,06 % | **21,05 %** | +7,64 % | 22 388 | 9 701 $ | **6 745 200 $** |
+
+*SPY sur la même fenêtre : CAGR 13,41 % — 10 000 $ → 35 164 $, 1 M$ → 3 516 368 $.*
+
+**Le signe s'inverse.** À 10 000 $, l'écart apparié passe de **−0,063
+(p = 0,994)** sur 2015-2026 à **+0,028 (p = 0,12)** sur 2016-2026. Mêmes
+stratégies, même tarification : vingt mois de données en moins suffisent à
+retourner la conclusion. Ce n'était donc pas un effet de l'ancrage, c'était un
+effet de 2015-2016.
+
+**Ce que les deux fenêtres disent en commun, et qui tient** : l'ancrage
+supprime 10 à 45 % des exécutions sans effet mesurable sur le Sharpe, dans un
+sens ou dans l'autre (à 1 M$ sur 10 ans : 1,017 contre 1,017). C'est le seul
+énoncé que les données soutiennent.
+
+#### Pourquoi moins de transactions ne fait pas monter le NAV
+
+La question est la bonne, et la réponse tient en une phrase : **la friction
+suit les DOLLARS négociés, pas le nombre d'ordres.** Le moteur totalise
+désormais ce qu'il facture (`total_friction_dollar`, `executions_count`), ce
+qu'il ne faisait pas — le moteur options le fait depuis toujours.
+
+| 1 M$, sur 10 ans | combinée | ancrée | écart |
+|---|---|---|---|
+| Exécutions | 22 388 | 12 348 | **−45 %** |
+| Dollars négociés | 220,4 M$ | 189,3 M$ | **−14 %** |
+| **Friction payée** | 226 141 $ | 194 453 $ | **−31 688 $** |
+| Coût moyen par ordre | 10,10 $ | 15,75 $ | +56 % |
+| NAV finale | 6 745 200 $ | 6 398 866 $ | −346 334 $ |
+
+Supprimer 45 % des ordres n'économise que 14 % des dollars, parce que **les
+ordres supprimés sont les petits**. Le coût moyen par exécution monte donc de
+10,10 $ à 15,75 $ : ce qui reste est plus gros.
+
+La décomposition de l'écart de NAV est sans appel :
+
+    −346 334 $  =  +31 688 $ (frais économisés)  −378 022 $ (effet de SÉLECTION)
+
+**L'effet de sélection pèse douze fois l'économie de frais.** Différer les
+entrées fait rater des positions, et ce manque à gagner écrase de très loin ce
+que la friction fait gagner. À 10 000 $ le rapport s'inverse — l'économie de
+frais (555 $) dépasse le coût de sélection (195 $), parce que la commission
+minimum de 1 $ y représente 5,6 % du capital sur dix ans contre 3,2 % à 1 M$ —
+mais les deux montants y sont dérisoires devant un NAV de 55 000 $.
+
+Autrement dit : **réduire le nombre de transactions est un gain opérationnel,
+pas un gain de performance.** Il compte pour le passage à l'exécution réelle
+(carnet d'ordres, temps de gestion, risque opérationnel), pas pour le rendement
+du backtest.
 
 #### Ce qui reste bloqué
 

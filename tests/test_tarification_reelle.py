@@ -190,6 +190,47 @@ def test_un_ajustement_au_dessus_du_plancher_passe():
     assert m.trades[0]["exit_reason"] == "rebalance"
 
 
+# --------------------------------------------------------------------------- #
+# Comptabilité de la friction
+# --------------------------------------------------------------------------- #
+def test_la_friction_payee_est_totalisee():
+    """Le moteur facturait sa friction sans jamais la totaliser : impossible de
+    répondre à « moins de transactions, est-ce moins de frais ? ». La réponse
+    n'est pas évidente -- la friction suit les DOLLARS négociés, pas le nombre
+    d'ordres -- d'où la nécessité de la mesurer."""
+    m = _moteur_avec_position(10_000.0)
+    m._queue_order("BBB", 0.0, "stop_loss", m.calendar[20])
+    m._execute_pending_orders(m.calendar[21])
+
+    assert m.executions_count == 1
+    # 10 000 $ vendus à 10 bps.
+    assert m.total_friction_dollar == pytest.approx(10.0)
+
+
+def test_la_commission_minimum_apparait_dans_la_friction_totale():
+    """Un petit ordre paie le minimum, et le total doit le refléter -- sinon le
+    compteur mesurerait une friction théorique et non celle qui a été payée."""
+    m = _moteur_avec_position(200.0, min_commission_dollar=1.0)
+    m._queue_order("BBB", 0.0, "stop_loss", m.calendar[20])
+    m._execute_pending_orders(m.calendar[21])
+
+    assert m.executions_count == 1
+    # 200 $ à 10 bps feraient 0,20 $ : le minimum de 1 $ s'y substitue.
+    assert m.total_friction_dollar == pytest.approx(1.0)
+
+
+def test_le_compteur_part_de_zero_et_ne_decroit_jamais():
+    m = _moteur_avec_position(10_000.0)
+    assert m.total_friction_dollar == 0.0 and m.executions_count == 0
+    precedent = 0.0
+    for i, cible in enumerate((9_000.0, 8_000.0, 7_000.0)):
+        m._queue_order("BBB", cible, "rebalance", m.calendar[20 + 2 * i])
+        m._execute_pending_orders(m.calendar[21 + 2 * i])
+        assert m.total_friction_dollar > precedent
+        assert m.executions_count == i + 1
+        precedent = m.total_friction_dollar
+
+
 def test_une_candidate_inachetable_ne_declenche_pas_de_repesage():
     """Si la commission minimum rend une candidate inachetable, elle n'a aucune
     raison de forcer le repesage de tout le portefeuille pour être achetée --
