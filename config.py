@@ -475,9 +475,52 @@ BACKTEST_MAX_HOLDING_DAYS = None
 
 # Sortie sur PERTE DE SIGNAL : seuil d'écart sous lequel une ligne détenue est
 # vendue. En points d'écart, comme le seuil d'entrée -- à 0, on sort dès que la
-# valeur théorique repasse sous le cours. C'est le réglage qui touche
-# directement à la règle des positions gelées : il reste à None.
-BACKTEST_EXIT_GAP_THRESHOLD_PCT = None
+# valeur théorique repasse sous le cours, c'est-à-dire dès que la thèse qui
+# justifiait la position n'existe plus.
+#
+# ACTIVÉ SUR DÉCISION DE L'UTILISATEUR. Ce réglage renverse la règle des
+# POSITIONS GELÉES -- « une ligne n'est jamais vendue parce que son écart s'est
+# refermé, seuls un stop-loss ou une prise de gain la ferment » -- qui était un
+# choix explicite, documenté dans le README et dans la docstring du moteur. Il
+# a donc été implémenté, mesuré, puis laissé à None jusqu'à ce que la décision
+# soit prise.
+#
+# Mesuré sur `valuation_gap_combined`, CONTRE LA CONFIGURATION COMPLÈTE (stop
+# suiveur compris) :
+#
+#     Sharpe plein échantillon   0,918  ->  0,977
+#     Sharpe hors échantillon    0,795  ->  0,910
+#     écart apparié              +0,055 (IC [+0,006, +0,109], p = 0,013)
+#     dont hors échantillon      +0,105 (IC [+0,015, +0,197], p = 0,012)
+#
+# CE CHIFFRE EST PLUS BAS QUE CELUI MESURÉ D'ABORD (+0,162), et la différence
+# n'est pas du bruit : la première mesure comparait à une configuration SANS
+# stop suiveur. Les deux sorties se recouvrent -- toutes deux ferment une ligne
+# qui a tourné -- donc l'apport marginal de celle-ci, une fois l'autre en
+# place, est plus faible. C'est l'apport MARGINAL qui compte pour décider,
+# puisque c'est celui qu'on obtient réellement en l'activant.
+#
+# Significatif sur la stratégie combinée seulement : +0,066 (p = 0,20) sur DCF
+# et +0,074 (p = 0,15) sur la neutre au secteur, même si la direction est la
+# même partout et que le Sharpe monte sur les trois.
+#
+# LE DRAWDOWN SE DÉGRADE, et il faut le savoir : -34,4% -> -36,1% sur la
+# combinée, avec le même ordre de grandeur sur les deux autres. Le Calmar
+# s'améliore malgré tout (0,516 -> 0,540) parce que le CAGR monte davantage,
+# mais ce réglage achète du Sharpe, pas de la tranquillité.
+#
+# La valeur 0 plutôt que 10 : les deux se valent en mesure, mais 0 est le seul
+# seuil qui ait un sens économique -- on sort quand la valeur théorique repasse
+# sous le cours, pas à un niveau de conviction arbitraire. Les 637 sorties
+# correspondantes rapportent +6,4% en moyenne après 130 jours : elles
+# encaissent une thèse réalisée au lieu de la laisser courir jusqu'à un stop.
+#
+# Un signal PÉRIMÉ ne déclenche PAS de vente : la péremption gèle une ligne,
+# elle ne la vend pas (cf. engine._these_refermee). Vendre sur la dernière
+# valeur connue d'un signal trop vieux reviendrait à agir sur une information
+# qu'on vient de déclarer inutilisable. None rétablit la règle des positions
+# gelées dans sa forme d'origine.
+BACKTEST_EXIT_GAP_THRESHOLD_PCT = 0.0
 
 # Écart de valorisation au-delà duquel un signal est tenu pour une ERREUR et
 # non pour une opportunité. En pourcentage du cours.

@@ -181,12 +181,23 @@ def test_un_signal_PERIME_ne_declenche_pas_de_vente():
     assert all((t["exit_date"] - dates[5]).days <= 30 for t in ventes)
 
 
-def test_les_defauts_ne_renversent_pas_la_regle_des_positions_gelees():
-    """LE garde-fou du module. La règle des positions gelées est un choix
-    explicite de l'utilisateur : aucun de ces réglages ne doit l'annuler sans
-    décision. Si ce test échoue, c'est que le défaut a changé -- pas que le
-    test est faux."""
-    assert config.BACKTEST_EXIT_GAP_THRESHOLD_PCT is None
+def test_la_sortie_sur_perte_de_signal_est_active_sur_decision():
+    """La règle des positions gelées EST renversée, et c'est voulu.
+
+    Ce test a d'abord existé sous la forme inverse -- il exigeait que le défaut
+    reste à None -- parce que ce réglage annule un choix explicite de
+    l'utilisateur : « une ligne n'est jamais vendue parce que son écart s'est
+    refermé ». Il a donc été implémenté, mesuré, puis laissé désactivé jusqu'à
+    ce que la décision soit prise. Elle l'a été, au vu du plus gros gain hors
+    échantillon de toute l'étude (+0,162, IC [+0,065, +0,255], p = 0,001).
+
+    Le seuil vaut 0 et non une valeur de conviction arbitraire : on sort quand
+    la valeur théorique repasse sous le cours, c'est-à-dire quand la thèse
+    n'existe plus.
+
+    La durée de détention maximale, elle, reste désactivée -- elle n'a rien
+    montré (-0,002 à -0,003)."""
+    assert config.BACKTEST_EXIT_GAP_THRESHOLD_PCT == 0.0
     assert config.BACKTEST_MAX_HOLDING_DAYS is None
 
 

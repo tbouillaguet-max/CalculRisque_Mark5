@@ -827,11 +827,12 @@ valorisations cassées — une fois les deux corrigés, elle est négative.
 
 #### Deux résultats qui attendent une décision
 
-**La sortie sur perte de signal est le plus gros gain de tout le programme** :
-Sharpe 0,867 → 0,942, test **0,676 → 0,849**, écart apparié +0,162
-(IC [+0,065, +0,255], p = 0,001). Elle renverse la **règle des positions
-gelées**, qui est une décision de l'utilisateur et non un défaut technique :
-`--exit-gap-threshold-pct 0` l'active, la valeur par défaut reste `None`.
+**La sortie sur perte de signal est activée** (`BACKTEST_EXIT_GAP_THRESHOLD_PCT
+= 0`), sur décision de l'utilisateur : elle renverse la **règle des positions
+gelées**, qui était un choix explicite et non un défaut technique. Elle a donc
+été implémentée, mesurée, puis laissée désactivée jusqu'à ce que la décision
+soit prise. Voir « Le résultat final » plus bas pour ses chiffres, dont un
+drawdown qui se dégrade.
 
 #### Le multiple mérité : mieux prédire, moins bien investir
 
@@ -877,6 +878,36 @@ racine de la part de volume consommée :
 
 **La stratégie cesse de battre l'indice (11,99 %) vers 2 à 3 milliards de
 dollars.**
+
+#### Le résultat final
+
+Configuration complète, `--start-date 2015-01-01`, sortie sur perte de signal
+comprise :
+
+| | Sharpe | apprentissage | **test** | **max drawdown** | CAGR | Calmar | alpha |
+|---|---|---|---|---|---|---|---|
+| **Départ du programme** | 0,782 | 0,837 | 0,698 | **−32,49 %** | 15,56 % | 0,479 | +3,57 % |
+| `valuation_gap_dcf` | 0,935 | 1,063 | 0,737 | −32,76 % | 18,45 % | 0,563 | +6,47 % |
+| `valuation_gap_sector_neutral` | 0,906 | 1,039 | 0,701 | −32,30 % | 17,69 % | 0,548 | +5,70 % |
+| **`valuation_gap_combined`** | **0,977** | 1,017 | **0,910** | **−36,10 %** | **19,48 %** | 0,540 | **+7,49 %** |
+
+Apport marginal de la seule sortie sur perte de signal, contre la
+configuration complète (stop suiveur compris) : **+0,055** en plein échantillon
+(IC [+0,006, +0,109], p = 0,013) et **+0,105** hors échantillon
+(IC [+0,015, +0,197], p = 0,012) sur la stratégie combinée. Non significatif
+sur les deux autres (p = 0,20 et 0,15), même si la direction y est la même.
+
+Ce chiffre est plus bas que le +0,162 mesuré d'abord, et la différence n'est
+pas du bruit : la première mesure comparait à une configuration **sans stop
+suiveur**. Les deux sorties se recouvrent, donc l'apport marginal de celle-ci
+une fois l'autre en place est plus faible. C'est l'apport marginal qui compte,
+puisque c'est celui qu'on obtient en l'activant.
+
+**Le drawdown se dégrade** : −34,4 % → −36,1 % sur la combinée. Le Calmar
+s'améliore malgré tout (0,516 → 0,540) parce que le CAGR monte davantage, mais
+ce réglage achète du Sharpe, pas de la tranquillité. Le ciblage de volatilité
+(`--vol-target-pct 12`) fait l'arbitrage inverse si c'est le drawdown qui
+compte : −25,8 % au prix de 0,05 de Sharpe.
 
 #### Ce qui reste bloqué
 
