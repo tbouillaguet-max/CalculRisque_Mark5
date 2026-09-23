@@ -731,8 +731,9 @@ Résultat, sur `--start-date 2015-01-01` :
 | Information ratio | 0,40 | 0,63 | 0,25 | 0,49 |
 
 Le gain résiste au durcissement des hypothèses de coût, sans se creuser
-(DCF, aller-retour) : 0,78 → 0,87 à 10 bps, 0,70 → 0,79 à 30 bps,
-0,63 → 0,71 à 50 bps.
+(DCF, plein échantillon) : 0,78 → 0,87 à **10 bps par aller simple** (soit
+20 bps l'aller-retour, l'hypothèse retenue), 0,70 → 0,79 à 30 bps (60 bps
+l'aller-retour), 0,63 → 0,71 à 50 bps (100 bps l'aller-retour).
 
 #### Le filtre momentum coûtait plus qu'il ne protégeait
 
@@ -959,6 +960,15 @@ s'améliore malgré tout (0,516 → 0,540) parce que le CAGR monte davantage, ma
 ce réglage achète du Sharpe, pas de la tranquillité. Le ciblage de volatilité
 (`--vol-target-pct 12`) fait l'arbitrage inverse si c'est le drawdown qui
 compte : −25,8 % au prix de 0,05 de Sharpe.
+
+**Hypothèses de toutes les lignes ci-dessus**, pour qu'aucune n'ait à être
+devinée : 10 bps par aller simple (commission 5 + glissement 5, appliqués
+symétriquement à l'achat et à la vente, soit 20 bps l'aller-retour), impact de
+marché **désactivé** et ciblage de volatilité **désactivé**. Ces deux derniers
+sont des options d'analyse, jamais des défauts : `BACKTEST_VOL_TARGET_PCT` vaut
+`None` et `BACKTEST_IMPACT_COEFFICIENT_BPS` vaut `0.0` dans `config.py`, aucun
+des 105 runs archivés sous `data/backtest/` n'a l'un ou l'autre actif, et
+`tests/test_couts_et_risque.py` échoue si ces deux valeurs changent.
 
 #### Ce qui reste bloqué
 
