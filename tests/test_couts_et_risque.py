@@ -177,10 +177,25 @@ def test_sans_cible_le_facteur_vaut_un():
     assert moteur._echelle_ciblage_volatilite() == 1.0
 
 
-def test_les_deux_reglages_sont_desactives_par_defaut():
-    """Aucun des deux n'améliore le Sharpe : l'impact décrit un coût réel que
-    le backtest à un million ne voit pas, le ciblage échange du Sharpe contre
-    du drawdown. Les activer par défaut changerait les chiffres de référence
-    sans les améliorer."""
+def test_l_impact_de_marche_reste_desactive_par_defaut():
+    """L'impact décrit un coût réel que le backtest à un million de dollars ne
+    voit pas : une ligne y pèse quelques dizaines de milliers contre un volume
+    quotidien médian de 113 millions. L'activer par défaut ne changerait rien
+    aux chiffres tout en rendant chaque run dépendant du panel de volumes. Son
+    emploi est l'étude de capacité, à la demande."""
     assert config.BACKTEST_IMPACT_COEFFICIENT_BPS == 0.0
-    assert config.BACKTEST_VOL_TARGET_PCT is None
+
+
+def test_le_ciblage_de_volatilite_est_actif_a_douze():
+    """ACTIVÉ sur décision de l'utilisateur, et le test le fige pour qu'un
+    retour à `None` par inadvertance ne passe pas inaperçu -- il déplacerait
+    tous les chiffres de référence du README.
+
+    Ce n'est pas un réglage qui améliore le Sharpe, et le test ne doit pas
+    laisser croire le contraire : mesuré, le ciblage le dégrade légèrement
+    (−0,014 à −0,056 selon la stratégie, jamais significatif) et réduit
+    nettement le drawdown maximal (−36,1 % → −26,5 % sur la combinée). C'est
+    l'arbitrage inverse de celui que la seule optimisation du Sharpe aurait
+    retenu, et il est assumé comme tel."""
+    assert config.BACKTEST_VOL_TARGET_PCT == 12.0
+    assert config.BACKTEST_VOL_TARGET_LOOKBACK_DAYS == 60

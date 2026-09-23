@@ -957,18 +957,71 @@ puisque c'est celui qu'on obtient en l'activant.
 
 **Le drawdown se dégrade** : −34,4 % → −36,1 % sur la combinée. Le Calmar
 s'améliore malgré tout (0,516 → 0,540) parce que le CAGR monte davantage, mais
-ce réglage achète du Sharpe, pas de la tranquillité. Le ciblage de volatilité
-(`--vol-target-pct 12`) fait l'arbitrage inverse si c'est le drawdown qui
-compte : −25,8 % au prix de 0,05 de Sharpe.
+ce réglage achète du Sharpe, pas de la tranquillité.
 
-**Hypothèses de toutes les lignes ci-dessus**, pour qu'aucune n'ait à être
-devinée : 10 bps par aller simple (commission 5 + glissement 5, appliqués
-symétriquement à l'achat et à la vente, soit 20 bps l'aller-retour), impact de
-marché **désactivé** et ciblage de volatilité **désactivé**. Ces deux derniers
-sont des options d'analyse, jamais des défauts : `BACKTEST_VOL_TARGET_PCT` vaut
-`None` et `BACKTEST_IMPACT_COEFFICIENT_BPS` vaut `0.0` dans `config.py`, aucun
-des 105 runs archivés sous `data/backtest/` n'a l'un ou l'autre actif, et
-`tests/test_couts_et_risque.py` échoue si ces deux valeurs changent.
+**Hypothèses de toutes les lignes ci-dessus** : 10 bps par aller simple
+(commission 5 + glissement 5, appliqués symétriquement à l'achat et à la vente,
+soit 20 bps l'aller-retour), impact de marché désactivé, **ciblage de
+volatilité désactivé**. C'est le régime dans lequel toute l'optimisation a été
+conduite, puisque son critère était le Sharpe. La section suivante mesure
+l'autre régime, qui est désormais celui par défaut.
+
+#### Le ciblage de volatilité à 12 %, activé
+
+`BACKTEST_VOL_TARGET_PCT = 12.0`. L'exposition est réduite quand la volatilité
+réalisée des 60 dernières séances dépasse 12 % annualisés, jamais augmentée
+au-delà de 100 % (le moteur n'est pas margé). **C'est un arbitrage assumé, pas
+un gain** — ce n'est pas le réglage que l'optimisation du Sharpe aurait retenu.
+
+| | Sharpe | appr. | **test** | **max DD** | CAGR | vol | Calmar | alpha | β | exposition |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `valuation_gap_dcf` | 0,935 | 1,063 | 0,737 | −32,76 % | 18,45 % | 17,50 % | 0,563 | +6,47 % | 0,89 | 98,2 % |
+| `…` **+ cible 12 %** | 0,850 | 1,016 | 0,615 | **−24,41 %** | 14,01 % | 14,11 % | 0,574 | +2,02 % | 0,69 | 88,1 % |
+| `valuation_gap_sector_neutral` | 0,906 | 1,039 | 0,701 | −32,30 % | 17,69 % | 17,30 % | 0,548 | +5,70 % | 0,88 | 98,0 % |
+| `…` **+ cible 12 %** | 0,832 | 0,997 | 0,597 | **−24,14 %** | 13,65 % | 14,03 % | 0,566 | +1,66 % | 0,69 | 88,2 % |
+| **`valuation_gap_combined`** | **0,977** | 1,017 | **0,910** | −36,10 % | 19,48 % | 17,65 % | 0,540 | +7,49 % | 0,89 | 98,3 % |
+| **`…` + cible 12 %** | 0,932 | 1,006 | 0,817 | **−26,54 %** | 15,22 % | 13,99 % | 0,573 | +3,23 % | 0,68 | 88,4 % |
+
+Ce que le tableau dit, dans l'ordre d'importance :
+
+- **Le drawdown baisse de 8 à 10 points**, sur les trois stratégies. C'est
+  l'effet recherché, et il est net : −36,1 % → −26,5 % sur la combinée.
+- **Le Sharpe baisse un peu**, jamais de façon significative. Écart apparié :
+  −0,014 (combinée, p = 0,62), −0,046 (neutre au secteur, p = 0,81), −0,056
+  (DCF, p = 0,85). Les trois intervalles de confiance contiennent zéro — la
+  dégradation est réelle en direction, indiscernable du bruit en amplitude.
+- **Le Calmar s'améliore** partout (0,540 → 0,573 sur la combinée) : le
+  drawdown recule plus vite que le rendement.
+- **Le CAGR et l'alpha reculent nettement** : 19,48 % → 15,22 % et +7,49 % →
+  +3,23 % sur la combinée. Le garde-fou fixé au départ — battre le CAGR du SPY
+  (11,99 %) — tient toujours sur les trois, mais la marge se réduit beaucoup.
+
+**Le contrôle qui compte**, parce que le réglage baisse l'exposition moyenne de
+98 % à 88 % : est-ce autre chose que « détenir moins » ? On compare donc à un
+désinvestissement **constant** calibré sur la même volatilité réalisée
+(k ≈ 0,79 en actions, le reste au taux sans risque).
+
+| combinée | brut | cible 12 % | statique de même volatilité |
+|---|---|---|---|
+| max drawdown | −36,10 % | **−26,54 %** | −29,51 % |
+| Sharpe | 0,872 | 0,799 | 0,872 |
+
+*(Sharpe recalculés ici à formule identique pour que les trois colonnes soient
+comparables ; ils diffèrent donc de ceux du tableau ci-dessus.)*
+
+Le ciblage **fait mieux que détenir moins** sur le drawdown — 3 points
+d'avance — et **moins bien sur le Sharpe**, qu'un désinvestissement constant
+laisse mathématiquement intact. Le mécanisme apporte donc quelque chose de
+réel, mais modeste, et il le fait payer.
+
+**Le drawdown maximal est le Covid dans les deux régimes** (février-mars 2020),
+et c'est là que le ciblage agit le plus. Sur le marché baissier de 2022, plus
+lent, il ne gagne que 2 à 3 points : −17,96 % → −15,20 % sur la combinée. Un
+ciblage de volatilité protège d'un choc qui dure assez pour être vu, pas d'une
+baisse régulière.
+
+Pour revenir au régime optimisé sur le Sharpe, sans toucher à la
+configuration : `09_backtest.py --vol-target-pct 0`.
 
 #### Ce qui reste bloqué
 

@@ -1754,5 +1754,13 @@ BACKTEST_IMPACT_COEFFICIENT_BPS = 0.0
 # l'une des rares régularités robustes des marchés. Réduire l'exposition quand
 # ça secoue réduit la volatilité future plus sûrement que le rendement futur.
 # None désactive (comportement d'origine).
-BACKTEST_VOL_TARGET_PCT = None
+#
+# ACTIVÉ À 12 %, sur décision de l'utilisateur, et il faut être clair sur ce
+# que cela achète : c'est un ARBITRAGE, pas un gain. Le ciblage ne prétend pas
+# améliorer le Sharpe -- mesuré, il le dégrade légèrement -- il réduit
+# nettement le drawdown maximal. Les chiffres des deux régimes sont dans le
+# README ; le choix de la tranquillité contre un peu de Sharpe est un choix
+# légitime, il n'est simplement pas celui que la seule optimisation du Sharpe
+# aurait retenu.
+BACKTEST_VOL_TARGET_PCT = 12.0
 BACKTEST_VOL_TARGET_LOOKBACK_DAYS = 60
