@@ -689,24 +689,131 @@ appliquer le sien.
 ### Optimisation des réglages actions (`16_optimize_strategie_actions.py`)
 
 ```bash
-make optimize-actions                                    # DCF, 108 combinaisons, ~10 min sur 4 cœurs
+make optimize-actions                                    # DCF, 432 combinaisons, ~50 min sur 4 cœurs
 make optimize-actions STRATEGY_ACTIONS=valuation_gap_sector_neutral
 python 16_optimize_strategie_actions.py --report-only data/backtest/<csv>   # relire sans relancer
+python 16_optimize_strategie_actions.py --max-holding-grid -1 120 180 270   # horizon sur mesure
 python 16_optimize_strategie_actions.py --stop-loss-grid -15 -25 -40 \
     --max-weight-grid 10 20                              # rebalayer les deux axes retirés
 ```
 
-Grid-search sur **quatre axes à la fois** — take-profit, seuil d'entrée, filtre
-momentum, zone de non-négociation. Les quatre optimiseurs options font varier
-un paramètre par run, ce qui suffit quand les réglages sont séparables ; ici
-ils ne le sont pas (le seuil d'entrée déplace le nombre de lignes donc l'effet
-de la bande, la prise de gain déplace la rotation donc la friction), et une
-descente axe par axe trouverait un optimum de coordonnée, pas un optimum.
+Grid-search sur **cinq axes à la fois** — take-profit, seuil d'entrée, filtre
+momentum, zone de non-négociation, et **horizon de convergence**. Les quatre
+optimiseurs options font varier un paramètre par run, ce qui suffit quand les
+réglages sont séparables ; ici ils ne le sont pas (le seuil d'entrée déplace le
+nombre de lignes donc l'effet de la bande, la prise de gain déplace la rotation
+donc la friction), et une descente axe par axe trouverait un optimum de
+coordonnée, pas un optimum.
+
+Quatre de ces axes sont des réglages d'**exécution** : ils disent *comment on
+négocie*. Le cinquième, l'horizon, est le seul qui porte sur le **signal** : il
+dit *combien de temps on croit à la thèse*.
 
 Le classement porte sur la **seule fenêtre d'apprentissage** (2015-2021), avec
 un plancher de rendement contre le SPY sur cette même fenêtre — maximiser un
 ratio autorise sinon à l'améliorer en désinvestissant. `test_sharpe_ratio`
 (2022-2026) est affiché à côté sans jamais entrer dans la sélection.
+
+#### L'horizon de convergence, et pourquoi ses bornes ne sont pas rondes
+
+Le moteur ne ferme une position que sur stop-loss, prise de gain, stop suiveur,
+perte de signal ou repesage. Une thèse de convergence qui ne se réalise **jamais**
+n'est donc fermée par rien : elle occupe du capital indéfiniment.
+`BACKTEST_MAX_HOLDING_DAYS` est la règle qui y met un terme — implémentée de
+longue date, mais désactivée et jamais balayée.
+
+Les points de la grille viennent d'une mesure, pas d'un choix rond. Sur les
+**13 141 sorties** de la configuration de référence :
+
+| Durée de détention | Rendement moyen | **Annualisé** |
+|---|---|---|
+| < 30 j | +2,2 % | **+79 %/an** |
+| 30–60 j | +4,8 % | +47 %/an |
+| 60–90 j | +5,8 % | +32 %/an |
+| 90–180 j | +5,6 % | +17 %/an |
+| 180–270 j | +6,6 % | +11 %/an |
+| 270–365 j | +7,1 % | +8,4 %/an |
+| 365–545 j | +7,3 % | +6,3 %/an |
+| 545–730 j | +7,0 % | **+4,0 %/an** |
+| > 730 j | +9,4 % | +4,2 %/an |
+
+Le rendement **absolu** est quasi plat pendant que la durée est multipliée par
+60 : le gain s'accumule dans les premières semaines puis **s'arrête**. C'est la
+signature d'un horizon de convergence.
+
+**Le contrôle de biais compte plus que le tableau.** Une position qui converge
+vite sort vite *par construction* — la prise de gain tronque les positions
+rapides —, donc son rendement annualisé est mécaniquement élevé. Restreinte aux
+seules sorties `rebalance` (80,5 % du total, et les moins liées au rendement de
+la ligne), la décroissance est **plus raide encore** : +132 %/an sous 30 jours
+contre +3,9 %/an au-delà de 545. Elle n'est donc pas un artefact.
+
+Un biais résiduel subsiste, et il joue dans le bon sens : une position encore
+vivante à 600 jours est une qui n'a pas été stoppée, ce qui **flatte** les
+tranches longues. La décroissance mesurée est donc un minorant.
+
+Bornes retenues : **90, 180, 365 jours, et aucun horizon** (la valeur en
+production). Elles couvrent la partie raide et la partie plate. Repères de
+distribution : médiane 77 j, p90 280 j, p95 366 j ; en capital-jours, 45 % sous
+180 j et 80 % sous 365 j.
+
+**Ce tableau ne conclut rien à lui seul** — il est conditionné à la façon dont
+chaque position s'est terminée. Seul le backtest complet, qui rejoue tout
+l'historique sous la contrainte, répond. C'est à ça que sert l'axe.
+
+#### Ce que l'horizon a donné : le plus gros axe de la grille, et il dit non
+
+L'axe est **de loin le plus discriminant** que cette grille ait jamais porté :
+
+| Axe | η² | Étendue des moyennes |
+|---|---|---|
+| **`max_holding_days`** | **57,3 %** | **0,094** |
+| `take_profit_pct` | 18,5 % | 0,045 |
+| `momentum_min_pct` | 8,5 % | 0,029 |
+| `entry_threshold_pct` | 1,7 % | 0,013 |
+| `rebalance_band_pct` | 0,6 % | 0,008 |
+
+La prémisse du levier 4 était donc juste : **un axe de signal bouge plus que
+n'importe quel axe d'exécution** — deux fois plus que la prise de gain, qui
+dominait la grille jusque-là.
+
+Et il bouge dans le mauvais sens. Les autres axes fixés sur la production,
+écart apparié contre « aucun horizon » :
+
+| Horizon | Sharpe | Rotation | Positions fermées | Écart apparié | IC 95 % |
+|---|---|---|---|---|---|
+| aucun *(production)* | 0,930 | 760 % | 2 628 | — | — |
+| 365 j | 0,932 | 781 % | 2 694 | **+0,002** | [−0,011, +0,016] |
+| 180 j | 0,906 | 885 % | 3 080 | −0,025 | [−0,073, +0,019] |
+| 90 j | 0,857 | **1 177 %** | **4 226** | **−0,073** | [−0,133, **−0,008**] |
+
+**Le mécanisme est lisible dans la colonne rotation.** Forcer une sortie ne
+supprime pas la thèse : elle est toujours là le lendemain, et le moteur la
+rachète. Un horizon de 90 jours multiplie les fermetures par 1,6 et la rotation
+par 1,55 — on paie la friction deux fois pour se retrouver dans la même
+position. À 365 jours, l'horizon ne touche que 155 sorties sur 13 409 : il est
+gratuit parce qu'il ne fait rien.
+
+**La leçon, et elle vaut au-delà de cet axe.** Le tableau de décroissance était
+une observation **conditionnelle** — les positions qui ont vécu longtemps ont
+moins gagné par an. L'intervention est **causale** — les couper court
+rapporte-t-il davantage ? Les deux ne se déduisent pas l'une de l'autre, et ici
+elles se contredisent : la décroissance mesure *quelles positions survivent*,
+pas *ce que durer coûte*. C'est exactement le piège que le backtest complet
+sert à détecter, et la raison pour laquelle le tableau de décroissance ne
+pouvait pas conclure seul.
+
+**Rien n'est adopté.** `BACKTEST_MAX_HOLDING_DAYS` reste à `None`. La seule
+combinaison établie meilleure avec un horizon (seuil d'entrée 30 %, bande 15,
+horizon 365) vaut **+0,023** — contre **+0,022** pour la même sans horizon,
+avec un intervalle *plus serré*. L'horizon n'y apporte rien : le gain est celui
+du seuil d'entrée, déjà connu. Et le prix de l'axe est réel : le plancher de
+bruit du Sharpe déflaté passe de 0,983 à **1,004** (1 858 essais cumulés),
+pendant que le meilleur Sharpe plein échantillon reste à 0,925.
+
+L'axe reste dans la grille : il est le plus puissant qu'elle possède, et un
+garde-fou de non-régression sur une règle que quelqu'un finira par vouloir
+activer.
 
 #### Deux axes retirés du défaut, et comment on l'a su
 
@@ -773,7 +880,7 @@ et **+0,100** côté neutre au secteur.
 #### Le classement ne départage rien, et il faut le dire
 
 L'erreur-type d'un Sharpe estimé sur sept ans vaut **0,47** (Lo, 2002). Sur les
-108 combinaisons de la grille, **les 108 sont à moins d'une erreur-type du
+432 combinaisons de la grille, **les 432 sont à moins d'une erreur-type du
 maximum**. Retenir le premier du classement, c'est retenir le tirage le plus
 chanceux d'un ensemble statistiquement homogène.
 
@@ -785,10 +892,12 @@ Trois conséquences dans l'outil :
   qui n'est pas une mesure de performance mais d'**exposition à une
   hypothèse** : tout le backtest suppose 10 bps par aller simple ;
 - le rapport dit ce que la grille **établit** (un axe sur lequel tout le
-  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les quatre axes
-  balayés, un seul est unanime — la prise de gain à +30 %. Un axe réduit à un
-  point est affiché **non balayé**, jamais « unanime » : il l'est par
-  construction, et le lire comme un résultat serait une erreur ;
+  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les cinq axes
+  balayés, **aucun n'est unanime** une fois l'horizon ajouté — le plateau passe
+  de 23 à 120 combinaisons, et la prise de gain, jusque-là unanime, ne l'est
+  plus. Un axe réduit à un point est affiché **non balayé**, jamais
+  « unanime » : il l'est par construction, et le lire comme un résultat serait
+  une erreur ;
 - chaque combinaison est **comparée à la configuration en production** par
   bootstrap apparié (`--paired-bootstrap`, 2 000 par défaut). C'est ce qui rend
   la grille capable de conclure — détail ci-dessous.
@@ -796,53 +905,61 @@ Trois conséquences dans l'outil :
 #### Ce que le test apparié départage, et que le classement ne départageait pas
 
 L'erreur-type marginale ci-dessus vaut pour deux stratégies **indépendantes**.
-Les 108 combinaisons sont des variantes du **même** backtest : leurs courbes de
-NAV sont corrélées à **0,990**. Leur écart est apparié, et sa dispersion est
+Les 432 combinaisons sont des variantes du **même** backtest : leurs courbes de
+NAV sont corrélées à **0,988**. Leur écart est apparié, et sa dispersion est
 bien plus faible que celle de chacun de ses termes.
 
 | | demi-largeur de l'intervalle |
 |---|---|
 | Erreur-type marginale (Sharpe 0,93 sur 11,6 ans) | 0,353 |
-| Intervalle **apparié** (médiane des 108) | **0,079** |
+| Intervalle **apparié** (médiane des 432) | **0,087** |
 
 Soit **quatre fois plus précis**, et la grille passe de « rien n'est
 distinguable » à un résultat :
 
 | | combinaisons |
 |---|---|
-| Établies **meilleures** que la production (IC au-dessus de 0) | **1** |
-| Établies **pires** (IC au-dessous de 0) | 25 |
-| Indistinguables | 82 |
+| Établies **meilleures** que la production (IC au-dessus de 0) | **2** |
+| Établies **pires** (IC au-dessous de 0) | 116 |
+| Indistinguables | 314 |
 
 Les deux demi-largeurs portent sur la **même fenêtre**, et c'est indispensable :
 l'intervalle apparié est mesuré sur la courbe entière, et le comparer à
 l'erreur-type de la seule fenêtre d'apprentissage gonflerait le rapport de
 √(11,6/7) — 25 % de précision annoncée qui n'existerait pas.
 
-La seule établie meilleure est la configuration en place avec le **seuil
-d'entrée à 30 %** au lieu de 20 : écart apparié **+0,022** (IC [+0,009,
-+0,037]), et le gain se retrouve **sur les deux fenêtres** — apprentissage
-1,003 → 1,027, hors échantillon 0,817 → 0,837, pour une rotation en léger
-recul (760 % → 751 %). C'est un gain réel et minuscule : exactement ce que le
-test sert à dire, là où le classement laissait croire à un choix entre 108
-réglages.
+Les deux établies meilleures sont la **même** configuration — celle en place
+avec le seuil d'entrée à 30 % au lieu de 20 — avec et sans horizon :
 
-**Lire l'intervalle, pas la p-value.** Celle de cette combinaison vaut 0,0005,
-c'est-à-dire **exactement 1/2 000** : un seul rééchantillonnage sur 2 000 est
-passé sous zéro. C'est le **plancher de résolution** du bootstrap, pas une
-mesure — la vraie p-value peut être bien plus petite, et le chiffre ne peut
-donc pas se comparer à un seuil de Bonferroni du même ordre (0,05/108 =
-0,00046). L'intervalle, lui, n'est pas censuré : c'est lui qui établit le
+| Combinaison | Écart apparié | IC 95 % |
+|---|---|---|
+| seuil 30 %, horizon 365 j | +0,023 | [+0,004, +0,044] |
+| seuil 30 %, **aucun horizon** | +0,022 | [+0,009, +0,037] |
+
+L'horizon ajoute **+0,001 pour un intervalle deux fois plus large** : il
+n'apporte rien, le gain est celui du seuil d'entrée. Et ce gain se retrouve
+**sur les deux fenêtres** — apprentissage 1,003 → 1,027, hors échantillon
+0,817 → 0,837, pour une rotation en léger recul (760 % → 751 %). C'est un gain
+réel et minuscule : exactement ce que le test sert à dire, là où le classement
+laissait croire à un choix entre 432 réglages.
+
+**Lire l'intervalle, pas la p-value.** Celle de la variante sans horizon vaut
+0,0005, c'est-à-dire **exactement 1/2 000** : un seul rééchantillonnage sur
+2 000 est passé sous zéro. C'est le **plancher de résolution** du bootstrap,
+pas une mesure — la vraie p-value peut être bien plus petite, et le chiffre ne
+peut donc pas se comparer à un seuil de Bonferroni du même ordre (0,05/432 =
+0,00012). L'intervalle, lui, n'est pas censuré : c'est lui qui établit le
 résultat, conformément à ce que dit `paired_sharpe_difference` (un bootstrap
 par blocs est légèrement libéral ; une p-value juste sous 0,05 ne vaut pas une
-preuve, un intervalle franchement à droite de zéro, oui). L'écart au reste de
-la grille est net : la p-value suivante est 0,136.
+preuve, un intervalle franchement à droite de zéro, oui).
 
-**Ce n'est pas adopté pour autant.** Le Sharpe plein échantillon de cette
-combinaison vaut 0,952 pour un **plancher de bruit de 0,983** à 1 426 essais
-cumulés : au niveau du programme entier, elle reste sous le seuil à partir
-duquel un résultat se distingue de la sélection elle-même. Le réglage en place
-ne bouge pas.
+**Ce n'est pas adopté pour autant.** Le Sharpe plein échantillon du meilleur
+point vaut 0,925 pour un **plancher de bruit de 1,004** à 1 858 essais
+cumulés : au niveau du programme entier, il reste sous le seuil à partir duquel
+un résultat se distingue de la sélection elle-même. Le réglage en place ne
+bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004 en ajoutant
+l'axe d'horizon : chaque essai supplémentaire relève la barre, et c'est le prix
+à payer pour tout élargissement de grille.
 
 **Ce test ne sélectionne pas, et ne doit pas.** Il est mesuré sur la courbe
 entière, fenêtre de test comprise ; l'y faire entrer consommerait la seule
@@ -933,13 +1050,21 @@ corps du texte là où le code seul est ambigu (un Item 5.02 couvre aussi bien l
 démission d'un PDG que l'élection routinière d'un administrateur).
 
 **3. Le classement d'une grille ne départage rien.** L'erreur-type d'un Sharpe
-sur sept ans vaut 0,47 ; les 108 combinaisons de la grille y tiennent toutes.
+sur sept ans vaut 0,47 ; les 432 combinaisons de la grille y tiennent toutes.
 `metrics.paired_sharpe_difference` compare donc chaque combinaison à la
 configuration **en production** par bootstrap **apparié** — leurs courbes sont
 corrélées à 0,99, et les juger à l'aune de l'erreur-type marginale revient à
 déclarer « non significatif » absolument tout. Branché sur la grille, le test
-fait passer celle-ci de « rien n'est distinguable » à **26 combinaisons sur 108
-établies différentes** de ce qui tourne.
+fait passer celle-ci de « rien n'est distinguable » à **118 combinaisons sur
+432 établies différentes** de ce qui tourne.
+
+**4. Une décroissance conditionnelle n'est pas un effet causal.** Le rendement
+annualisé des positions décroît de +79 %/an sous 30 jours à +4 %/an au-delà de
+545, et la décroissance survit à tous les contrôles de biais. Elle ne dit
+pourtant **pas** que les couper court rapporte : forcer une sortie ne supprime
+pas la thèse, le moteur la rachète, et on paie la friction deux fois. Mesuré,
+un horizon de 90 jours coûte −0,073 de Sharpe pour +55 % de rotation. La
+décroissance mesure *quelles positions survivent*, pas *ce que durer coûte*.
 
 #### Ce qui a été retenu
 

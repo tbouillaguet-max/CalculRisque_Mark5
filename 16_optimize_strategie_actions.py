@@ -41,6 +41,16 @@ LES CINQ AXES, ET CE QU'ILS DÉPLACENT
         diversification pur : moins de plafond, plus de conviction et plus de
         variance.
 
+    max_holding_days -- HORIZON DE CONVERGENCE. Le seul axe de cette grille qui
+        ne soit pas un réglage d'exécution : les autres disent comment on
+        négocie, celui-ci dit au bout de combien de temps une thèse qui ne
+        s'est pas réalisée cesse d'en être une. Mesuré sur la configuration de
+        référence, le rendement ANNUALISÉ d'une position décroît de +79 %/an
+        sous 30 jours à +4 %/an au-delà de 545, pendant que le rendement ABSOLU
+        reste plat -- le gain s'accumule dans les premières semaines puis
+        s'arrête (cf. DEFAULT_MAX_HOLDING_GRID). None = aucun horizon, et c'est
+        la valeur en production.
+
 DEUX DE CES AXES NE SONT PLUS BALAYÉS PAR DÉFAUT. Mesurés sur la grille de 864
 points, stop_loss_pct et max_weight_pct expliquent 0,6 % et 0,1 % de la
 variance des Sharpe -- pour un coût de calcul multiplié par huit. Ils sont
@@ -139,6 +149,37 @@ DEFAULT_TAKE_PROFIT_GRID = [30.0, 60.0, 100.0, TAKE_PROFIT_OFF]
 DEFAULT_MOMENTUM_GRID = [None, -10.0, -25.0]
 DEFAULT_REBALANCE_BAND_GRID = [0.0, 5.0, 15.0]
 DEFAULT_MAX_WEIGHT_GRID = [20.0]
+
+# HORIZON DE CONVERGENCE -- le premier axe de cette grille qui ne soit pas un
+# réglage d'EXÉCUTION. Les cinq autres disent comment on négocie ; celui-ci dit
+# au bout de combien de temps on cesse de croire à la thèse. None = on n'y
+# renonce jamais, et c'est la valeur en production.
+#
+# LES POINTS VIENNENT D'UNE MESURE, pas d'un choix rond. Sur les 13 141 sorties
+# de la configuration de référence, le rendement ANNUALISÉ décroît de façon
+# monotone avec la durée de détention :
+#
+#     [0,30)    +79 %/an        [270,365)   +8,4 %/an
+#     [30,60)   +47 %/an        [365,545)   +6,3 %/an
+#     [60,90)   +32 %/an        [545,730)   +4,0 %/an
+#     [90,180)  +17 %/an        [730,+)     +4,2 %/an
+#     [180,270) +11 %/an
+#
+# Le rendement ABSOLU, lui, est quasi plat (3,1 % à 9,5 %) pendant que la durée
+# est multipliée par 60 : le gain s'accumule dans les premières semaines puis
+# s'arrête. C'est la signature d'un horizon de convergence, et elle SURVIT au
+# contrôle de biais -- restreinte aux seules sorties `rebalance` (80,5 % du
+# total, et les moins contaminées par le take-profit qui tronque mécaniquement
+# les positions rapides), la décroissance est plus raide encore (132 -> 3,9).
+#
+# Les bornes couvrent la partie raide (90, 180) et la partie plate (365), plus
+# le désactivé. Repères de distribution : médiane 77 j, p90 280 j, p95 366 j ;
+# en capital-jours, 45 % sous 180 j et 80 % sous 365 j.
+#
+# CE TABLEAU NE CONCLUT RIEN À LUI SEUL : il est conditionné à la façon dont
+# chaque position s'est terminée. Seul le backtest complet, qui rejoue tout
+# l'historique sous la contrainte, répond -- c'est à ça que sert cet axe.
+DEFAULT_MAX_HOLDING_GRID = [None, 90, 180, 365]
 
 # Le seuil d'entrée ne se lit pas pareil d'une stratégie à l'autre (écart au
 # cours vs écart à la médiane sectorielle) : sa grille dépend donc de la
@@ -253,6 +294,7 @@ def _run_one(
             take_profit_pct=combo["take_profit_pct"],
             momentum_min_pct=combo["momentum_min_pct"],
             rebalance_band_pct=combo["rebalance_band_pct"],
+            max_holding_days=combo["max_holding_days"],
             start_date=start_date,
             end_date=end_date,
             **engine_kwargs,
@@ -321,6 +363,12 @@ def _build_grid(args, strategy_name: str) -> list[dict]:
         [None if m <= -1000 else m for m in args.momentum_grid]
         if args.momentum_grid else DEFAULT_MOMENTUM_GRID
     )
+    # Même convention que --momentum-grid : argparse ne sait pas lire None, et
+    # une sentinelle négative est plus lisible qu'un « ne pas passer l'option ».
+    horizon_grid = (
+        [None if h <= 0 else int(h) for h in args.max_holding_grid]
+        if args.max_holding_grid else DEFAULT_MAX_HOLDING_GRID
+    )
     axes = [
         args.stop_loss_grid or DEFAULT_STOP_LOSS_GRID,
         args.take_profit_grid or DEFAULT_TAKE_PROFIT_GRID,
@@ -328,14 +376,13 @@ def _build_grid(args, strategy_name: str) -> list[dict]:
         momentum_grid,
         args.rebalance_band_grid or DEFAULT_REBALANCE_BAND_GRID,
         args.max_weight_grid or DEFAULT_MAX_WEIGHT_GRID,
+        horizon_grid,
     ]
     if args.quick:
         # Montage vérifiable en une minute : on ne garde que les bornes de
         # chaque axe. Sert à valider la plomberie, jamais à conclure.
         axes = [axe[:: max(len(axe) - 1, 1)] for axe in axes]
-    noms = ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct",
-            "momentum_min_pct", "rebalance_band_pct", "max_weight_pct")
-    return [dict(zip(noms, valeurs)) for valeurs in itertools.product(*axes)]
+    return [dict(zip(AXES, valeurs)) for valeurs in itertools.product(*axes)]
 
 
 def main() -> None:
@@ -410,6 +457,13 @@ def main() -> None:
     )
     parser.add_argument("--rebalance-band-grid", type=float, nargs="+", default=None)
     parser.add_argument("--max-weight-grid", type=float, nargs="+", default=None)
+    parser.add_argument(
+        "--max-holding-grid", type=float, nargs="+", default=None, metavar="JOURS",
+        help="HORIZON DE CONVERGENCE : durées de détention maximales, en jours. Une valeur "
+             "<= 0 vaut « aucun horizon », la valeur en production. Seul axe de cette grille "
+             "qui porte sur le SIGNAL et non sur l'exécution : il dit au bout de combien de "
+             "temps une thèse qui ne s'est pas réalisée cesse d'en être une.",
+    )
     parser.add_argument("--commission-bps", type=float, default=config.BACKTEST_COMMISSION_BPS)
     parser.add_argument("--slippage-bps", type=float, default=config.BACKTEST_SLIPPAGE_BPS)
     parser.add_argument("--initial-capital", type=float, default=config.BACKTEST_INITIAL_CAPITAL)
@@ -609,6 +663,10 @@ def _lisible(cle: str, valeur) -> str:
     réglage extrême là où il n'y a tout simplement plus de règle."""
     if cle == "momentum_min_pct" and (valeur is None or pd.isna(valeur)):
         return "désactivé (aucun filtre momentum)"
+    if cle == "max_holding_days":
+        if valeur is None or pd.isna(valeur):
+            return "aucun horizon (on ne renonce jamais à la thèse)"
+        return f"{int(valeur)} j"
     if cle == "stop_loss_pct" and valeur is not None and valeur <= STOP_LOSS_OFF:
         return f"{valeur} -> désactivé (hors d'atteinte)"
     if cle == "take_profit_pct" and valeur is not None and valeur >= TAKE_PROFIT_OFF:
@@ -618,8 +676,11 @@ def _lisible(cle: str, valeur) -> str:
     return str(valeur)
 
 
+# L'ORDRE FAIT FOI : _build_grid zippe cette séquence sur ses axes, donc la
+# décaler ici renommerait silencieusement les colonnes de toute la grille.
 AXES = ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct",
-        "momentum_min_pct", "rebalance_band_pct", "max_weight_pct")
+        "momentum_min_pct", "rebalance_band_pct", "max_weight_pct",
+        "max_holding_days")
 
 
 def _lire_le_plateau(
@@ -761,6 +822,7 @@ def _reference_combo(strategy_name: str) -> dict:
         "momentum_min_pct": config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
         "rebalance_band_pct": config.BACKTEST_REBALANCE_BAND_PCT,
         "max_weight_pct": config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
+        "max_holding_days": config.BACKTEST_MAX_HOLDING_DAYS,
     }
 
 
@@ -985,10 +1047,10 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
         "%d combinaisons retenues sur %d (%d écartées faute de thèses, %d faute de rendement).",
         len(eligible), len(ok), ecarte_positions, ecarte_cagr,
     )
-    colonnes = [
-        "stop_loss_pct", "take_profit_pct", "entry_threshold_pct", "momentum_min_pct",
-        "rebalance_band_pct", "max_weight_pct", rank_key,
-    ]
+    # AXES et non une liste recopiée : un axe ajouté à la grille doit apparaître
+    # dans le tableau sans qu'on y pense, sinon on lit un classement dont une
+    # colonne varie en silence.
+    colonnes = [*AXES, rank_key]
     if split_date is not None:
         colonnes += ["test_sharpe_ratio", "train_cagr_pct", "test_cagr_pct"]
     else:
@@ -1005,8 +1067,7 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
     _compare_a_la_reference(ok, best, args.strategy, rank_key, split_date)
 
     logger.info("--- Meilleur point ---")
-    for key in ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct", "momentum_min_pct",
-                "rebalance_band_pct", "max_weight_pct"):
+    for key in AXES:
         logger.info("  %s = %s", key, _lisible(key, best.get(key)))
     if split_date is not None and pd.notna(best.get("test_sharpe_ratio")):
         logger.info(
