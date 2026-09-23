@@ -50,6 +50,7 @@ help:
 	@echo
 	@echo "  DEVELOPPEMENT"
 	@echo "    make test          Suite de tests"
+	@echo "    make test-fautif-data   Idem, mais nomme le test qui ecrit dans data/"
 	@echo "    make install       Dependances"
 	@echo "    make bootstrap     Premier remplissage complet de data/ (long : plusieurs heures)"
 	@echo
@@ -146,6 +147,13 @@ lfs-apply:
 
 test:
 	$(PYTHON) -m pytest tests/ -q
+
+# La suite echoue si un test a ecrit dans data/ (config.BASE_DIR est RELATIF :
+# tout ce qui tourne depuis la racine ecrit dans les donnees de production).
+# Le controle est fait une fois par session ; cette cible le fait apres CHAQUE
+# test pour nommer le fautif, au prix d'environ le double de duree.
+test-fautif-data:
+	$(PYTHON) -m pytest tests/ -q --data-guard-per-test
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
