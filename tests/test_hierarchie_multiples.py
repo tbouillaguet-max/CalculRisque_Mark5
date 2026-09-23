@@ -86,6 +86,32 @@ def test_une_hierarchie_inconnue_echoue_bruyamment():
         hm.combiner(_implied(**{"P/E": [1.0]}), "pe_frist")
 
 
+def test_une_colonne_mal_nommee_echoue_au_lieu_de_se_replier():
+    """LE BUG QUI A COÛTÉ LA VIE DU RÉGLAGE. 06b passait des colonnes nommées
+    d'après les médianes dont elles dérivent ("pe_median", "ev_ebitda_median",
+    "ev_sales_median"). Aucune n'est dans la table de rangs, un `.get(col,
+    repli)` les rangeait donc TOUTES dans le même rang, et la médiane de ce rang
+    était la médiane des trois : `tiers` rendait exactement `flat`.
+
+    Aucune erreur, aucun avertissement, un résultat parfaitement plausible --
+    c'est ce qui l'a rendu invisible. Le repli est désormais une erreur."""
+    mal_nommees = _implied(**{"pe_median": [30.0], "ev_ebitda_median": [10.0],
+                              "ev_sales_median": [100.0]})
+    with pytest.raises(ValueError, match="Multiples inconnus de la hiérarchie"):
+        hm.combiner(mal_nommees, "tiers")
+    # Et `flat` continue de marcher : il ne regarde aucun nom, ce qui est
+    # précisément pourquoi la panne n'apparaissait pas de ce côté.
+    assert hm.combiner(mal_nommees, "flat").iloc[0] == pytest.approx(30.0)
+
+
+def test_une_seule_colonne_mal_nommee_suffit_a_echouer():
+    """Le cas le plus sournois : deux colonnes bien nommées et une troisième qui
+    ne l'est pas produirait une hiérarchie à moitié appliquée."""
+    with pytest.raises(ValueError, match="ev_sales_median"):
+        hm.combiner(_implied(**{"P/E": [30.0], "EV/EBITDA": [10.0],
+                                "ev_sales_median": [100.0]}), "tiers")
+
+
 def test_une_table_de_rangs_explicite_est_acceptee():
     """Pour essayer une hiérarchie hors catalogue sans modifier le module."""
     implied = _implied(**{"P/E": [100.0], "EV/EBITDA": [50.0], "EV/Sales": [10.0]})
@@ -126,10 +152,10 @@ def test_la_recombinaison_reproduit_exactement_le_parquet():
     prix implicites stockés doit rendre EXACTEMENT le gap_pct que 06b a écrit --
     sinon l'axe compare des réimplémentations, pas des hiérarchies.
 
-    La hiérarchie testée est celle que le fichier porte RÉELLEMENT (`flat`, cf.
-    le test suivant), pas celle que la config annonce."""
+    C'est ce test qui a révélé que le fichier ne portait pas ce que la
+    configuration annonçait : il ne se reproduisait que sous `flat`."""
     d = _parquet()
-    refait = hm.recombiner(d, "flat")
+    refait = hm.recombiner(d, config.MULTIPLE_COMBINATION)
     assert (refait["gap_pct"] - d["gap_pct"]).abs().max() == 0.0
     assert (refait["valuation_multiples_per_share"]
             - d["valuation_multiples_per_share"]).abs().max() == 0.0
@@ -137,24 +163,32 @@ def test_la_recombinaison_reproduit_exactement_le_parquet():
             - d["valuation_theoretical_per_share"]).abs().max() == 0.0
 
 
-def test_le_parquet_en_production_porte_flat_pas_tiers():
-    """CE QUE LA RECOMBINAISON A RÉVÉLÉ. Le fichier de signal et la
-    configuration se contredisent : tous les backtests `combinee` de ce dépôt
-    ont tourné sur la médiane à trois voix, pas sur la hiérarchie que
-    `MULTIPLE_COMBINATION` documente.
+def test_le_parquet_porte_bien_ce_que_la_config_annonce():
+    """LE GARDE-FOU QUI REMPLACE LA CONTRADICTION. Le fichier a porté `flat`
+    pendant toute la vie du réglage alors que `MULTIPLE_COMBINATION` valait
+    `tiers` -- non pas parce qu'il était périmé, mais parce que 06b passait des
+    colonnes nommées "pe_median" et consorts, qu'aucune table de rangs ne
+    connaît : les trois multiples tombaient dans le même rang de repli et la
+    hiérarchie rendait la médiane à plat.
 
-    Ce test tombera le jour où 06b sera rejoué -- c'est voulu. Il force à venir
-    relire ce que la contradiction impliquait (les chiffres publiés du README
-    portent sur `flat`) au lieu de la redécouvrir par accident."""
+    Ce test échoue désormais des DEUX côtés de l'écart : si le fichier cesse de
+    suivre la config (données périmées), et si une autre hiérarchie que celle
+    annoncée le reproduit aussi bien (la hiérarchie ne fait plus rien)."""
     d = _parquet()
-    assert config.MULTIPLE_COMBINATION == "tiers"
-    ecart_flat = (hm.recombiner(d, "flat")["gap_pct"] - d["gap_pct"]).abs().max()
-    ecart_tiers = (hm.recombiner(d, "tiers")["gap_pct"] - d["gap_pct"]).abs().max()
-    assert ecart_flat == 0.0, "le parquet ne porte plus `flat`"
-    assert ecart_tiers > 0.0, (
-        "le parquet porte maintenant `tiers` : 06b a été rejoué. Relis la section "
-        "« hiérarchie des multiples » du README -- les chiffres publiés portaient sur "
-        "`flat`, et la référence du test apparié doit suivre (_reference_combo)."
+    attendue = config.MULTIPLE_COMBINATION
+    ecart = {nom: (hm.recombiner(d, nom)["gap_pct"] - d["gap_pct"]).abs().max()
+             for nom in hm.HIERARCHIES}
+
+    assert ecart[attendue] == 0.0, (
+        f"le parquet ne porte pas `{attendue}` (config.MULTIPLE_COMBINATION). "
+        f"Relance 06b_calcul_valorisation_combinee.py, ou aligne la config."
+    )
+    autres = {n: e for n, e in ecart.items() if n != attendue}
+    assert all(e > 0.0 for e in autres.values()), (
+        f"une autre hiérarchie reproduit le fichier aussi bien que `{attendue}` : "
+        f"{[n for n, e in autres.items() if e == 0.0]}. La hiérarchie ne départage donc "
+        "rien -- c'est exactement le repli silencieux que le nommage des colonnes de 06b "
+        "provoquait."
     )
 
 

@@ -673,7 +673,17 @@ def compute_implied_valuations(
         )
         series.where(applicable, inplace=True)
 
-    implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
+    # LES COLONNES SONT NOMMÉES COMME LES TABLES DE CONFIG, et ce n'est pas
+    # cosmétique : `MULTIPLE_RELIABILITY_TIERS` est indexée sur "P/E",
+    # "EV/EBITDA", "EV/Sales". Ces Series portaient jusqu'ici les noms des
+    # colonnes de médianes dont elles dérivent ("pe_median", ...), qu'aucune
+    # table ne connaît -- les trois multiples tombaient donc dans le même rang
+    # de repli, et le mode "tiers" rendait la médiane à plat SANS RIEN DIRE.
+    # `combiner` refuse désormais une colonne inconnue, ce qui rend la panne
+    # bruyante ; ce renommage est ce qui la satisfait.
+    implied = pd.concat(
+        [price_from_ebitda.rename("EV/EBITDA"), price_from_sales.rename("EV/Sales"),
+         price_from_pe.rename("P/E")], axis=1)
     df["valuation_multiples_per_share"] = combine_implied_prices(implied)
     df["n_multiples_used"] = implied.notna().sum(axis=1)
     # ROBUSTESSE de la médiane derrière cette valorisation : le nombre de

@@ -903,13 +903,15 @@ def _reference_combo(strategy_name: str) -> dict:
         "rebalance_band_pct": config.BACKTEST_REBALANCE_BAND_PCT,
         "max_weight_pct": config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
         "max_holding_days": config.BACKTEST_MAX_HOLDING_DAYS,
-        # CE QUI TOURNE, PAS CE QUE LA CONFIG DIT. Le parquet de 06b porte
-        # `flat` alors que config.MULTIPLE_COMBINATION vaut `tiers` (vérifié au
-        # bit près sur les 27 674 lignes, cf. tests/test_hierarchie_multiples).
-        # La référence du test apparié doit être le signal RÉELLEMENT utilisé,
-        # sinon la grille se compare à une configuration qui n'a jamais tourné.
+        # CE QUI TOURNE, PAS CE QUE LA CONFIG DIT -- et depuis la correction du
+        # nommage des colonnes dans 06b, les deux coïncident enfin. Le parquet a
+        # porté `flat` pendant toute la vie du réglage, parce que la hiérarchie
+        # se repliait en silence (cf. hierarchie_multiples.combiner). La
+        # référence reste vérifiée contre le fichier, pas déduite de la config :
+        # c'est ce qui avait révélé l'écart, et ce qui le révélerait à nouveau.
         "multiple_hierarchy": (
-            "flat" if strategy_name == "valuation_gap_combined" else None),
+            config.MULTIPLE_COMBINATION if strategy_name == "valuation_gap_combined"
+            else None),
     }
 
 

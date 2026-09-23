@@ -43,6 +43,13 @@ def _ligne(reference: dict, **surcharges) -> dict:
 # --------------------------------------------------------------------------- #
 # Le piège du premier axe non numérique
 # --------------------------------------------------------------------------- #
+def _autres_hierarchies() -> list[str]:
+    """Toutes sauf celle en production -- dérivées du catalogue, pour que ces
+    tests survivent à un changement de `MULTIPLE_COMBINATION`."""
+    produite = _opt._reference_combo("valuation_gap_combined")["multiple_hierarchy"]
+    return [n for n in sorted(hm.HIERARCHIES) if n != produite]
+
+
 def test_la_reference_se_retrouve_avec_un_axe_en_chaine():
     """LE point. Avant `_meme_valeur_d_axe`, la comparaison faisait
     `float(valeur)` sur chaque axe : la ligne de référence était introuvable et
@@ -50,17 +57,15 @@ def test_la_reference_se_retrouve_avec_un_axe_en_chaine():
     reference = _opt._reference_combo("valuation_gap_combined")
     assert isinstance(reference["multiple_hierarchy"], str)
 
-    lignes = [
-        _ligne(reference, multiple_hierarchy="tiers"),
-        _ligne(reference, multiple_hierarchy="pe_first"),
-        _ligne(reference),
-    ]
-    assert _opt._index_de_reference(lignes, reference) == 2
+    autres = _autres_hierarchies()
+    lignes = [_ligne(reference, multiple_hierarchy=n) for n in autres] + [_ligne(reference)]
+    assert _opt._index_de_reference(lignes, reference) == len(autres)
 
 
-def test_une_chaine_differente_n_est_pas_la_reference():
+@pytest.mark.parametrize("autre", _autres_hierarchies())
+def test_une_chaine_differente_n_est_pas_la_reference(autre):
     reference = _opt._reference_combo("valuation_gap_combined")
-    assert _opt._index_de_reference([_ligne(reference, multiple_hierarchy="tiers")],
+    assert _opt._index_de_reference([_ligne(reference, multiple_hierarchy=autre)],
                                     reference) is None
 
 
@@ -106,12 +111,29 @@ def test_l_axe_est_sans_objet_sur_une_strategie_dcf():
 
 
 def test_la_reference_est_la_hierarchie_REELLEMENT_utilisee():
-    """`config.MULTIPLE_COMBINATION` dit `tiers`, le parquet porte `flat` (cf.
-    tests/test_hierarchie_multiples). La référence du test apparié doit être ce
-    qui TOURNE, sinon la grille se compare à une configuration qui n'a jamais
-    existé."""
-    assert _opt._reference_combo("valuation_gap_combined")["multiple_hierarchy"] == "flat"
+    """La référence du test apparié doit être ce qui TOURNE, pas ce qu'on
+    espère : pendant toute la vie du réglage, le parquet a porté `flat` alors
+    que la config annonçait `tiers` (repli silencieux, cf.
+    tests/test_hierarchie_multiples). Se comparer à la config sans vérifier le
+    fichier, c'est se comparer à une configuration qui n'existe pas.
+
+    Ce test lit donc le FICHIER, pas seulement la config."""
+    import config
+    import pandas as pd
+
+    reference = _opt._reference_combo("valuation_gap_combined")["multiple_hierarchy"]
+    assert reference == config.MULTIPLE_COMBINATION
     assert _opt._reference_combo("valuation_gap_dcf")["multiple_hierarchy"] is None
+
+    if not config.VALORISATION_COMBINEE_FILE.exists():
+        pytest.skip("parquet absent")
+    try:
+        d = pd.read_parquet(config.VALORISATION_COMBINEE_FILE)
+    except (OSError, ValueError) as exc:
+        pytest.skip(f"parquet illisible : {exc}")
+    assert (hm.recombiner(d, reference)["gap_pct"] - d["gap_pct"]).abs().max() == 0.0, (
+        f"la référence ({reference}) n'est pas ce que porte le parquet."
+    )
 
 
 def test_chaque_strategie_garde_sa_production_dans_la_grille():

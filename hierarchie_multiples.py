@@ -114,12 +114,26 @@ def combiner(implied: pd.DataFrame, hierarchie: str | dict | None = DEFAUT) -> p
     if table is None:
         return implied.median(axis=1, skipna=True)
 
-    pire = max(table.values()) + 1
+    # UNE COLONNE INCONNUE EST UNE PANNE, PAS UN CAS À REPLIER. Un `.get(col,
+    # rang_de_repli)` rangeait toute colonne mal nommée dans un même rang : avec
+    # TROIS colonnes mal nommées, elles s'y retrouvaient toutes, la médiane du
+    # rang était celle des trois, et la hiérarchie rendait exactement la médiane
+    # à plat. C'est ce qui s'est produit ici pendant toute la vie du réglage --
+    # `MULTIPLE_COMBINATION = "tiers"` n'a jamais rien fait, parce que 06b
+    # passait des colonnes nommées "pe_median" et consorts. Le défaut était
+    # indétectable : aucune erreur, aucun avertissement, un résultat plausible.
+    inconnues = [c for c in implied.columns if c not in table]
+    if inconnues:
+        raise ValueError(
+            f"Multiples inconnus de la hiérarchie : {inconnues}. Attendu parmi "
+            f"{sorted(table)}. Les colonnes doivent porter le nom du multiple, pas celui "
+            "de la colonne dont elles dérivent -- sans quoi la hiérarchie se replierait "
+            "silencieusement sur la médiane à plat."
+        )
+
     resultat = pd.Series(np.nan, index=implied.index, dtype=float)
-    for rang in sorted({table.get(col, pire) for col in implied.columns}):
-        colonnes = [c for c in implied.columns if table.get(c, pire) == rang]
-        if not colonnes:
-            continue
+    for rang in sorted({table[col] for col in implied.columns}):
+        colonnes = [c for c in implied.columns if table[c] == rang]
         # Un rang ne sert qu'aux lignes qu'aucun rang MEILLEUR n'a servies.
         resultat = resultat.where(
             resultat.notna(), implied[colonnes].median(axis=1, skipna=True))

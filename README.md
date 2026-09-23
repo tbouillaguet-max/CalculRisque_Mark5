@@ -849,29 +849,97 @@ chargement** sans régénérer le parquet. La mécanique vit dans
 les deux : deux implémentations finiraient par diverger, et l'écart ne se
 verrait que dans les chiffres.
 
-##### Le parquet en production ne porte pas ce que la configuration dit
+##### La hiérarchie n'avait jamais tourné, et c'était un bug de trois mots
 
-En vérifiant que la recombinaison reproduisait bien le fichier, elle ne l'a
-reproduit que sous `flat` — **exactement, à 0,000e+00 sur les 27 674 lignes** —
-alors que `config.MULTIPLE_COMBINATION` vaut `tiers` depuis toujours.
+En vérifiant que la recombinaison reproduisait bien le fichier de production,
+elle ne l'a reproduit que sous `flat` — **exactement, à 0,000e+00 sur les 27 674
+lignes** — alors que `config.MULTIPLE_COMBINATION` vaut `tiers`.
 
-**Tous les backtests `combinee` de ce dépôt ont donc tourné sur la médiane à
-trois voix**, pas sur la hiérarchie que la configuration documente et justifie.
-Ce n'est pas un bug de code : `06b` applique bien `tiers`. C'est un fichier de
-données qui n'a jamais été régénéré depuis.
+La première explication était un fichier périmé. Elle était fausse : **rejouer
+`06b` reproduisait `flat` à l'identique**. La cause est dans le code, et elle
+tient en trois noms de colonnes :
 
-Deux conséquences assumées plutôt que corrigées en silence :
+```python
+implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
+# -> colonnes : "ev_ebitda_median", "ev_sales_median", "pe_median"
+# MULTIPLE_RELIABILITY_TIERS est indexée sur : "EV/EBITDA", "EV/Sales", "P/E"
+```
 
-- **la référence du test apparié est `flat`**, pas `tiers`. Comparer la grille à
-  une configuration qui n'a jamais tourné dirait ce qu'on aurait gagné contre un
-  système inexistant ;
-- **un test verrouille la contradiction** (`test_le_parquet_en_production_porte_flat_pas_tiers`).
-  Il tombera le jour où `06b` sera rejoué, et c'est son objet : forcer à relire
-  ce que la contradiction impliquait au lieu de la redécouvrir par accident.
+Le classement par rang faisait `tiers.get(colonne, rang_de_repli)`. Aucune des
+trois colonnes n'étant dans la table, **les trois tombaient dans le même rang de
+repli** — et la médiane d'un rang qui contient les trois multiples est
+exactement la médiane à plat. `MULTIPLE_COMBINATION = "tiers"` **n'a donc jamais
+rien fait**, depuis son introduction.
 
-C'est le même motif que la leçon n° 2 ci-dessous — une protection documentée qui
-ne tournait pas —, et il ne s'est vu que parce que l'instrumentation exigeait de
-reproduire le fichier au bit près.
+Ce qui l'a rendu invisible : aucune erreur, aucun avertissement, un résultat
+parfaitement plausible. C'est le même motif que la leçon n° 2 ci-dessous — une
+protection documentée qui ne tournait pas — et il ne s'est vu que parce que
+l'instrumentation exigeait de reproduire le fichier au bit près.
+
+**Deux corrections, pas une.** Nommer les colonnes comme les tables de config
+répare le cas présent ; refuser une colonne inconnue au lieu de la replier
+empêche la classe entière de se reproduire :
+
+```python
+inconnues = [c for c in implied.columns if c not in table]
+if inconnues:
+    raise ValueError(...)   # un repli silencieux n'est plus possible
+```
+
+##### À faire après un `git pull` : régénérer le signal
+
+Le correctif change **ce que `06b` produit**, pas seulement son code. Le parquet
+versionné porte encore l'ancien signal — une seule commande suffit :
+
+```bash
+python 06b_calcul_valorisation_combinee.py     # ~2 min
+```
+
+`tests/test_hierarchie_multiples.py::test_le_parquet_porte_bien_ce_que_la_config_annonce`
+échoue tant que ce n'est pas fait, et dit quoi lancer. La régénération est
+déterministe : elle reproduit exactement le fichier mesuré ci-dessous.
+
+##### Ce que la correction change dans les chiffres
+
+`06b` rejoué, le fichier de production porte désormais `tiers`. La
+régénération est **exactement** la recombinaison `tiers` (0,000e+00 sur les
+trois colonnes dérivées), et rien d'autre n'a bougé — prix implicites, DCF,
+cours et `n_peers` sont identiques au bit près. Le changement est donc
+strictement celui de la hiérarchie, sur **18 008 lignes** (écart de gap médian
+9,9 points).
+
+| Configuration de production | Avant (`flat`) | Après (`tiers`) | |
+|---|---|---|---|
+| Sharpe plein échantillon | 0,930 | **0,931** | +0,001 |
+| Sharpe **hors échantillon** | 0,817 | **0,846** | **+0,029** |
+| Sharpe apprentissage | 1,003 | 0,988 | −0,015 |
+| Drawdown maximal | −26,62 % | **−25,06 %** | **+1,56 pt** |
+| CAGR | 15,20 % | 15,18 % | −0,01 pt |
+| Rotation annualisée | 760 % | 757 % | −3 pts |
+
+**L'écart apparié reste +0,002 (IC [−0,074, +0,078]) : non établi.** Ce qui
+change est donc réel mais minuscule sur le Sharpe, et un peu plus net sur le
+drawdown. Le gain hors échantillon (+0,029) est du bon côté, et la perte en
+apprentissage (−0,015) est ce qu'on attend d'un réglage qui n'a pas été choisi
+sur cette fenêtre.
+
+**Les chiffres `combinee` publiés dans ce README ont été recalculés sur ce
+signal.** Ceux des versions antérieures portaient sur `flat`.
+
+Le fichier alimente aussi **toute la partie options** (`10_backtest_options.py`
+et les quatre optimiseurs `11*`), dont les chiffres changent donc également.
+Mesuré sur `valuation_gap_multiples_options` :
+
+| | Avant (`flat`) | Après (`tiers`) |
+|---|---|---|
+| Sharpe | −0,695 | −0,638 |
+| CAGR | −4,42 % | −4,03 % |
+| Drawdown maximal | −55,57 % | −56,03 % |
+
+La stratégie reste **franchement perdante** dans les deux cas — la correction ne
+change pas cette conclusion-là. Les quatre optimiseurs options, eux, n'ont pas
+été rejoués : leurs réglages retenus ont été choisis sur `flat`, et les
+rebalayer est un chantier en soi.
 
 ##### Ce que l'axe a donné : rien d'établi, et un ordre qui s'inverse
 
@@ -879,10 +947,12 @@ L'axe explique **6,9 %** de la variance (étendue des moyennes 0,019) — loin d
 `take_profit_pct` (51,1 %), au niveau du seuil d'entrée. Les autres axes fixés
 sur la production :
 
+*(mesure faite contre `flat`, la hiérarchie qui tournait alors)*
+
 | Hiérarchie | Sharpe test | Écart apparié | IC 95 % |
 |---|---|---|---|
-| `flat` *(production)* | 0,817 | — | — |
-| `tiers` | **0,846** | +0,002 | [−0,074, +0,078] |
+| `flat` *(référence d'alors)* | 0,817 | — | — |
+| **`tiers`** *(production depuis)* | **0,846** | +0,002 | [−0,074, +0,078] |
 | `pe_first` | 0,836 | +0,002 | [−0,088, +0,090] |
 | `ebitda_first` | 0,782 | −0,012 | [−0,091, +0,066] |
 
@@ -909,10 +979,14 @@ fenêtre qui n'a rien choisi qui le dit, ce qui rend l'indication intéressante 
 elle reste non établie, et l'ordre inverse en apprentissage interdit d'en faire
 plus qu'une note.
 
-**Rien n'est changé.** `flat` reste ce qui tourne, faute de mesure qui justifie
-d'en sortir. La seule combinaison établie meilleure de toute la grille est
-d'ailleurs en `flat` (seuil d'entrée 30 %, +0,022) — la même qu'avant l'ajout
-de l'axe.
+**Ce n'est pas la mesure qui a fait changer la production, c'est le bug.**
+`tiers` n'est pas établi meilleur que `flat` — il ne l'aurait pas emporté sur
+ces chiffres. Ce qui a tranché est qu'un réglage documenté, justifié et
+configuré ne s'appliquait pas : le réparer fait tourner ce que la configuration
+dit depuis toujours, et la mesure dit que le prix de cette mise en cohérence est
+nul à l'incertitude près. Si la préférence était de garder le comportement
+historique, la correction à faire serait `MULTIPLE_COMBINATION = "flat"` — pas
+de laisser le code contredire la config.
 
 **Un avertissement sur la sélection, au passage.** Le plateau atteint 94
 combinaisons et le départage par rotation y a retenu `ebitda_first` avec prise
@@ -1014,56 +1088,68 @@ Trois conséquences dans l'outil :
 
 L'erreur-type marginale ci-dessus vaut pour deux stratégies **indépendantes**.
 Les 432 combinaisons sont des variantes du **même** backtest : leurs courbes de
-NAV sont corrélées à **0,982**. Leur écart est apparié, et sa dispersion est
+NAV sont corrélées à **0,984**. Leur écart est apparié, et sa dispersion est
 bien plus faible que celle de chacun de ses termes.
 
 | | demi-largeur de l'intervalle |
 |---|---|
 | Erreur-type marginale (Sharpe 0,93 sur 11,6 ans) | 0,353 |
-| Intervalle **apparié** (médiane des 432) | **0,110** |
+| Intervalle **apparié** (médiane des 432) | **0,097** |
 
-Soit **trois fois plus précis**, et la grille passe de « rien n'est
+Soit **quatre fois plus précis**, et la grille passe de « rien n'est
 distinguable » à un résultat :
 
 | | combinaisons |
 |---|---|
-| Établies **meilleures** que la production (IC au-dessus de 0) | **1** |
-| Établies **pires** (IC au-dessous de 0) | 25 |
-| Indistinguables | 406 |
+| Établies **meilleures** que la production (IC au-dessus de 0) | **0** |
+| Établies **pires** (IC au-dessous de 0) | 41 |
+| Indistinguables | 391 |
 
 Les deux demi-largeurs portent sur la **même fenêtre**, et c'est indispensable :
 l'intervalle apparié est mesuré sur la courbe entière, et le comparer à
 l'erreur-type de la seule fenêtre d'apprentissage gonflerait le rapport de
 √(11,6/7) — 25 % de précision annoncée qui n'existerait pas.
 
-La seule établie meilleure est la configuration en place avec le **seuil
-d'entrée à 30 %** au lieu de 20 : écart apparié **+0,022** (IC [+0,009,
-+0,037]), sur la hiérarchie de production. Le gain se retrouve **sur les deux
-fenêtres** — apprentissage 1,003 → 1,027, hors échantillon 0,817 → 0,837, pour
-une rotation en léger recul (760 % → 751 %). C'est un gain réel et minuscule :
-exactement ce que le test sert à dire, là où le classement laissait croire à un
-choix entre 432 réglages.
+**Aucune combinaison n'est établie meilleure que ce qui tourne.** C'est un
+résultat, pas une absence de résultat : 432 points balayés, et pas un seul dont
+l'intervalle exclue zéro. Ce que la grille établit, elle l'établit **contre** —
+41 combinaisons sont mesurément pires.
 
-Elle survit à **trois élargissements successifs** de la grille — horizon de
-convergence, puis hiérarchie des multiples — et reste la seule que le test
-établisse. Aucun des deux axes de signal ajoutés ne l'a délogée ni complétée.
+##### Le seul gain que la grille avait établi n'a pas survécu à la correction
 
-**Lire l'intervalle, pas la p-value.** Celle de cette combinaison vaut
-0,0005, c'est-à-dire **exactement 1/2 000** : un seul rééchantillonnage sur
-2 000 est passé sous zéro. C'est le **plancher de résolution** du bootstrap,
-pas une mesure — la vraie p-value peut être bien plus petite, et le chiffre ne
-peut donc pas se comparer à un seuil de Bonferroni du même ordre (0,05/432 =
-0,00012). L'intervalle, lui, n'est pas censuré : c'est lui qui établit le
-résultat, conformément à ce que dit `paired_sharpe_difference` (un bootstrap
-par blocs est légèrement libéral ; une p-value juste sous 0,05 ne vaut pas une
-preuve, un intervalle franchement à droite de zéro, oui).
+Sur le signal `flat`, le seuil d'entrée à 30 % au lieu de 20 était établi
+meilleur : **+0,022** (IC [+0,009, +0,037]), gain retrouvé sur les deux
+fenêtres. Il avait résisté à deux élargissements de grille.
 
-**Ce n'est pas adopté pour autant.** Le Sharpe plein échantillon du meilleur
-point vaut 0,900 pour un **plancher de bruit de 1,021** à 2 290 essais
-cumulés : au niveau du programme entier, il reste sous le seuil à partir duquel
-un résultat se distingue de la sélection elle-même. Le réglage en place ne
-bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004 puis 1,021 au fil
-des deux élargissements : chaque essai supplémentaire relève la barre, et c'est
+Sur le signal `tiers`, le même réglage vaut **+0,006** (IC [−0,011, +0,023]) :
+l'intervalle recouvre zéro, le résultat disparaît.
+
+| Seuil d'entrée | Sharpe test | Écart apparié | IC 95 % |
+|---|---|---|---|
+| 15 % | 0,844 | +0,000 | [−0,011, +0,009] |
+| **20 %** *(production)* | 0,846 | — | — |
+| 30 % | 0,850 | +0,006 | [−0,011, +0,023] |
+
+**C'est la deuxième fois dans ce dépôt qu'un résultat « établi » ne survit pas à
+un changement de conditions** — après le −0,063 qui s'était inversé sur une
+fenêtre décalée de vingt mois. La leçon est la même : un intervalle qui exclut
+zéro dit que l'écart est réel *sur ces données-là*, pas qu'il est robuste au
+changement de ce qui les produit. Corriger le signal a changé 18 008 lignes ;
+un gain de +0,022 n'y a pas résisté.
+
+**Lire l'intervalle, pas la p-value.** L'intervalle est ce qui établit ou non un
+résultat ; la p-value du bootstrap plancherise à 1/N (0,0005 pour 2 000
+rééchantillonnages) et ne peut donc pas se comparer à un seuil de Bonferroni du
+même ordre (0,05/432 = 0,00012). C'est ce que dit `paired_sharpe_difference` :
+un bootstrap par blocs est légèrement libéral, une p-value juste sous 0,05 ne
+vaut pas une preuve, un intervalle franchement à droite de zéro, oui.
+
+**Et rien n'est adopté.** Le Sharpe plein échantillon du meilleur point vaut
+0,900 pour un **plancher de bruit de 1,034** à 2 722 essais cumulés : au niveau
+du programme entier, il reste sous le seuil à partir duquel un résultat se
+distingue de la sélection elle-même. Le réglage en place ne
+bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004, 1,021 puis 1,034 au
+fil des élargissements : chaque essai supplémentaire relève la barre, et c'est
 le prix à payer pour tout axe ajouté.
 
 **Ce test ne sélectionne pas, et ne doit pas.** Il est mesuré sur la courbe
@@ -1160,8 +1246,8 @@ sur sept ans vaut 0,47 ; les 432 combinaisons de la grille y tiennent toutes.
 configuration **en production** par bootstrap **apparié** — leurs courbes sont
 corrélées à 0,98, et les juger à l'aune de l'erreur-type marginale revient à
 déclarer « non significatif » absolument tout. Branché sur la grille, le test
-fait passer celle-ci de « rien n'est distinguable » à **26 combinaisons sur 432
-établies différentes** de ce qui tourne.
+fait passer celle-ci de « rien n'est distinguable » à **41 combinaisons sur 432
+établies PIRES** que ce qui tourne — et aucune établie meilleure.
 
 **4. Une décroissance conditionnelle n'est pas un effet causal.** Le rendement
 annualisé des positions décroît de +79 %/an sous 30 jours à +4 %/an au-delà de
@@ -1305,7 +1391,13 @@ un gain** — ce n'est pas le réglage que l'optimisation du Sharpe aurait reten
 | `valuation_gap_sector_neutral` | 0,906 | 1,039 | 0,701 | −32,30 % | 17,69 % | 17,30 % | 0,548 | +5,70 % | 0,88 | 98,0 % |
 | `…` **+ cible 12 %** | 0,832 | 0,997 | 0,597 | **−24,14 %** | 13,65 % | 14,03 % | 0,566 | +1,66 % | 0,69 | 88,2 % |
 | **`valuation_gap_combined`** | **0,977** | 1,017 | **0,910** | −36,10 % | 19,48 % | 17,65 % | 0,540 | +7,49 % | 0,89 | 98,3 % |
-| **`…` + cible 12 %** | 0,932 | 1,006 | 0,817 | **−26,54 %** | 15,22 % | 13,99 % | 0,573 | +3,23 % | 0,68 | 88,4 % |
+| **`…` + cible 12 %** | 0,931 | 0,988 | 0,846 | **−25,06 %** | 15,18 % | 13,96 % | 0,606 | +3,20 % | 0,68 | 88,4 % |
+
+La ligne `valuation_gap_combined` **+ cible 12 %** est la configuration en
+production, remesurée sur le signal `tiers` (cf. « la hiérarchie n'avait jamais
+tourné » plus haut) ; la ligne sans cible n'a pas été remesurée et porte encore
+sur `flat`. Les deux autres stratégies lisent le DCF seul : la correction ne les
+touche pas.
 
 Ce que le tableau dit, dans l'ordre d'importance :
 
