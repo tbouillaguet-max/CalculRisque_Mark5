@@ -1191,6 +1191,51 @@ pas un gain de performance.** Il compte pour le passage à l'exécution réelle
 (carnet d'ordres, temps de gestion, risque opérationnel), pas pour le rendement
 du backtest.
 
+#### La configuration de référence sous tarification réaliste
+
+Les chiffres de référence du tableau plus haut datent du coût purement
+proportionnel. Voici la même configuration — 2015-2026, 1 M$, cible de
+volatilité 12 % — mesurée avec la commission minimum de 1 $, le plancher de
+0,05 % du NAV et le seuil de viabilité à 1 % :
+
+| | Sharpe | appr. | test | Sortino | Calmar | max DD | CAGR | alpha | exécutions | NAV finale |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Combinée · proportionnel | 0,932 | 1,006 | 0,817 | 1,315 | 0,573 | −26,54 % | 15,22 % | +3,23 % | 77 756 | 5 223 958 $ |
+| **Combinée · tarif réel** | **0,930** | 1,003 | 0,817 | 1,313 | 0,571 | −26,62 % | 15,20 % | +3,21 % | **25 402** | 5 213 554 $ |
+| DCF · proportionnel | 0,850 | 1,016 | 0,615 | 1,195 | 0,574 | −24,41 % | 14,01 % | +2,02 % | 75 818 | 4 620 481 $ |
+| **DCF · tarif réel** | **0,851** | 1,017 | 0,617 | 1,197 | 0,573 | −24,48 % | 14,04 % | +2,05 % | **25 703** | 4 633 040 $ |
+| Neutre secteur · proportionnel | 0,832 | 0,997 | 0,597 | 1,170 | 0,566 | −24,14 % | 13,65 % | +1,66 % | 71 816 | 4 453 596 $ |
+| **Neutre secteur · tarif réel** | **0,832** | 0,996 | 0,598 | 1,170 | 0,565 | −24,19 % | 13,66 % | +1,67 % | **32 278** | 4 454 855 $ |
+
+**Les chiffres de référence survivent intacts.** Écart apparié de −0,002
+(combinée, p = 0,79), +0,002 (DCF), −0,000 (neutre au secteur) : indiscernable
+de zéro sur les trois, avec des intervalles de confiance larges de cinq
+millièmes. Les valeurs finales bougent de moins de 0,3 %.
+
+**Pour deux tiers d'exécutions en moins.** Et c'est là que le mécanisme se
+voit :
+
+| | exécutions | friction payée | économie |
+|---|---|---|---|
+| Combinée | 77 756 → 25 402 (**−67 %**) | 212 516 $ → 197 441 $ (**−7 %**) | 15 075 $, soit 1,5 % du capital |
+| DCF | 75 818 → 25 703 (−66 %) | 206 735 $ → 197 605 $ (−4 %) | 9 130 $ |
+| Neutre secteur | 71 816 → 32 278 (−55 %) | 220 149 $ → 210 014 $ (−5 %) | 10 135 $ |
+
+**−67 % d'ordres pour −7 % de frais** : la démonstration arithmétique de ce qui
+précède. Les ordres supprimés étaient de la poussière, et la preuve qu'ils
+n'étaient que ça, c'est que les retirer ne déplace pas le Sharpe d'un
+millième — ni dans un sens ni dans l'autre.
+
+**Conclusion pratique : la tarification réaliste est à activer.** Elle rend le
+backtest plus proche de l'exécution réelle, divise les ordres par trois, et ne
+coûte rien de mesurable. Elle reste à 0 par défaut uniquement pour que les
+chiffres historiques du dépôt restent reproductibles à l'identique.
+
+L'ancrage, lui, ne suit pas : sous la même tarification et avec la cible de
+volatilité, `valuation_gap_combined_ancre` rend 0,875 de Sharpe contre 0,930
+(Δ = −0,051, IC [−0,108, +0,010], p = 0,95) pour 14 181 exécutions au lieu de
+25 402. À la limite de la significativité, et du mauvais côté.
+
 #### Ce qui reste bloqué
 
 `04c` et `07b` ont besoin d'un accès à EDGAR pour reconstruire leurs fichiers à
