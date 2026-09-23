@@ -689,23 +689,46 @@ appliquer le sien.
 ### Optimisation des réglages actions (`16_optimize_strategie_actions.py`)
 
 ```bash
-make optimize-actions                                    # DCF, 576 combinaisons, ~1 h sur 4 cœurs
+make optimize-actions                                    # DCF, 108 combinaisons, ~10 min sur 4 cœurs
 make optimize-actions STRATEGY_ACTIONS=valuation_gap_sector_neutral
 python 16_optimize_strategie_actions.py --report-only data/backtest/<csv>   # relire sans relancer
+python 16_optimize_strategie_actions.py --stop-loss-grid -15 -25 -40 \
+    --max-weight-grid 10 20                              # rebalayer les deux axes retirés
 ```
 
-Grid-search sur **cinq axes à la fois** — stop-loss, take-profit, seuil
-d'entrée, filtre momentum, zone de non-négociation, plafond par ligne. Les
-quatre optimiseurs options font varier un paramètre par run, ce qui suffit
-quand les réglages sont séparables ; ici ils ne le sont pas (le stop et la
-prise de gain forment un couple, le seuil d'entrée déplace le nombre de lignes
-donc l'effet du plafond), et une descente axe par axe trouverait un optimum de
-coordonnée, pas un optimum.
+Grid-search sur **quatre axes à la fois** — take-profit, seuil d'entrée, filtre
+momentum, zone de non-négociation. Les quatre optimiseurs options font varier
+un paramètre par run, ce qui suffit quand les réglages sont séparables ; ici
+ils ne le sont pas (le seuil d'entrée déplace le nombre de lignes donc l'effet
+de la bande, la prise de gain déplace la rotation donc la friction), et une
+descente axe par axe trouverait un optimum de coordonnée, pas un optimum.
 
 Le classement porte sur la **seule fenêtre d'apprentissage** (2015-2021), avec
 un plancher de rendement contre le SPY sur cette même fenêtre — maximiser un
 ratio autorise sinon à l'améliorer en désinvestissant. `test_sharpe_ratio`
 (2022-2026) est affiché à côté sans jamais entrer dans la sélection.
+
+#### Deux axes retirés du défaut, et comment on l'a su
+
+La décomposition de variance des Sharpe de la grille (η² par axe) mesure ce
+que chaque axe explique. Deux d'entre eux n'expliquent rien :
+
+| Axe | η² | Étendue des moyennes |
+|---|---|---|
+| `take_profit_pct` | 63,9 % | 0,052 |
+| `momentum_min_pct` | 15,1 % | 0,022 |
+| `entry_threshold_pct` | 7,2 % | 0,015 |
+| `rebalance_band_pct` | 4,7 % | 0,014 |
+| **`stop_loss_pct`** | **0,6 %** | **0,005** |
+| **`max_weight_pct`** | **0,1 %** | **0,001** |
+
+Les deux derniers multipliaient la grille par **huit** (4 × 2) pour 0,7 % de
+l'information. Au défaut, chacun est réduit à sa valeur de production — ce qui
+garde la configuration en place **dans** la grille, condition du test apparié
+ci-dessous. La grille passe de 864 à **108** combinaisons, et le plancher de
+bruit du Sharpe déflaté baisse d'autant, puisqu'il croît avec le nombre
+d'essais. Les deux axes restent balayables à la demande : c'est le défaut qui
+change, pas la capacité.
 
 #### Ce que la grille a changé, et ce qu'elle a refusé de changer
 
@@ -750,11 +773,11 @@ et **+0,100** côté neutre au secteur.
 #### Le classement ne départage rien, et il faut le dire
 
 L'erreur-type d'un Sharpe estimé sur sept ans vaut **0,47** (Lo, 2002). Sur les
-576 combinaisons de chaque grille, **les 576 sont à moins d'une erreur-type du
+108 combinaisons de la grille, **les 108 sont à moins d'une erreur-type du
 maximum**. Retenir le premier du classement, c'est retenir le tirage le plus
 chanceux d'un ensemble statistiquement homogène.
 
-Deux conséquences dans l'outil :
+Trois conséquences dans l'outil :
 
 - le meilleur point est, parmi les combinaisons indiscernables à
   `--plateau-tolerance` près, celle qui **négocie le moins**. Le départage ne
@@ -762,8 +785,77 @@ Deux conséquences dans l'outil :
   qui n'est pas une mesure de performance mais d'**exposition à une
   hypothèse** : tout le backtest suppose 10 bps par aller simple ;
 - le rapport dit ce que la grille **établit** (un axe sur lequel tout le
-  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les six axes,
-  deux seulement sont unanimes.
+  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les quatre axes
+  balayés, un seul est unanime — la prise de gain à +30 %. Un axe réduit à un
+  point est affiché **non balayé**, jamais « unanime » : il l'est par
+  construction, et le lire comme un résultat serait une erreur ;
+- chaque combinaison est **comparée à la configuration en production** par
+  bootstrap apparié (`--paired-bootstrap`, 2 000 par défaut). C'est ce qui rend
+  la grille capable de conclure — détail ci-dessous.
+
+#### Ce que le test apparié départage, et que le classement ne départageait pas
+
+L'erreur-type marginale ci-dessus vaut pour deux stratégies **indépendantes**.
+Les 108 combinaisons sont des variantes du **même** backtest : leurs courbes de
+NAV sont corrélées à **0,990**. Leur écart est apparié, et sa dispersion est
+bien plus faible que celle de chacun de ses termes.
+
+| | demi-largeur de l'intervalle |
+|---|---|
+| Erreur-type marginale (Sharpe 0,93 sur 11,6 ans) | 0,353 |
+| Intervalle **apparié** (médiane des 108) | **0,079** |
+
+Soit **quatre fois plus précis**, et la grille passe de « rien n'est
+distinguable » à un résultat :
+
+| | combinaisons |
+|---|---|
+| Établies **meilleures** que la production (IC au-dessus de 0) | **1** |
+| Établies **pires** (IC au-dessous de 0) | 25 |
+| Indistinguables | 82 |
+
+Les deux demi-largeurs portent sur la **même fenêtre**, et c'est indispensable :
+l'intervalle apparié est mesuré sur la courbe entière, et le comparer à
+l'erreur-type de la seule fenêtre d'apprentissage gonflerait le rapport de
+√(11,6/7) — 25 % de précision annoncée qui n'existerait pas.
+
+La seule établie meilleure est la configuration en place avec le **seuil
+d'entrée à 30 %** au lieu de 20 : écart apparié **+0,022** (IC [+0,009,
++0,037]), et le gain se retrouve **sur les deux fenêtres** — apprentissage
+1,003 → 1,027, hors échantillon 0,817 → 0,837, pour une rotation en léger
+recul (760 % → 751 %). C'est un gain réel et minuscule : exactement ce que le
+test sert à dire, là où le classement laissait croire à un choix entre 108
+réglages.
+
+**Lire l'intervalle, pas la p-value.** Celle de cette combinaison vaut 0,0005,
+c'est-à-dire **exactement 1/2 000** : un seul rééchantillonnage sur 2 000 est
+passé sous zéro. C'est le **plancher de résolution** du bootstrap, pas une
+mesure — la vraie p-value peut être bien plus petite, et le chiffre ne peut
+donc pas se comparer à un seuil de Bonferroni du même ordre (0,05/108 =
+0,00046). L'intervalle, lui, n'est pas censuré : c'est lui qui établit le
+résultat, conformément à ce que dit `paired_sharpe_difference` (un bootstrap
+par blocs est légèrement libéral ; une p-value juste sous 0,05 ne vaut pas une
+preuve, un intervalle franchement à droite de zéro, oui). L'écart au reste de
+la grille est net : la p-value suivante est 0,136.
+
+**Ce n'est pas adopté pour autant.** Le Sharpe plein échantillon de cette
+combinaison vaut 0,952 pour un **plancher de bruit de 0,983** à 1 426 essais
+cumulés : au niveau du programme entier, elle reste sous le seuil à partir
+duquel un résultat se distingue de la sélection elle-même. Le réglage en place
+ne bouge pas.
+
+**Ce test ne sélectionne pas, et ne doit pas.** Il est mesuré sur la courbe
+entière, fenêtre de test comprise ; l'y faire entrer consommerait la seule
+fenêtre qui n'a rien choisi. Il se lit **après**, au même titre que
+`test_sharpe_ratio`. La sélection reste le Sharpe d'apprentissage départagé par
+la rotation.
+
+**La comparaison se fait contre la production, pas entre combinaisons.** La
+question qui décide d'un changement n'est pas « laquelle de ces 108 gagne ? »
+mais « laquelle bat ce qui tourne déjà ? ». C'est aussi pourquoi retirer un axe
+de la grille ne peut jamais en retirer la valeur de production : sans elle dans
+la grille, il n'y a plus rien à comparer, et l'outil le signale au lieu de
+produire un classement muet.
 
 #### Deux gains d'apprentissage écartés, et pourquoi
 
@@ -841,10 +933,13 @@ corps du texte là où le code seul est ambigu (un Item 5.02 couvre aussi bien l
 démission d'un PDG que l'élection routinière d'un administrateur).
 
 **3. Le classement d'une grille ne départage rien.** L'erreur-type d'un Sharpe
-sur sept ans vaut 0,47 ; les 576 combinaisons de chaque grille y tiennent.
-`metrics.paired_sharpe_difference` compare donc deux variantes par bootstrap
-**apparié** — leurs courbes sont corrélées à 0,97, et les juger à l'aune de
-l'erreur-type marginale revient à déclarer « non significatif » absolument tout.
+sur sept ans vaut 0,47 ; les 108 combinaisons de la grille y tiennent toutes.
+`metrics.paired_sharpe_difference` compare donc chaque combinaison à la
+configuration **en production** par bootstrap **apparié** — leurs courbes sont
+corrélées à 0,99, et les juger à l'aune de l'erreur-type marginale revient à
+déclarer « non significatif » absolument tout. Branché sur la grille, le test
+fait passer celle-ci de « rien n'est distinguable » à **26 combinaisons sur 108
+établies différentes** de ce qui tourne.
 
 #### Ce qui a été retenu
 

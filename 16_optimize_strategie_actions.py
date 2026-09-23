@@ -41,6 +41,20 @@ LES CINQ AXES, ET CE QU'ILS DÉPLACENT
         diversification pur : moins de plafond, plus de conviction et plus de
         variance.
 
+DEUX DE CES AXES NE SONT PLUS BALAYÉS PAR DÉFAUT. Mesurés sur la grille de 864
+points, stop_loss_pct et max_weight_pct expliquent 0,6 % et 0,1 % de la
+variance des Sharpe -- pour un coût de calcul multiplié par huit. Ils sont
+réduits à leur valeur de production (cf. le pavé sur DEFAULT_STOP_LOSS_GRID),
+ce qui ramène la grille à 108 combinaisons, et restent balayables à la demande.
+
+CE QUE LA GRILLE CONCLUT, ET CONTRE QUOI. Un classement ne départage rien : les
+108 combinaisons tiennent dans une erreur-type marginale du maximum. Chaque
+combinaison est donc aussi comparée à la CONFIGURATION EN PRODUCTION par
+bootstrap apparié (--paired-bootstrap, cf. _ajoute_stats_appariees) -- les
+courbes étant corrélées à 0,990, cet écart se mesure quatre fois plus finement
+que l'erreur-type marginale, et 26 des 108 s'en trouvent établies différentes
+de ce qui tourne. Ce test se lit APRÈS la sélection, jamais dedans.
+
 POURQUOI LE CLASSEMENT SE FAIT SUR LA FENÊTRE D'APPRENTISSAGE SEULE. Une
 grille de plusieurs centaines de points classée sur l'historique complet
 retient la combinaison qui colle le mieux à CE chemin, et son Sharpe est celui
@@ -102,11 +116,29 @@ TAKE_PROFIT_OFF = 10_000.0
 # Les grilles par défaut CONTIENNENT TOUJOURS la valeur en production : une
 # grille qui ne porte pas la configuration actuelle ne dit pas si le changement
 # proposé est un gain, seulement lequel de ses concurrents gagne.
-DEFAULT_STOP_LOSS_GRID = [-15.0, -25.0, -40.0, STOP_LOSS_OFF]
+# DEUX AXES RETIRÉS DES DÉFAUTS, sur mesure. La décomposition de la variance
+# des 864 Sharpe de la grille du 2026-09-23 est sans appel :
+#
+#     take_profit_pct       63,9 %      étendue des moyennes 0,052
+#     momentum_min_pct      15,1 %                           0,022
+#     entry_threshold_pct    7,2 %                           0,015
+#     rebalance_band_pct     4,7 %                           0,014
+#     stop_loss_pct          0,6 %                           0,005   <- retiré
+#     max_weight_pct         0,1 %                           0,001   <- retiré
+#
+# Ces deux-là multipliaient la grille par HUIT (4 x 2) pour 0,7 % de
+# l'information. Les retirer la fait passer de 864 à 108 combinaisons, et
+# baisse d'autant le plancher de bruit du Sharpe déflaté, qui croît avec le
+# nombre d'essais. Ils restent balayables à la demande (--stop-loss-grid,
+# --max-weight-grid) : c'est le DÉFAUT qui change, pas la capacité.
+#
+# Chacun garde sa valeur de production, pour que la grille contienne toujours
+# la configuration en place (cf. _reference_combo).
+DEFAULT_STOP_LOSS_GRID = [-15.0]
 DEFAULT_TAKE_PROFIT_GRID = [30.0, 60.0, 100.0, TAKE_PROFIT_OFF]
 DEFAULT_MOMENTUM_GRID = [None, -10.0, -25.0]
 DEFAULT_REBALANCE_BAND_GRID = [0.0, 5.0, 15.0]
-DEFAULT_MAX_WEIGHT_GRID = [10.0, 20.0]
+DEFAULT_MAX_WEIGHT_GRID = [20.0]
 
 # Le seuil d'entrée ne se lit pas pareil d'une stratégie à l'autre (écart au
 # cours vs écart à la médiane sectorielle) : sa grille dépend donc de la
@@ -350,6 +382,18 @@ def main() -> None:
              "compteur juste avant de le lire.",
     )
     parser.add_argument(
+        "--paired-bootstrap", type=int, default=2000, metavar="N",
+        help="Rééchantillonnages du test APPARIÉ de chaque combinaison contre la "
+             "configuration en production (défaut: %(default)s, 0 désactive). L'erreur-type "
+             "marginale d'un Sharpe (0,35 sur onze ans) suppose deux stratégies "
+             "INDÉPENDANTES ; deux variantes du même backtest ont des courbes corrélées à "
+             "0,990, et leur écart apparié est mesuré QUATRE fois plus finement (0,079 contre "
+             "0,353). C'est ce qui permet de dire quelle combinaison est réellement "
+             "distinguable de ce qui tourne : mesuré, 26 des 108 le sont, contre 0 à l'aune "
+             "de l'erreur-type marginale. NB : la p-value plancherise à 1/N, elle ne se lit "
+             "pas contre un seuil du même ordre -- c'est l'intervalle qui établit.",
+    )
+    parser.add_argument(
         "--walk-forward", action="store_true",
         help="Évalue en plus la performance hors échantillon CONCATÉNÉE sur fenêtres "
              "glissantes : chaque fenêtre choisit sa combinaison sur son seul passé. Une "
@@ -419,6 +463,10 @@ def main() -> None:
             "Sharpe deflate calcule sur %d essais : %d dans cette grille, %d anterieurs.",
             n_trials, len(grid), args.n_trials_prior)
 
+    # Les courbes de NAV servent au walk-forward ET au test apparié : l'un
+    # redécoupe la courbe en fenêtres, l'autre la rééchantillonne par blocs.
+    # 108 courbes de ~3000 points tiennent dans trois mégaoctets.
+    garder_courbes = bool(args.walk_forward) or args.paired_bootstrap > 0
     rows: list[dict] = []
     if args.workers > 1:
         # initializer/initargs : cf. le commentaire sur _pool_initializer.
@@ -428,7 +476,7 @@ def main() -> None:
             futures = {
                 pool.submit(
                     _run_one, combo, args.strategy, fixed_strategy_params, engine_kwargs,
-                    start_date, end_date, split_date, n_trials, args.walk_forward,
+                    start_date, end_date, split_date, n_trials, garder_courbes,
                 ): combo
                 for combo in grid
             }
@@ -440,7 +488,7 @@ def main() -> None:
         for i, combo in enumerate(grid, 1):
             rows.append(_run_one(
                 combo, args.strategy, fixed_strategy_params, engine_kwargs,
-                start_date, end_date, split_date, n_trials, args.walk_forward,
+                start_date, end_date, split_date, n_trials, garder_courbes,
             ))
             if i % 10 == 0 or i == len(grid):
                 logger.info("  %d/%d combinaisons", i, len(grid))
@@ -449,6 +497,8 @@ def main() -> None:
     # CSV (une colonne de 3000 nombres par ligne le rendrait illisible et
     # énorme) : elles restent en mémoire, sous des clés préfixées d'un
     # underscore, et sont retirées avant écriture.
+    _ajoute_stats_appariees(rows, args.strategy, args.paired_bootstrap)
+
     resultat_wf = walk_forward(rows, args, args.plateau_tolerance) if args.walk_forward else None
 
     results = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
@@ -602,7 +652,16 @@ def _lire_le_plateau(
         # pas une absence : dropna=False, sans quoi un plateau unanimement sans
         # filtre passerait pour un axe vide.
         valeurs = plateau[axe].value_counts(dropna=False)
-        if len(valeurs) == 1:
+        # UN AXE À UNE SEULE VALEUR DANS LA GRILLE EST UNANIME PAR CONSTRUCTION.
+        # Depuis que stop_loss_pct et max_weight_pct sont réduits à leur valeur
+        # de production (cf. le pavé sur la décomposition de variance), les
+        # afficher « UNANIME » présenterait comme un résultat ce qui n'est que
+        # l'absence de balayage -- et c'est le genre de non-résultat qu'on relit
+        # six mois plus tard comme une conclusion.
+        if len(ranked[axe].value_counts(dropna=False)) == 1:
+            logger.info("  %-20s non balayé : %s (un seul point dans la grille)",
+                        axe, _lisible(axe, plateau[axe].iloc[0]))
+        elif len(valeurs) == 1:
             logger.info("  %-20s UNANIME : %s", axe, _lisible(axe, plateau[axe].iloc[0]))
         else:
             retenues = ", ".join(_lisible(axe, v) for v in sorted(valeurs.index, key=lambda x: (pd.isna(x), x)))
@@ -705,6 +764,143 @@ def _reference_combo(strategy_name: str) -> dict:
     }
 
 
+def _index_de_reference(lignes: list[dict], reference: dict) -> Optional[int]:
+    """Position de la configuration EN PRODUCTION dans la grille, ou None.
+
+    `momentum_min_pct = None` ne se compare pas par égalité (None != None une
+    fois passé par un DataFrame, et NaN != NaN toujours) : d'où le test
+    explicite, sans quoi la ligne de référence resterait introuvable sans que
+    rien ne le signale."""
+    for i, ligne in enumerate(lignes):
+        if ligne.get("error") or "_nav" not in ligne:
+            continue
+        if all(
+            (ligne.get(cle) is None or pd.isna(ligne.get(cle))) if valeur is None
+            else (ligne.get(cle) is not None and not pd.isna(ligne.get(cle))
+                  and abs(float(ligne[cle]) - float(valeur)) < 1e-9)
+            for cle, valeur in reference.items()
+        ):
+            return i
+    return None
+
+
+def _ajoute_stats_appariees(
+    lignes: list[dict], strategy_name: str, n_bootstrap: int,
+) -> Optional[int]:
+    """Écart de Sharpe APPARIÉ de chaque combinaison contre la configuration en
+    production, avec son intervalle de confiance.
+
+    POURQUOI ÇA CHANGE TOUT. L'erreur-type d'un Sharpe sur onze ans vaut 0,35
+    (Lo, 2002) et l'étendue entière de la grille vaut 0,133 : à cette aune
+    AUCUNE combinaison n'est distinguable d'aucune autre -- mesuré, les 108 sont
+    à moins d'une erreur-type du maximum. Mais cette erreur-type est celle de
+    deux stratégies INDÉPENDANTES. Ici les courbes de NAV sont corrélées à 0,990
+    -- ce sont des variantes du même backtest --, et l'écart APPARIÉ a une
+    dispersion bien plus faible : demi-largeur médiane 0,079 au lieu de 0,353,
+    soit QUATRE FOIS plus précis. La grille passe de « rien n'est distinguable »
+    à 26 combinaisons sur 108 établies différentes de ce qui tourne.
+
+    CONTRE LA PRODUCTION, PAS CONTRE LES AUTRES. La question qui décide d'un
+    changement n'est pas « laquelle de ces 108 gagne ? » mais « laquelle bat ce
+    qui tourne déjà ? ». Comparer les combinaisons entre elles répondrait à la
+    première, qui n'engage rien.
+
+    CE N'EST PAS UN CRITÈRE DE SÉLECTION, et il ne doit pas le devenir : il est
+    mesuré sur la courbe ENTIÈRE, fenêtre de test comprise. L'y faire entrer
+    consommerait la seule fenêtre qui n'a rien choisi. Il se lit APRÈS, au même
+    titre que `test_sharpe_ratio` -- la sélection reste le Sharpe
+    d'apprentissage départagé par la rotation (cf. _choisir_sur_le_plateau).
+
+    Rend l'index de la ligne de référence, ou None si elle n'est pas dans la
+    grille (auquel cas il n'y a rien à comparer, et l'appelant le signale)."""
+    if n_bootstrap <= 0:
+        return None
+    reference = _reference_combo(strategy_name)
+    i_ref = _index_de_reference(lignes, reference)
+    if i_ref is None:
+        logger.warning(
+            "Configuration actuelle absente de la grille : pas de test apparié. "
+            "Attendu %s.", reference,
+        )
+        return None
+
+    ref = lignes[i_ref]
+    serie_ref = pd.Series(ref["_nav"], index=ref["_dates"])
+    rendements_ref = serie_ref.pct_change(fill_method=None).dropna()
+
+    logger.info(
+        "Test apparié contre la configuration actuelle (%d rééchantillonnages par "
+        "combinaison)...", n_bootstrap,
+    )
+    for i, ligne in enumerate(lignes):
+        if ligne.get("error") or "_nav" not in ligne:
+            continue
+        serie = pd.Series(ligne["_nav"], index=ligne["_dates"])
+        resultat = metrics_mod.paired_sharpe_difference(
+            rendements_ref, serie.pct_change(fill_method=None).dropna(),
+            n_bootstrap=n_bootstrap,
+        )
+        if not resultat:
+            continue
+        ligne["paired_delta_sharpe"] = resultat["sharpe_difference"]
+        ligne["paired_ci_low"] = resultat["difference_ci_low"]
+        ligne["paired_ci_high"] = resultat["difference_ci_high"]
+        ligne["paired_p_value"] = resultat["p_value"]
+        ligne["paired_correlation"] = resultat["correlation"]
+        # Sert à _lire_le_test_apparie : comparer la demi-largeur appariée à une
+        # erreur-type marginale calculée sur une AUTRE durée gonflerait le
+        # rapport de sqrt(11/7), soit 25 %. Les deux chiffres doivent porter sur
+        # la même fenêtre, et c'est celle-ci -- le test apparié rééchantillonne
+        # la courbe entière, pas la seule fenêtre d'apprentissage.
+        ligne["paired_n_observations"] = resultat["n_observations"]
+    return i_ref
+
+
+def _lire_le_test_apparie(ok: pd.DataFrame, tolerance: float) -> None:
+    """Ce que le test apparié départage, et que l'erreur-type marginale ne
+    départageait pas."""
+    if "paired_ci_low" not in ok.columns or ok["paired_ci_low"].isna().all():
+        return
+    avec = ok[ok["paired_ci_low"].notna()]
+    meilleures = avec[avec["paired_ci_low"] > 0]
+    pires = avec[avec["paired_ci_high"] < 0]
+    indistinctes = len(avec) - len(meilleures) - len(pires)
+
+    demi = float(((avec["paired_ci_high"] - avec["paired_ci_low"]) / 2).median())
+    # LES DEUX CHIFFRES DOIVENT PORTER SUR LA MÊME FENÊTRE. L'intervalle apparié
+    # est mesuré sur la courbe ENTIÈRE ; le comparer à l'erreur-type que
+    # _lire_le_plateau affiche sur la seule fenêtre d'apprentissage gonflerait le
+    # rapport de sqrt(11/7) -- 25 % de précision annoncée qui n'existe pas. D'où
+    # la durée relue du test lui-même, et le Sharpe plein échantillon avec elle.
+    annees = (float(avec["paired_n_observations"].median()) / metrics_mod.TRADING_DAYS_PER_YEAR
+              if "paired_n_observations" in avec.columns else 7.0)
+    se_marginale = _erreur_type_sharpe(float(avec["sharpe_ratio"].max()), annees)
+    logger.info(
+        "--- Ce que le test apparié départage ---\n"
+        "Demi-largeur médiane de l'intervalle apparié : %.3f, contre %.3f pour l'erreur-type "
+        "marginale sur les mêmes %.1f ans -- soit %.0fx plus précis (les courbes sont "
+        "corrélées à %.3f).\n"
+        "Sur %d combinaisons : %d MEILLEURES que la configuration actuelle, %d PIRES, "
+        "%d indistinguables.",
+        demi, se_marginale, annees, se_marginale / demi if demi > 0 else float("nan"),
+        float(avec["paired_correlation"].median()),
+        len(avec), len(meilleures), len(pires), indistinctes,
+    )
+    if meilleures.empty:
+        logger.info(
+            "AUCUNE combinaison n'est établie meilleure que ce qui tourne déjà. C'est un "
+            "résultat, pas une absence de résultat : la grille a balayé %d points sans en "
+            "trouver un seul dont l'intervalle de confiance exclue zéro.", len(avec),
+        )
+        return
+    colonnes = [c for c in (*AXES, "paired_delta_sharpe", "paired_ci_low",
+                            "paired_ci_high", "paired_p_value") if c in meilleures.columns]
+    logger.info(
+        "--- Combinaisons ÉTABLIES meilleures que la configuration actuelle ---\n%s",
+        meilleures.sort_values("paired_delta_sharpe", ascending=False)[colonnes].head(10).to_string(index=False),
+    )
+
+
 def _compare_a_la_reference(
     ok: pd.DataFrame, best: pd.Series, strategy_name: str,
     rank_key: str, split_date: Optional[pd.Timestamp],
@@ -803,6 +999,8 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
                 ranked[colonnes].head(10).to_string(index=False))
 
     _lire_le_plateau(ranked, plateau, rank_key, args.plateau_tolerance)
+
+    _lire_le_test_apparie(ok, args.plateau_tolerance)
 
     _compare_a_la_reference(ok, best, args.strategy, rank_key, split_date)
 
