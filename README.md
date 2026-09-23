@@ -1086,6 +1086,56 @@ déplace réellement les 82 cibles. Lever le coupe-circuit ne supprime que les
 repesages dont la dérive agrégée reste sous le seuil. Une pondération qui ne se
 renormalise pas est l'étape suivante.
 
+#### Tarification réelle : commission minimum et planchers de taille
+
+Le coût du moteur était purement proportionnel. Un ordre de 7 $ y payait
+0,7 centime, ce qu'aucun courtier ne facture — et c'est ce qui faisait passer
+un portefeuille de 1 000 $ pour viable. Trois réglages, **tous à 0 par défaut**
+(le moteur se comporte exactement comme avant, et les chiffres de référence
+ci-dessus restent ceux qu'ils sont), activables par run comme `--commission-bps` :
+
+| réglage | rôle |
+|---|---|
+| `--min-commission-dollar 1` | coût d'un ordre = `max(notionnel × 10 bps, 1 $)`, soit 1 $ à l'aller et 1 $ au retour |
+| `--min-trade-pct-of-nav 0.05` | plancher de taille relatif au NAV — le plancher absolu de 1 $ vaut 0,000036 % d'un NAV de 2,8 M$ et ne coupe rien |
+| `--max-fee-pct-of-trade 1` | critère de **viabilité** : la commission minimum ne doit pas dépasser 1 % de l'ordre, donc rien sous 100 $ n'est passé |
+
+**Jamais sur les liquidations.** Stop-loss, take-profit, stop suiveur, perte de
+signal et symbole périmé visent une cible de zéro : leur opposer un plancher
+emprisonnerait toute ligne devenue plus petite que lui — le stop-loss cesserait
+de fonctionner sur exactement les positions qui en ont le plus besoin, celles
+qui se sont effondrées. Testé explicitement.
+
+| run | Sharpe | test | max DD | CAGR | exécutions | ordre moyen | lignes | NAV finale |
+|---|---|---|---|---|---|---|---|---|
+| ancrée 10 k$ · proportionnel | 0,960 | 0,935 | −35,54 % | 18,56 % | 20 748 | 108 $ | 78,2 | 72 925 $ |
+| **ancrée 10 k$ · tarif réel** | 0,840 | 0,685 | −33,23 % | 15,71 % | 5 879 | 288 $ | 63,8 | 54 913 $ |
+| **combinée 10 k$ · tarif réel** | **0,906** | **0,798** | −35,17 % | 17,36 % | 7 261 | 271 $ | 68,4 | **64 765 $** |
+| ancrée 1 M$ · proportionnel | 0,954 | 0,935 | −35,54 % | 18,44 % | 21 689 | 10 218 $ | 78,2 | 7 209 567 $ |
+| **ancrée 1 M$ · tarif réel** | **0,981** | 0,891 | −34,34 % | 18,94 % | 14 023 | 16 734 $ | 78,7 | **7 572 498 $** |
+
+**À 1 M$, la tarification réaliste AMÉLIORE le résultat** : Sharpe 0,954 →
+0,981, CAGR 18,44 % → 18,94 %, drawdown −35,54 % → −34,34 %, et 35 % d'ordres
+en moins. Le plancher relatif coupe la poussière, qui ne rapportait rien ; la
+commission de 1 $ est négligeable sur un ordre moyen de 16 734 $. L'écart
+apparié est +0,027 (IC [−0,016, +0,070], p = 0,095) : la direction est bonne,
+la significativité n'y est pas.
+
+**À 10 000 $, elle coûte cher, et ce coût est significatif** : −0,115 de Sharpe
+(IC [−0,190, −0,047], p = 1,00). Le portefeuille se concentre — 78 lignes à
+64 — parce que les petites cibles ne sont plus achetables. La stratégie bat
+encore largement le SPY (54 913 $ contre 37 492 $, alpha +3,72 %), mais elle
+n'est plus la même.
+
+**Et l'ancrage s'inverse.** À 10 000 $ sous tarification réelle, la stratégie
+**ancrée fait significativement moins bien que la combinée d'origine** :
+−0,063 de Sharpe, IC [−0,115, −0,013], p = 0,994 — l'intervalle exclut zéro.
+L'explication tient en une phrase : les planchers de taille font déjà le
+travail que l'ancrage était censé faire, et l'ancrage n'apporte plus que son
+coût, les entrées différées. **Deux mécanismes qui suppriment les mêmes ordres
+ne s'additionnent pas ; le second se contente de retirer du signal.** À 1 M$ la
+question ne se pose pas, les deux étant confortablement au-dessus des planchers.
+
 #### Ce qui reste bloqué
 
 `04c` et `07b` ont besoin d'un accès à EDGAR pour reconstruire leurs fichiers à

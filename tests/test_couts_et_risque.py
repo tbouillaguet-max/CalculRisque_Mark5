@@ -114,9 +114,29 @@ def test_un_coefficient_nul_laisse_le_cout_forfaitaire():
 def test_un_encours_plus_gros_coute_plus_cher():
     """LE test de capacité, en miniature : à volume de marché identique, un
     portefeuille plus gros doit finir avec une performance plus faible. C'est
-    exactement ce que le coût forfaitaire ne sait pas exprimer."""
-    panel = build_price_panel(_cours(volume=1e4))  # marché volontairement étroit
-    events = pd.DataFrame([_evt("AAA", panel.close.index[1]), _evt("BBB", panel.close.index[1])])
+    exactement ce que le coût forfaitaire ne sait pas exprimer.
+
+    CE QUE CE TEST NE FAISAIT PAS, ET POURQUOI IL PASSAIT QUAND MÊME. Il
+    publiait ses signaux à la séance 1, donc exécutait à la séance 2. Or
+    `dollar_volume_at` est une moyenne glissante : elle rend `None` avant la
+    séance 4, et `_impact_bps` renonce alors au modèle plutôt que d'inventer
+    une liquidité. AUCUN impact n'était donc jamais facturé, aux deux tailles,
+    et les deux rendements valaient -1/1001 -- le seul coût forfaitaire. Le
+    test passait parce que -0,0009990009990011 est inférieur à
+    -0,0009990009990009 : un écart au quinzième chiffre, pur bruit de virgule
+    flottante, qui aurait basculé au premier refactor touchant l'ordre des
+    opérations. C'est d'ailleurs ce qui est arrivé.
+
+    Deux corrections, donc : publier assez tard pour que le volume existe, et
+    VÉRIFIER que l'impact a bien été facturé -- sans quoi le test peut
+    redevenir silencieusement vide."""
+    panel = build_price_panel(_cours(n=120, volume=1e4))  # marché volontairement étroit
+    depart = panel.close.index[10]
+    assert panel.dollar_volume_at("AAA", depart) is not None, (
+        "le volume doit être disponible à la date d'exécution, sinon le modèle "
+        "d'impact renonce et le test ne mesure plus rien"
+    )
+    events = pd.DataFrame([_evt("AAA", depart), _evt("BBB", depart)])
 
     petit = _moteur(panel, events, initial_capital=1e6, impact_coefficient_bps=100.0)
     gros = _moteur(panel, events, initial_capital=1e9, impact_coefficient_bps=100.0)
@@ -124,6 +144,12 @@ def test_un_encours_plus_gros_coute_plus_cher():
     gros.run()
 
     rendement = lambda m, c: m.equity_curve_rows[-1]["nav"] / c - 1  # noqa: E731
+    forfait = -(10.0 / 10_000)  # ce que coûterait le seul coût forfaitaire
+
+    # Le gros portefeuille paie BEAUCOUP plus que le forfait : c'est la preuve
+    # que l'impact a réellement mordu, et non que deux nombres presque égaux
+    # se sont classés par hasard.
+    assert rendement(gros, 1e9) < forfait * 10
     assert rendement(gros, 1e9) < rendement(petit, 1e6)
 
 

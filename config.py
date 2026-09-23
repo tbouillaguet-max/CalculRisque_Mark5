@@ -615,6 +615,47 @@ BACKTEST_INITIAL_CAPITAL = 1_000_000.0
 BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
 BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
 
+# ----------------------------------------------------------------------------
+# Tarification RÉELLE : commission minimum, et ce qu'elle rend inachetable
+# ----------------------------------------------------------------------------
+# CE QUE LE COÛT PROPORTIONNEL NE PEUT PAS DIRE. Les 10 bps ci-dessus ne
+# dépendent pas de la taille de l'ordre : un ordre de 7 $ y paie 0,7 centime,
+# ce qu'aucun courtier ne facture. C'est ce qui fait passer un portefeuille de
+# 1 000 $ pour viable dans le backtest -- mesuré, il l'est jusqu'à 1,8 centime
+# de frais fixe par ordre, et pas au-delà.
+#
+# LES TROIS RÉGLAGES SE TIENNENT, et valent 0 par défaut : à 0 le moteur se
+# comporte EXACTEMENT comme avant, et les chiffres de référence du README
+# restent ceux qu'ils sont. Ils s'activent par run (--min-commission-dollar,
+# --min-trade-pct-of-nav, --max-fee-pct-of-trade), comme --commission-bps :
+# une hypothèse de marché, pas une propriété de la thèse.
+#
+#   1. Commission MINIMUM par exécution, en dollars. Le coût d'un ordre devient
+#      max(notionnel x bps, ce minimum). 1,0 = 1 $ à l'achat et 1 $ à la vente,
+#      soit 2 $ l'aller-retour.
+BACKTEST_MIN_COMMISSION_DOLLAR = 0.0
+#
+#   2. Plancher de taille d'ordre RELATIF au NAV, en %. Un plancher absolu ne
+#      tient pas à l'échelle : MIN_TRADE_DOLLAR = 1 $ vaut 0,000036 % d'un NAV
+#      de 2,8 M$ et ne coupe rigoureusement rien. Mesuré sur la stratégie
+#      combinée, 0,05 % coupe 77 % des ordres pour 24 % du volume négocié --
+#      beaucoup d'ordres, peu d'argent : c'est la poussière.
+BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.0
+#
+#   3. Part MAXIMALE du montant d'un ordre que la commission minimum a le droit
+#      de représenter. C'est le critère de VIABILITÉ, et il découle du point 1 :
+#      avec 1 $ de commission minimum et 1 %, un ordre sous 100 $ n'est pas
+#      passé du tout. Sans lui, le moteur paierait 14 % de frais sur un ordre de
+#      7 $ et continuerait comme si de rien n'était.
+#
+#      NE S'APPLIQUE JAMAIS AUX LIQUIDATIONS. Stop-loss, take-profit, stop
+#      suiveur, perte de signal et symbole périmé visent une cible de ZÉRO :
+#      leur refuser l'exécution parce que la ligne est devenue trop petite
+#      l'emprisonnerait dans le portefeuille pour toujours. Un plancher est un
+#      filtre de coût sur ce qu'on CHOISIT de faire, pas sur ce qu'on doit
+#      solder (cf. engine._execute_pending_orders).
+BACKTEST_MAX_FEE_PCT_OF_TRADE = 0.0
+
 # Un signal DCF (10-K annuel) n'est considéré comme une base valable pour une
 # NOUVELLE entrée que s'il a été publié il y a moins de ce nombre de jours ;
 # au-delà, il est traité comme périmé (pas de nouveau 10-K depuis plus d'un

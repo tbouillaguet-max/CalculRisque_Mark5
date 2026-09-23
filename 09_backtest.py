@@ -121,6 +121,24 @@ def main() -> None:
              "Sert surtout a chiffrer la CAPACITE : jusqu'a quel encours la strategie tient.",
     )
     parser.add_argument(
+        "--min-commission-dollar", type=float, default=config.BACKTEST_MIN_COMMISSION_DOLLAR,
+        help="Commission MINIMUM par exécution, en dollars : le coût d'un ordre devient "
+             "max(notionnel x bps, ce minimum). 1 = 1 $ à l'achat et 1 $ à la vente. "
+             "0 = coût purement proportionnel (défaut, comportement historique).",
+    )
+    parser.add_argument(
+        "--min-trade-pct-of-nav", type=float, default=config.BACKTEST_MIN_TRADE_PCT_OF_NAV,
+        help="Plancher de taille d'ordre en %% du NAV. Le plancher absolu de 1 $ ne coupe "
+             "rien à l'échelle (0,000036 %% d'un NAV de 2,8 M$) ; celui-ci tient. Ne "
+             "s'applique JAMAIS aux liquidations. 0 = désactivé.",
+    )
+    parser.add_argument(
+        "--max-fee-pct-of-trade", type=float, default=config.BACKTEST_MAX_FEE_PCT_OF_TRADE,
+        help="Part maximale d'un ordre que la commission minimum a le droit de représenter : "
+             "c'est le critère de VIABILITÉ. Avec 1 $ de commission minimum et 1, un ordre "
+             "sous 100 $ n'est pas passé. 0 = aucun seuil.",
+    )
+    parser.add_argument(
         "--vol-target-pct", type=float, default=config.BACKTEST_VOL_TARGET_PCT,
         help="Cible de volatilite annualisee du portefeuille, en %%. L'exposition est REDUITE "
              "quand la volatilite realisee recente depasse la cible, jamais augmentee au-dela "
@@ -196,6 +214,9 @@ def main() -> None:
         max_holding_days=args.max_holding_days,
         exit_gap_threshold_pct=args.exit_gap_threshold_pct,
         impact_coefficient_bps=args.impact_coefficient_bps,
+        min_commission_dollar=args.min_commission_dollar,
+        min_trade_pct_of_nav=args.min_trade_pct_of_nav,
+        max_fee_pct_of_trade=args.max_fee_pct_of_trade,
         vol_target_pct=args.vol_target_pct,
         material_events_8k=material_events,
         start_date=start_date,

@@ -128,6 +128,13 @@ class BacktestEngine:
         max_holding_days: Optional[int] = config.BACKTEST_MAX_HOLDING_DAYS,
         exit_gap_threshold_pct: Optional[float] = config.BACKTEST_EXIT_GAP_THRESHOLD_PCT,
         impact_coefficient_bps: float = config.BACKTEST_IMPACT_COEFFICIENT_BPS,
+        # Tarification réelle : commission minimum en dollars, plancher de
+        # taille relatif au NAV, et part maximale de l'ordre que la commission
+        # minimum a le droit de représenter. À 0 -- le défaut -- le moteur se
+        # comporte exactement comme avant (cf. config pour le raisonnement).
+        min_commission_dollar: float = config.BACKTEST_MIN_COMMISSION_DOLLAR,
+        min_trade_pct_of_nav: float = config.BACKTEST_MIN_TRADE_PCT_OF_NAV,
+        max_fee_pct_of_trade: float = config.BACKTEST_MAX_FEE_PCT_OF_TRADE,
         vol_target_pct: Optional[float] = config.BACKTEST_VOL_TARGET_PCT,
         vol_target_lookback_days: int = config.BACKTEST_VOL_TARGET_LOOKBACK_DAYS,
         material_events_8k: Optional[pd.DataFrame] = None,
@@ -176,6 +183,9 @@ class BacktestEngine:
         self.max_holding_days = max_holding_days
         self.exit_gap_threshold_pct = exit_gap_threshold_pct
         self.impact_coefficient_bps = impact_coefficient_bps or 0.0
+        self.min_commission_dollar = min_commission_dollar or 0.0
+        self.min_trade_pct_of_nav = min_trade_pct_of_nav or 0.0
+        self.max_fee_pct_of_trade = max_fee_pct_of_trade or 0.0
         self.vol_target_pct = vol_target_pct
         self.vol_target_lookback_days = vol_target_lookback_days
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
@@ -267,6 +277,10 @@ class BacktestEngine:
         if not self.pending_orders:
             return
 
+        # Le plancher relatif se lit sur le NAV du jour, pas sur le capital
+        # initial : c'est ce qui le fait tenir à l'échelle quand le
+        # portefeuille a été multiplié par huit.
+        nav = self._current_nav(today)
         still_pending: dict[str, _PendingOrder] = {}
         sells: list[tuple[str, float, float, str]] = []
         buys: list[tuple[str, float, float, str]] = []
@@ -294,7 +308,15 @@ class BacktestEngine:
 
             pos = self.positions.get(symbol)
             delta_dollar = order.target_dollar - (pos.shares if pos else 0.0) * price
-            if abs(delta_dollar) < MIN_TRADE_DOLLAR:
+            # UNE LIQUIDATION PASSE TOUJOURS. Stop-loss, take-profit, stop
+            # suiveur, perte de signal et symbole périmé visent une cible de
+            # zéro : leur opposer un plancher de taille emprisonnerait dans le
+            # portefeuille toute ligne devenue plus petite que lui, sans
+            # échappatoire -- le stop-loss cesserait de fonctionner sur
+            # exactement les positions qui en ont le plus besoin, celles qui
+            # se sont effondrées.
+            minimum = MIN_TRADE_DOLLAR if order.target_dollar <= 0 else self._montant_minimal(nav)
+            if abs(delta_dollar) < minimum:
                 continue
             side = buys if delta_dollar > 0 else sells
             side.append((symbol, delta_dollar / price, price, order.reason))
@@ -305,9 +327,12 @@ class BacktestEngine:
         # (_rebalance raisonne en NAV, pas en cash).
         for symbol, shares_delta, price, reason in sells:
             self._execute_trade(symbol, shares_delta, price, today, reason)
-        self._execute_buys(buys, today)
+        self._execute_buys(buys, today, self._montant_minimal(nav))
 
-    def _execute_buys(self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp) -> None:
+    def _execute_buys(
+        self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp,
+        minimum: float = MIN_TRADE_DOLLAR,
+    ) -> None:
         """Achats du jour, tous servis dans la MÊME proportion quand le cash
         ne suffit pas.
 
@@ -323,9 +348,16 @@ class BacktestEngine:
         if not buys:
             return
 
-        cost_rate = self.cost_bps / 10_000
+        # Frais du LOT, ordre par ordre : avec une commission minimum, le coût
+        # n'est plus proportionnel au total, et provisionner `notional x bps`
+        # sous-estimerait le cash nécessaire sur un lot de petits ordres --
+        # exactement le régime où la commission minimum mord.
         notional = sum(shares * price for _, shares, price, _ in buys)
-        demanded = notional * (1 + cost_rate)
+        frais = sum(
+            shares * price * self._taux_de_cout(symbol, shares * price, today, avec_impact=False)
+            for symbol, shares, price, _ in buys
+        )
+        demanded = notional + frais
         self.buy_orders_count += len(buys)
 
         # Compté AVANT toute sortie anticipée : la version précédente
@@ -350,7 +382,7 @@ class BacktestEngine:
             # avec. Le compter comme une troncature faisait afficher "100% des
             # ordres tronqués" à un moteur qui fonctionnait, et surtout
             # noyait les vraies pénuries de cash dans ce bruit.
-            if manque > notional * cost_rate + MIN_TRADE_DOLLAR:
+            if manque > frais + MIN_TRADE_DOLLAR:
                 self.truncated_orders_count += len(buys)
             self.unfilled_dollar += manque
             if self.cash <= 0:
@@ -358,7 +390,10 @@ class BacktestEngine:
             scale = self.cash / demanded
 
         for symbol, shares_delta, price, reason in buys:
-            if shares_delta * price * scale < MIN_TRADE_DOLLAR:
+            # Un ordre réduit par le manque de cash sous le seuil de viabilité
+            # cesse de l'être : le plancher s'applique à ce qui est RÉELLEMENT
+            # exécuté, pas à ce qui était demandé.
+            if shares_delta * price * scale < minimum:
                 continue
             self._execute_trade(symbol, shares_delta * scale, price, today, reason)
 
@@ -386,10 +421,62 @@ class BacktestEngine:
             return 0.0
         return self.impact_coefficient_bps * math.sqrt(montant / volume)
 
+    def _taux_de_cout(
+        self, symbol: str, notionnel: float, today: pd.Timestamp, avec_impact: bool = True,
+    ) -> float:
+        """Coût d'une exécution, rendu comme un TAUX pour rester compatible
+        avec le décalage de prix qui sert de modèle d'exécution.
+
+        Le coût est proportionnel (commission + glissement + impact), SAUF
+        quand une commission minimum en dollars est demandée : elle s'y
+        substitue dès que l'ordre est trop petit pour l'atteindre. Rendre un
+        taux plutôt qu'un montant garde le reste du moteur inchangé -- le prix
+        effectif reste `prix x (1 ± taux)` -- tout en rendant le coût
+        NON LINÉAIRE en la taille, ce qui est le point : c'est cette
+        non-linéarité que le forfait de 10 bps ne pouvait pas exprimer, et qui
+        décide de la viabilité d'un petit portefeuille.
+
+        `avec_impact=False` sert au PROVISIONNEMENT du cash dans
+        `_execute_buys`, et la distinction n'est pas cosmétique. L'impact de
+        marché est un effet de PRIX -- on déplace le marché en passant l'ordre
+        --, pas des frais qu'il faudrait mettre de côté d'avance. Le
+        provisionner reviendrait à rétrécir l'ordre jusqu'à ce qu'il tienne
+        dans le cash IMPACT COMPRIS, donc à ne jamais payer l'impact plutôt
+        qu'à le subir : mesuré, un portefeuille d'un milliard sur un marché
+        étroit finissait alors avec exactement la performance d'un
+        portefeuille d'un million, et toute l'étude de capacité s'effondrait.
+        """
+        taux = self.cost_bps / 10_000
+        if avec_impact:
+            taux += self._impact_bps(symbol, notionnel, today) / 10_000
+        if self.min_commission_dollar > 0 and notionnel > 0:
+            taux = max(taux, self.min_commission_dollar / notionnel)
+        return taux
+
+    def _montant_minimal(self, nav: float) -> float:
+        """Montant en dessous duquel un ordre n'est PAS passé : le plus
+        contraignant des trois planchers.
+
+        1. `MIN_TRADE_DOLLAR`, le garde-fou anti-poussière historique ;
+        2. un plancher RELATIF au NAV -- le seul qui tienne à l'échelle, un
+           dollar ne voulant pas dire la même chose sur 10 000 $ et sur 8 M$ ;
+        3. le seuil de VIABILITÉ déduit de la commission minimum : si l'on
+           refuse qu'un ordre paie plus de x % de frais, un ordre sous
+           `commission_minimum / x` n'a pas de raison d'exister.
+
+        NE S'APPLIQUE PAS AUX LIQUIDATIONS : voir `_execute_pending_orders`.
+        Un plancher filtre ce qu'on choisit de faire, jamais ce qu'on doit
+        solder -- sinon une ligne devenue minuscule serait emprisonnée dans le
+        portefeuille, stop-loss compris."""
+        minimum = MIN_TRADE_DOLLAR
+        if self.min_trade_pct_of_nav > 0 and nav > 0:
+            minimum = max(minimum, nav * self.min_trade_pct_of_nav / 100.0)
+        if self.min_commission_dollar > 0 and self.max_fee_pct_of_trade > 0:
+            minimum = max(minimum, self.min_commission_dollar / (self.max_fee_pct_of_trade / 100.0))
+        return minimum
+
     def _execute_trade(self, symbol: str, shares_delta: float, price: float, today: pd.Timestamp, reason: str) -> None:
-        cost_rate = (
-            self.cost_bps + self._impact_bps(symbol, abs(shares_delta) * price, today)
-        ) / 10_000
+        cost_rate = self._taux_de_cout(symbol, abs(shares_delta) * price, today)
         pos = self.positions.get(symbol)
 
         if shares_delta > 0:  # achat (nouvelle position ou renforcement)
@@ -975,7 +1062,11 @@ class BacktestEngine:
                 # agrégée franchit le seuil de toute façon) : c'est précisément
                 # ce qui en faisait un défaut latent, visible seulement dans les
                 # régimes à signal rare.
-                if target_dollar >= MIN_TRADE_DOLLAR:
+                # Le seuil de VIABILITÉ, pas le garde-fou anti-poussière : une
+                # candidate que la commission minimum rend inachetable n'a
+                # aucune raison de déclencher un repesage pour être achetée --
+                # elle ne le serait pas.
+                if target_dollar >= self._montant_minimal(nav):
                     if force_sur_entree:
                         return True
                     # Coupe-circuit levé : l'entrée neuve reste un ÉCART -- une
