@@ -1023,6 +1023,69 @@ baisse régulière.
 Pour revenir au régime optimisé sur le Sharpe, sans toucher à la
 configuration : `09_backtest.py --vol-target-pct 0`.
 
+#### `valuation_gap_combined_ancre` : 72 % de transactions en moins
+
+**Le constat de départ.** La stratégie combinée passe 39 044 ventes pour
+2 568 thèses : **93,4 % des ventes sont des allègements de rebalancement**, pas
+des décisions. La zone de non-négociation était censée les filtrer. Le
+balayage montre qu'elle ne le fait pas :
+
+| bande | Sharpe | ventes | dont rebalancement |
+|---|---|---|---|
+| 0 (désactivée) | 0,970 | 63 886 | 61 318 |
+| 15 (retenue) | 0,977 | 39 044 | 36 476 |
+| 30 / 50 / 100 / aucune | 0,978 | 39 022 | 36 454 |
+
+Élargir la bande de 15 à l'infini change **22 ventes sur 39 044**. Ce n'est pas
+un réglage, c'est un plancher.
+
+**La cause.** `engine._drift_is_material` contenait un coupe-circuit : toute
+candidate encore absente du portefeuille dont la cible dépasse le trade minimum
+renvoyait `True`, donc forçait le repesage intégral quelle que soit la bande.
+Comme des dépôts SEC amènent des candidates neuves 2 624 séances sur 2 936, la
+bande n'était consultée que les jours sans nouveauté.
+
+**Le changement, réservé à cette stratégie.** `Strategy` déclare désormais
+`entree_neuve_force_repesage`, sur le modèle de `signal_source` — une propriété
+de la thèse, pas une option d'exécution. Les trois stratégies existantes la
+laissent à `True` et sont **bit-identiques** (test de non-régression de bout en
+bout). `valuation_gap_combined_ancre` la met à `False` : une candidate neuve
+compte alors dans la dérive comme n'importe quel écart, mais ne décide plus
+seule. Le défaut latent que le coupe-circuit corrigeait — une candidate seule
+jamais achetée — est repris par un amorçage sur portefeuille vide.
+
+| | combinée | **ancrée** |
+|---|---|---|
+| Exécutions | 77 774 | **21 689** (−72 %) |
+| Ventes de rebalancement | 36 476 | **8 376** (−77 %) |
+| Séances sans repesage | 44,7 % | **85,7 %** |
+| Rotation annualisée | 892 % | 733 % |
+| Sharpe plein échantillon | 0,977 | 0,954 |
+| Sharpe apprentissage | 1,017 | 0,965 |
+| **Sharpe hors échantillon** | 0,910 | **0,935** |
+| Max drawdown | −36,10 % | −35,54 % |
+| CAGR | 19,48 % | 18,44 % |
+| Achats infinançables | 2,23 % | **0,79 %** |
+
+**Ce que ça établit, et ce que ça n'établit pas.** Les transactions baissent de
+72 % pour un écart de Sharpe apparié de −0,019 en plein échantillon
+(IC [−0,068, +0,037], p = 0,74) : **indiscernable de zéro**. La direction est
+intéressante — le Sharpe d'apprentissage baisse (1,017 → 0,965) pendant que
+celui de test monte (0,910 → 0,935, p = 0,20), signature d'un mécanisme qui
+sur-ajustait — mais rien de tout cela n'est significatif, et il ne faut pas le
+présenter autrement.
+
+La crainte qui avait fait rejeter la bande par ligne — affamer les achats — ne
+se matérialise pas : la part de montant d'achat infinançable **baisse**, de
+2,23 % à 0,79 %, parce que le portefeuille cesse de dépenser son cash en
+allers-retours.
+
+**Ce qui reste à faire.** La cause première est la renormalisation de
+`base.capped_weights` (`poids = conviction / somme`), qui fait qu'un seul dépôt
+déplace réellement les 82 cibles. Lever le coupe-circuit ne supprime que les
+repesages dont la dérive agrégée reste sous le seuil. Une pondération qui ne se
+renormalise pas est l'étape suivante.
+
 #### Ce qui reste bloqué
 
 `04c` et `07b` ont besoin d'un accès à EDGAR pour reconstruire leurs fichiers à

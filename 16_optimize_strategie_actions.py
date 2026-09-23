@@ -821,7 +821,12 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
         "Un Sharpe sous son plancher de bruit n'est pas distinguable de la sélection elle-même.",
         best.get("sharpe_ratio") or float("nan"),
         best.get("sharpe_noise_floor") or float("nan"),
-        len(results),
+        # Le nombre d'essais RÉELLEMENT utilisé pour le plancher et le déflaté,
+        # `--n-trials-prior` compris. Afficher `len(results)` faisait dire au
+        # rapport « pour 864 essais » alors que les deux valeurs de la même
+        # phrase en portaient 2182 -- soit exactement le compteur que cette
+        # option existe pour ne plus remettre à zéro.
+        len(results) + max(getattr(args, "n_trials_prior", 0) or 0, 0),
         best.get("deflated_sharpe_ratio") or float("nan"),
     )
 

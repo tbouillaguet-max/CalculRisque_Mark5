@@ -939,6 +939,24 @@ class BacktestEngine:
         cible, pas sur le signal."""
         if self.rebalance_band_pct <= 0 or nav <= 0:
             return True
+
+        # Déclaré par la STRATÉGIE, comme `signal_source` : une stratégie dont
+        # les cibles ne bougent pas quand une candidate apparaît n'a aucune
+        # raison de repeser tout le portefeuille pour l'acheter. `getattr` avec
+        # True par défaut : les trois stratégies actions existantes, et toute
+        # classe de test qui n'hérite pas de Strategy, gardent EXACTEMENT le
+        # comportement d'avant.
+        force_sur_entree = getattr(self.strategy, "entree_neuve_force_repesage", True)
+
+        # AMORÇAGE, et seulement quand le coupe-circuit est levé. Sans position
+        # en portefeuille, la dérive ne peut plus s'accumuler : une candidate
+        # dont la cible reste sous le seuil ne serait alors JAMAIS achetée, et
+        # la zone cesserait d'être un filtre de coût pour devenir un filtre de
+        # signal. C'est le défaut que le coupe-circuit corrigeait ; le lever
+        # exige de le corriger autrement.
+        if not force_sur_entree and not self.positions:
+            return True
+
         drift = 0.0
         for symbol, target_dollar in targets.items():
             pos = self.positions.get(symbol)
@@ -958,7 +976,15 @@ class BacktestEngine:
                 # ce qui en faisait un défaut latent, visible seulement dans les
                 # régimes à signal rare.
                 if target_dollar >= MIN_TRADE_DOLLAR:
-                    return True
+                    if force_sur_entree:
+                        return True
+                    # Coupe-circuit levé : l'entrée neuve reste un ÉCART -- une
+                    # position absente est bien une déviation à la cible -- mais
+                    # elle ne décide plus à elle seule. Une grosse candidate
+                    # franchit encore le seuil toute seule ; une petite attend
+                    # que la dérive s'accumule, ce qui est le comportement
+                    # demandé.
+                    drift += target_dollar
                 continue
             current = pos.shares * self._mark_price(pos, today)
             drift += abs(target_dollar - current)

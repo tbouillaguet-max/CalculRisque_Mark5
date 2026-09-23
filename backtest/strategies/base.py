@@ -331,6 +331,24 @@ class Strategy(ABC):
     # éviter.
     signal_source: str = "dcf"
 
+    # Une candidate neuve doit-elle forcer le repesage de TOUT le portefeuille,
+    # quelle que soit la zone de non-négociation ?
+    #
+    # True par défaut, et c'est le comportement historique : les poids sont
+    # proportionnels à l'écart RAPPORTÉ À LA SOMME des écarts, donc l'arrivée
+    # d'une candidate déplace réellement les cibles de toutes les lignes --
+    # les repeser n'est pas un caprice. Le coupe-circuit répare aussi un défaut
+    # latent : sans lui, une candidate SEULE dont la cible reste sous le seuil
+    # ne serait jamais achetée (cf. engine._drift_is_material).
+    #
+    # Le coût de ce choix est mesuré : des dépôts SEC tombent 2624 séances sur
+    # 2936, donc la zone est court-circuitée presque tous les jours et devient
+    # inerte au-delà de 15 points -- élargir la bande de 15 à l'infini ne
+    # change que 22 ventes sur 39044. Une stratégie qui veut vraiment moins
+    # négocier doit donc lever ce coupe-circuit, et assumer de corriger le
+    # défaut latent autrement.
+    entree_neuve_force_repesage: bool = True
+
     def __init__(self, **params):
         self.params = params
 
