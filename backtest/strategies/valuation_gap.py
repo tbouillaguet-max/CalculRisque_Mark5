@@ -33,6 +33,11 @@ class ValuationGapDCFStrategy(Strategy):
         # comportement d'origine de cette stratégie ; le réglage existe pour
         # être balayable, pas pour changer le défaut en douce.
         max_weight_per_sector_pct: float = 0.0,
+        # Ancre de conviction : bascule sur la pondération NON RENORMALISANTE
+        # (cf. base.poids_ancres). None garde la pondération historique, donc
+        # cette stratégie et ses filles ne changent pas tant qu'aucune ne la
+        # demande explicitement.
+        conviction_anchor: float | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -42,8 +47,10 @@ class ValuationGapDCFStrategy(Strategy):
             max_positions=max_positions,
             rank_weighting=rank_weighting,
             max_weight_per_sector_pct=max_weight_per_sector_pct,
+            conviction_anchor=conviction_anchor,
             **kwargs,
         )
+        self.conviction_anchor = conviction_anchor
         self.entry_threshold_pct = entry_threshold_pct
         self.vol_weight_exponent = vol_weight_exponent
         self.max_positions = max_positions
@@ -80,4 +87,5 @@ class ValuationGapDCFStrategy(Strategy):
             max_weight_per_sector_pct=self.max_weight_per_sector_pct,
             vol_weight_exponent=self.vol_weight_exponent,
             rank_weighting=self.rank_weighting,
+            conviction_anchor=self.conviction_anchor,
         )

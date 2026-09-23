@@ -54,6 +54,11 @@ def _moteur(strategie=None, capital: float = 1_000_000.0, **kwargs) -> BacktestE
         fallback_universe_symbols={"AAA", "BBB"},
         strategy=strategie or _Poids({"AAA": 1.0}), initial_capital=capital,
         cost_bps=10.0, stop_loss_pct=-99.0, take_profit_pct=1e9, rebalance_band_pct=0.0,
+        # Les trois réglages sont ÉPINGLÉS À ZÉRO ici, et chaque test active
+        # ceux qu'il mesure. Les laisser hériter de config rendrait ces tests
+        # dépendants d'un défaut qui a déjà changé une fois : ils mesureraient
+        # la configuration du jour au lieu du mécanisme.
+        min_commission_dollar=0.0, min_trade_pct_of_nav=0.0, max_fee_pct_of_trade=0.0,
     )
     base.update(kwargs)
     return BacktestEngine(**base)
@@ -62,17 +67,24 @@ def _moteur(strategie=None, capital: float = 1_000_000.0, **kwargs) -> BacktestE
 # --------------------------------------------------------------------------- #
 # Les défauts ne changent rien
 # --------------------------------------------------------------------------- #
-def test_les_trois_reglages_sont_neutres_par_defaut():
-    """Ils touchent le chemin d'exécution de TOUS les runs : à 0, le moteur
-    doit se comporter exactement comme avant, sinon les chiffres de référence
-    du README deviennent faux en silence."""
-    assert config.BACKTEST_MIN_COMMISSION_DOLLAR == 0.0
-    assert config.BACKTEST_MIN_TRADE_PCT_OF_NAV == 0.0
-    assert config.BACKTEST_MAX_FEE_PCT_OF_TRADE == 0.0
+def test_les_trois_reglages_sont_actifs_par_defaut():
+    """ADOPTÉS après mesure : sur la configuration de référence, ils retirent
+    deux tiers des exécutions (77 756 -> 25 402 sur la combinée) en déplaçant
+    le Sharpe de 0,002 -- écart apparié p = 0,79, intervalle large de cinq
+    millièmes. Le test les fige : y revenir changerait tous les chiffres du
+    README sans qu'aucun autre test n'échoue."""
+    assert config.BACKTEST_MIN_COMMISSION_DOLLAR == 1.0
+    assert config.BACKTEST_MIN_TRADE_PCT_OF_NAV == 0.05
+    assert config.BACKTEST_MAX_FEE_PCT_OF_TRADE == 1.0
 
+
+def test_a_zero_le_moteur_retrouve_son_comportement_proportionnel():
+    """L'échappatoire doit rester praticable : c'est elle qui reproduit les
+    chiffres historiques du dépôt."""
     m = _moteur()
     assert m._montant_minimal(1_000_000.0) == MIN_TRADE_DOLLAR
     assert m._taux_de_cout("AAA", 10_000.0, m.calendar[20]) == pytest.approx(10.0 / 10_000)
+    assert m._taux_de_cout("AAA", 7.0, m.calendar[20]) == pytest.approx(10.0 / 10_000)
 
 
 # --------------------------------------------------------------------------- #

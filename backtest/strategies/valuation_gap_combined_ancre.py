@@ -63,6 +63,7 @@ python 09_backtest.py --strategy valuation_gap_combined_ancre \\
 
 from __future__ import annotations
 
+import config
 from backtest.strategies.base import register_strategy
 from backtest.strategies.valuation_gap_combined import ValuationGapCombinedStrategy
 
@@ -79,3 +80,16 @@ class ValuationGapCombinedAncreeStrategy(ValuationGapCombinedStrategy):
     faire de la place."""
 
     entree_neuve_force_repesage = False
+
+    def __init__(self, *args, conviction_anchor=None, **kwargs):
+        # L'ancre de conviction est le SECOND levier, et le seul qui attaque la
+        # racine : le coupe-circuit levé supprime des ordres, l'ancre réduit
+        # l'AMPLITUDE de ce que chaque dépôt déplace. Les deux se cumulent, et
+        # cette stratégie est le seul endroit où on les mesure ensemble.
+        #
+        # Le défaut vient de config et non d'une constante écrite ici : l'ancre
+        # se CALIBRE sur l'exposition moyenne obtenue, donc elle doit pouvoir
+        # bouger sans toucher au code.
+        if conviction_anchor is None:
+            conviction_anchor = config.BACKTEST_CONVICTION_ANCHOR
+        super().__init__(*args, conviction_anchor=conviction_anchor, **kwargs)

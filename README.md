@@ -1226,10 +1226,58 @@ précède. Les ordres supprimés étaient de la poussière, et la preuve qu'ils
 n'étaient que ça, c'est que les retirer ne déplace pas le Sharpe d'un
 millième — ni dans un sens ni dans l'autre.
 
-**Conclusion pratique : la tarification réaliste est à activer.** Elle rend le
-backtest plus proche de l'exécution réelle, divise les ordres par trois, et ne
-coûte rien de mesurable. Elle reste à 0 par défaut uniquement pour que les
-chiffres historiques du dépôt restent reproductibles à l'identique.
+**La tarification réaliste est donc ACTIVÉE PAR DÉFAUT** depuis cette mesure :
+`BACKTEST_MIN_COMMISSION_DOLLAR = 1.0`, `BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.05`,
+`BACKTEST_MAX_FEE_PCT_OF_TRADE = 1.0`. Les trois restent réglables par run
+(`--min-commission-dollar 0 …` rend le comportement purement proportionnel, qui
+a produit les chiffres historiques du dépôt).
+
+#### La pondération ancrée : mesurée, et écartée
+
+Le dernier levier identifié, et le seul qui attaquait la racine. Plutôt que de
+supprimer des ordres, il réduit l'**amplitude** de ce que chaque dépôt déplace :
+`poids_i = min(conviction_i / ancre, plafond)`, sans renormalisation, au lieu de
+`conviction_i / SOMME(convictions)`. L'arrivée d'une candidate laisse alors les
+autres cibles strictement inchangées et le solde va en cash.
+
+L'ancre est une ÉCHELLE, pas une cible d'allocation, et elle se calibre sur
+l'exposition obtenue — trop petite, la somme des poids dépasse 1, le moteur
+renormalise, et le couplage revient sans qu'on s'en aperçoive :
+
+| ancre | exposition | Sharpe | CAGR | max DD | exécutions |
+|---|---|---|---|---|---|
+| 1 000 | 86,4 % | 0,802 | 13,01 % | — | 14 928 |
+| 4 000 | 86,4 % | 0,857 | 13,90 % | −28,12 % | 14 962 |
+| **8 000** | 79,5 % | **0,863** | 13,21 % | −25,55 % | 12 558 |
+| 12 000 | 58,9 % | 0,775 | 9,85 % | −20,73 % | 8 763 |
+| 16 000 | 45,0 % | 0,631 | 7,05 % | −17,39 % | 7 243 |
+| 40 000 | 15,1 % | 0,104 | 2,41 % | −6,20 % | 3 603 |
+
+En dessous de 8 000 l'ancre ne mord pas : l'exposition reste plate à 86 %, la
+somme dépasse 1 et le moteur renormalise. Au-delà, le portefeuille part en cash
+et le rendement s'effondre. L'optimum est à 8 000, et il ne suffit pas :
+
+| | Sharpe | appr. | test | max DD | CAGR | exécutions | friction |
+|---|---|---|---|---|---|---|---|
+| **Combinée (référence)** | **0,930** | 1,003 | **0,817** | −26,62 % | **15,20 %** | 25 402 | 197 441 $ |
+| Ancrée, pondération historique | 0,875 | 0,977 | 0,722 | −26,03 % | 14,08 % | 14 181 | 163 666 $ |
+| Ancrée + ancre 8 000 | 0,863 | 0,951 | 0,742 | −25,55 % | 13,21 % | **12 558** | **137 976 $** |
+
+Écarts appariés contre la référence : −0,051 (ancrage seul, p = 0,95), −0,054
+(ancre 8 000, p = 0,86), −0,071 (ancre 4 000, p = 0,93). **Aucun n'est
+significatif — les trois intervalles contiennent zéro — mais les trois vont
+dans le même sens, et le Sharpe hors échantillon baisse aussi** (0,817 → 0,742).
+Ce n'est donc pas une histoire de sur-ajustement : la pondération ancrée retire
+du signal.
+
+`BACKTEST_CONVICTION_ANCHOR` reste donc à `None`. Le mécanisme est implémenté,
+calibré et testé ; il n'est pas retenu, comme la pondération par le risque et le
+multiple mérité avant lui.
+
+**Ce que tout ce fil aura établi** : les trois leviers successifs — zone de
+non-négociation élargie, levée du coupe-circuit, pondération ancrée — réduisent
+les transactions de 45 à 70 % sans jamais améliorer le Sharpe. La friction
+n'était pas ce qui limitait cette stratégie.
 
 L'ancrage, lui, ne suit pas : sous la même tarification et avec la cible de
 volatilité, `valuation_gap_combined_ancre` rend 0,875 de Sharpe contre 0,930

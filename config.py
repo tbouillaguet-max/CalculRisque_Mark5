@@ -633,14 +633,14 @@ BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simp
 #   1. Commission MINIMUM par exécution, en dollars. Le coût d'un ordre devient
 #      max(notionnel x bps, ce minimum). 1,0 = 1 $ à l'achat et 1 $ à la vente,
 #      soit 2 $ l'aller-retour.
-BACKTEST_MIN_COMMISSION_DOLLAR = 0.0
+BACKTEST_MIN_COMMISSION_DOLLAR = 1.0
 #
 #   2. Plancher de taille d'ordre RELATIF au NAV, en %. Un plancher absolu ne
 #      tient pas à l'échelle : MIN_TRADE_DOLLAR = 1 $ vaut 0,000036 % d'un NAV
 #      de 2,8 M$ et ne coupe rigoureusement rien. Mesuré sur la stratégie
 #      combinée, 0,05 % coupe 77 % des ordres pour 24 % du volume négocié --
 #      beaucoup d'ordres, peu d'argent : c'est la poussière.
-BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.0
+BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.05
 #
 #   3. Part MAXIMALE du montant d'un ordre que la commission minimum a le droit
 #      de représenter. C'est le critère de VIABILITÉ, et il découle du point 1 :
@@ -654,7 +654,31 @@ BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.0
 #      l'emprisonnerait dans le portefeuille pour toujours. Un plancher est un
 #      filtre de coût sur ce qu'on CHOISIT de faire, pas sur ce qu'on doit
 #      solder (cf. engine._execute_pending_orders).
-BACKTEST_MAX_FEE_PCT_OF_TRADE = 0.0
+BACKTEST_MAX_FEE_PCT_OF_TRADE = 1.0
+
+# ----------------------------------------------------------------------------
+# Pondération ANCRÉE : des cibles qui ne dépendent pas des autres candidates
+# ----------------------------------------------------------------------------
+# LE PROBLÈME QUE ÇA ATTAQUE. `base.capped_weights` calcule
+# `poids = conviction / SOMME(convictions)`. Un seul dépôt SEC change donc le
+# dénominateur, et avec lui la cible de TOUTES les lignes du portefeuille --
+# c'est la cause première des 93 % de ventes qui ne sont que du repesage. Ni la
+# zone de non-négociation ni la levée du coupe-circuit ne peuvent rien contre
+# ça : elles suppriment des ordres, elles ne réduisent pas l'AMPLITUDE de ce
+# que chaque dépôt déplace.
+#
+# LA VARIANTE. `poids_i = min(conviction_i / ancre, plafond)`, sans
+# renormalisation : la cible d'une ligne ne dépend plus que de sa propre
+# conviction. L'arrivée d'une candidate laisse les autres cibles strictement
+# inchangées, et le solde non alloué va en cash.
+#
+# L'ANCRE EST UNE ÉCHELLE, pas une cible d'allocation : c'est la conviction
+# qu'il faut pour peser un point de portefeuille. Trop grande, le portefeuille
+# dort en cash ; trop petite, la somme des poids dépasse 1 et le moteur
+# renormalise -- ce qui rétablit exactement le couplage qu'on voulait supprimer.
+# Sa valeur se CALIBRE sur l'exposition moyenne obtenue, pas sur une intuition.
+# None rend la pondération historique.
+BACKTEST_CONVICTION_ANCHOR = None
 
 # Un signal DCF (10-K annuel) n'est considéré comme une base valable pour une
 # NOUVELLE entrée que s'il a été publié il y a moins de ce nombre de jours ;

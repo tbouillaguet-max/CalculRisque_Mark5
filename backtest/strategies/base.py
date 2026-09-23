@@ -209,6 +209,39 @@ def capped_weights(conviction: pd.Series, cap_pct: float | None = None, max_iter
     return pd.Series(valeurs, index=weights.index, name=weights.name)
 
 
+def poids_ancres(
+    conviction: pd.Series, ancre: float, cap_pct: float | None = None,
+) -> pd.Series:
+    """Poids ANCRÉS : `poids_i = min(conviction_i / ancre, plafond)`, sans
+    aucune renormalisation.
+
+    CE QUE ÇA CHANGE, ET POURQUOI C'EST LA RACINE. `capped_weights` divise par
+    la SOMME des convictions : l'arrivée d'une candidate change le
+    dénominateur, donc la cible de toutes les lignes à la fois. Mesuré sur
+    2015-2026, c'est ce qui produit 93 % de ventes qui ne sont que du
+    repesage. Ici le dénominateur est une CONSTANTE : une candidate neuve
+    laisse les autres cibles strictement inchangées, et ne déclenche que son
+    propre achat.
+
+    LE SOLDE VA EN CASH, délibérément. La somme des poids n'a aucune raison de
+    valoir 1, et la forcer à 1 rétablirait le couplage qu'on vient de
+    supprimer. L'engine sait déjà gérer un budget partiellement alloué (il ne
+    normalise que vers le BAS, et seulement si la somme dépasse 1).
+
+    D'OÙ LE POINT DE VIGILANCE : si l'ancre est trop petite, la somme dépasse 1
+    en permanence, le moteur renormalise, et on retombe exactement sur la
+    pondération historique sans s'en apercevoir. L'ancre se calibre sur
+    l'exposition moyenne obtenue -- c'est la seule façon de vérifier qu'elle
+    fait son travail."""
+    if not ancre or ancre <= 0:
+        raise ValueError(f"Ancre de conviction invalide : {ancre!r} (attendu > 0).")
+    cap = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT if cap_pct is None else cap_pct
+    poids = conviction.clip(lower=0.0) / float(ancre)
+    if cap and cap > 0:
+        poids = poids.clip(upper=cap / 100.0)
+    return poids
+
+
 def top_n_candidates(candidates: pd.DataFrame, conviction: pd.Series, max_positions: int | None) -> pd.Index:
     """Index des `max_positions` meilleures convictions, ou tout l'index si le
     plafond est absent ou inatteignable.
@@ -260,6 +293,9 @@ def construire_poids(
     max_weight_per_sector_pct: float | None = None,
     vol_weight_exponent: float = 0.0,
     rank_weighting: bool = False,
+    # Ancre de conviction : bascule sur la pondération NON RENORMALISANTE
+    # (cf. poids_ancres). None garde la pondération historique.
+    conviction_anchor: float | None = None,
 ) -> dict[str, float]:
     """Étapes de construction de portefeuille communes aux stratégies ACTIONS,
     dans l'ordre où elles doivent s'appliquer.
@@ -301,7 +337,10 @@ def construire_poids(
     if candidates.empty:
         return {}
 
-    weights = capped_weights(conviction, cap_pct=max_weight_pct)
+    weights = (
+        poids_ancres(conviction, conviction_anchor, cap_pct=max_weight_pct)
+        if conviction_anchor else capped_weights(conviction, cap_pct=max_weight_pct)
+    )
     if "sector" in candidates.columns:
         weights = cap_per_sector(weights, candidates["sector"], max_weight_per_sector_pct)
     return dict(zip(candidates["symbol"], weights))
@@ -348,6 +387,15 @@ class Strategy(ABC):
     # négocier doit donc lever ce coupe-circuit, et assumer de corriger le
     # défaut latent autrement.
     entree_neuve_force_repesage: bool = True
+
+    # Ancre de conviction : bascule sur la pondération NON RENORMALISANTE
+    # (cf. poids_ancres). Déclarée ICI, sur la classe de base, et pas seulement
+    # sur les stratégies qui l'utilisent : toutes les stratégies actions ne
+    # descendent pas de ValuationGapDCFStrategy -- valuation_gap_sector_neutral
+    # hérite directement de Strategy --, si bien qu'un garde-fou « aucune
+    # stratégie existante n'a d'ancre » plantait sur AttributeError au lieu de
+    # vérifier quoi que ce soit. None = pondération historique.
+    conviction_anchor: float | None = None
 
     def __init__(self, **params):
         self.params = params

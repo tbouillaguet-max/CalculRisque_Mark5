@@ -48,6 +48,13 @@ def _evt(symbol: str, published: pd.Timestamp, gap_pct: float = 100.0) -> dict:
 def _moteur(panel: PricePanel, events: pd.DataFrame, strategy: Strategy, **kwargs) -> BacktestEngine:
     defaults = dict(
         universe_history=None, initial_capital=1_000_000.0, cost_bps=0.0,
+        # Tarification épinglée à ZÉRO, cohérente avec cost_bps=0 : ces
+        # tests isolent une mécanique (réduction au prorata, zone de
+        # non-négociation), pas un modèle de coût. Laisser la commission
+        # minimum de 1 $ héritée de config sur un moteur à coût nul en
+        # ferait le SEUL coût du run, et la mécanique mesurée deviendrait
+        # illisible derrière un forfait d'un dollar par ordre.
+        min_commission_dollar=0.0, min_trade_pct_of_nav=0.0, max_fee_pct_of_trade=0.0,
         stop_loss_pct=-99.0, take_profit_pct=1e6, momentum_min_pct=None,
     )
     defaults.update(kwargs)
