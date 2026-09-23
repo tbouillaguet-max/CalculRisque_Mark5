@@ -393,6 +393,57 @@ reste disponible et journalise ce qu'il doit abandonner.
 Si le test conclut **non**, il n'y a rien à brancher — et c'est une réponse,
 pas un échec.
 
+## L'extraction SEC ne se paie qu'une fois
+
+Les quatre scripts qui interrogent la SEC (`04`, `04b`, `04c`, `07b`) sont
+tous **reprenables** : ce qui a été récupéré est écrit au fil de l'eau, une
+interruption ne fait perdre que les quelques tickers en cours, et un second run
+n'appelle pas la SEC pour ce qui est déjà là.
+
+```bash
+python 04_recuperation_10k.py --tickers data/universe/sp500_universe_full.csv
+# interrompu ? relance la même commande avec --resume
+python 04_recuperation_10k.py --tickers data/universe/sp500_universe_full.csv --resume
+```
+
+**Deux mécanismes distincts, et il faut les distinguer :**
+
+| | Ce qu'il protège | Fichier |
+|---|---|---|
+| **Reprise** (`--resume`) | Un run **interrompu** : on repart des tickers non traités | `progress_*.json` + `checkpoint_*.jsonl` |
+| **Throttle** (`--refresh-days`, défaut 30) | Un run **terminé** : on ne réinterroge pas ce qui est récent | `fetch_state_*.json` |
+
+Le premier couvre le Ctrl+C et la coupure réseau ; le second évite de repayer
+un run complet le lendemain. `--force-refresh` ignore le throttle,
+`--resume` ignore ce qui est déjà traité dans le run en cours.
+
+**Ce qui déclenche quand même un nouvel appel**, et c'est voulu :
+
+- un ticker en **échec** n'est jamais marqué « à jour » — un échec réseau doit
+  être réessayé au prochain run complet, pas ignoré pendant 30 jours ;
+- un ticker dont l'état dit « déjà interrogé » mais dont le parquet ne contient
+  rien est réinterrogé — sans quoi une ligne manquante le resterait pour
+  toujours ;
+- au-delà de `--refresh-days`, pour récupérer les dépôts de l'année écoulée.
+
+Le fichier de progression est écrit **atomiquement** (temporaire puis
+`replace`) et sauvegardé dans un `finally` : un Ctrl+C sauvegarde l'état réel,
+pas un point de contrôle périodique dépassé. Les lignes récupérées vont dans un
+JSONL *append-only*, relisible même après une interruption brutale — là où un
+parquet réécrit en bloc ne l'est pas.
+
+`04c` ajoute un troisième niveau qui lui est propre : un **cache par dépôt**
+(`cache_8k_mistral.jsonl`), qui évite de retélécharger ET de reclassifier un
+8-K déjà vu, même entre deux runs complets.
+
+> **Note historique.** `04` était le seul des quatre sans reprise : il
+> accumulait tout en mémoire et n'écrivait qu'à la fin, si bien qu'une
+> interruption perdait l'intégralité du run — et le suivant repartait de zéro,
+> l'état de suivi n'ayant jamais été sauvegardé. C'était aussi le plus long
+> (~500 entreprises sur l'univers complet, à quelques requêtes par seconde) :
+> le seul run qu'on ne pouvait pas se permettre de perdre était le seul qu'on
+> perdait. Couvert depuis par `tests/test_reprise_10k.py`.
+
 ## Configuration requise
 
 ```bash

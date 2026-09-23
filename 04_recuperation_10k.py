@@ -413,6 +413,85 @@ def save_fetch_state(path: Path, state: Dict[str, str]) -> None:
     tmp.replace(path)
 
 
+# ----------------------------------------------------------------------------
+# Checkpoint / reprise (même mécanique que 04b, 04c, 07b et 08)
+# ----------------------------------------------------------------------------
+# POURQUOI C'EST ARRIVÉ TARD, ET POURQUOI ÇA COMPTE. Ce script accumulait TOUT
+# en mémoire et n'écrivait `financials.parquet` et `fetch_state_10k.json` qu'à
+# la toute fin. Une interruption -- Ctrl+C, coupure réseau, machine en veille,
+# session distante fermée -- perdait donc l'INTÉGRALITÉ du run, et le suivant
+# repartait de zéro : `should_skip` ne peut ignorer un ticker que si l'état a
+# été sauvegardé, ce qui n'arrivait jamais sur un run interrompu.
+#
+# C'était le seul des quatre scripts SEC dans ce cas (04b, 04c et 07b ont leur
+# reprise depuis longtemps), et c'est justement le plus long : un backfill sur
+# l'univers COMPLET interroge companyfacts pour ~500 entreprises, plafonné à
+# quelques requêtes par seconde. Autrement dit, le seul run qu'on ne peut pas
+# se permettre de perdre était le seul qu'on perdait.
+#
+# Les lignes sont désormais écrites en JSONL au fil de l'eau, append-only :
+# utilisable même après une interruption brutale, là où un parquet réécrit en
+# bloc ne l'est pas.
+CHECKPOINT_EVERY = 20
+
+
+def _progress_path() -> Path:
+    return config.FINANCIALS_FILE.parent / "progress_10k.json"
+
+
+def _checkpoint_path() -> Path:
+    return config.FINANCIALS_FILE.parent / "checkpoint_10k.jsonl"
+
+
+def load_progress() -> set:
+    path = _progress_path()
+    if not path.exists():
+        return set()
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")).get("processed", []))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("Fichier de progression illisible (%s), on repart de zéro.", e)
+        return set()
+
+
+def save_progress(processed: set) -> None:
+    path = _progress_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    payload = {"processed": sorted(processed), "updated_at": datetime.now().isoformat(timespec="seconds")}
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def append_checkpoint(rows: List[dict]) -> None:
+    if not rows:
+        return
+    path = _checkpoint_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, default=str, ensure_ascii=False) + "\n")
+
+
+def load_checkpoint_rows() -> List[dict]:
+    path = _checkpoint_path()
+    if not path.exists():
+        return []
+    rows = []
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                # Un run tué en plein write laisse une ligne tronquée : on
+                # perd cette ligne-là, pas les milliers qui précèdent.
+                logger.warning("Ligne de checkpoint illisible ignorée (%s).", path)
+    return rows
+
+
 def should_skip(symbol: str, existing: pd.DataFrame, state: Dict[str, str], refresh_days: int) -> bool:
     """Un ticker est ignoré (aucun appel SEC) s'il a déjà des données en
     cache ET a été interrogé il y a moins de refresh_days jours. Un 10-K
@@ -442,6 +521,12 @@ def main() -> None:
     parser.add_argument(
         "--force-refresh", action="store_true",
         help="Ignore le throttle et interroge la SEC pour tous les tickers demandés.",
+    )
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Reprend un run interrompu là où il s'est arrêté, sans réinterroger la SEC pour "
+             "les tickers déjà traités. Sans cette option, un nouveau run repart de zéro et "
+             "efface le checkpoint précédent.",
     )
     parser.add_argument(
         "--workers", type=int, default=DEFAULT_WORKERS,
@@ -475,11 +560,23 @@ def main() -> None:
         logger.info("Cache existant chargé : %s (%d lignes, %d symboles).", config.FINANCIALS_FILE, len(existing), existing["symbol"].nunique())
 
     state = load_fetch_state(FETCH_STATE_FILE)
+    processed_keys: set = set()
+    if args.resume:
+        processed_keys = load_progress()
+        logger.info("Reprise : %d tickers déjà traités dans le run interrompu.", len(processed_keys))
+    else:
+        # Un run neuf repart de zéro : garder le checkpoint d'un run
+        # précédent ferait réécrire ses lignes comme si elles venaient d'être
+        # récupérées.
+        _progress_path().unlink(missing_ok=True)
+        _checkpoint_path().unlink(missing_ok=True)
+
     to_query = [
         t for t in symbols
-        if args.force_refresh or not should_skip(config.to_ib_symbol(t), existing, state, args.refresh_days)
+        if config.to_ib_symbol(t) not in processed_keys
+        and (args.force_refresh or not should_skip(config.to_ib_symbol(t), existing, state, args.refresh_days))
     ]
-    skip_count = len(symbols) - len(to_query)
+    skip_count = len(symbols) - len(to_query) - len(processed_keys)
 
     if not to_query:
         logger.info(
@@ -499,42 +596,69 @@ def main() -> None:
         if ticker.upper() not in cik_map:
             logger.warning("CIK introuvable pour %s, ignoré.", ticker)
 
-    all_frames = []
     ok_count, fail_count = 0, len(to_query) - len(with_cik)
+    since_checkpoint = 0
     now_iso = datetime.now().isoformat(timespec="seconds")
 
     logger.info("Interrogation de companyfacts sur %d threads...", workers)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(extract_financials_for_ticker, ticker, cik, session): ticker
-            for ticker, cik in with_cik
-        }
-        for done, future in enumerate(as_completed(futures), start=1):
-            ticker = futures[future]
-            df_ticker = future.result()
-            if df_ticker.empty:
-                # Pas de marquage dans `state` : un échec (réseau, CIK sans
-                # 10-K exploitable) doit être réessayé au prochain run, pas
-                # ignoré pendant --refresh-days jours.
-                fail_count += 1
-                continue
-            state[config.to_ib_symbol(ticker)] = now_iso
-            all_frames.append(df_ticker)
-            ok_count += 1
-            if done % 25 == 0 or done == len(futures):
-                logger.info("[%d/%d] tickers traités...", done, len(futures))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(extract_financials_for_ticker, ticker, cik, session): ticker
+                for ticker, cik in with_cik
+            }
+            # `as_completed` rend la main sur le thread PRINCIPAL : l'écriture
+            # du checkpoint reste donc séquentielle malgré le pool, sans
+            # verrou ni risque d'entrelacement dans le JSONL.
+            for done, future in enumerate(as_completed(futures), start=1):
+                ticker = futures[future]
+                symbol = config.to_ib_symbol(ticker)
+                # Une erreur sur CE ticker ne doit jamais faire perdre la
+                # progression acquise sur les précédents.
+                try:
+                    df_ticker = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("  -> ECHEC pour %s : %s (ticker ignoré, on continue)", ticker, exc)
+                    df_ticker = pd.DataFrame()
+
+                if df_ticker.empty:
+                    # Pas de marquage dans `state` : un échec (réseau, CIK sans
+                    # 10-K exploitable) doit être réessayé au prochain run, pas
+                    # ignoré pendant --refresh-days jours. Il EST en revanche
+                    # marqué `processed` : --resume reprend un run interrompu,
+                    # il ne rejoue pas les échecs de ce run-là.
+                    fail_count += 1
+                else:
+                    state[symbol] = now_iso
+                    append_checkpoint(df_ticker.to_dict("records"))
+                    ok_count += 1
+                processed_keys.add(symbol)
+
+                since_checkpoint += 1
+                if since_checkpoint >= CHECKPOINT_EVERY:
+                    save_progress(processed_keys)
+                    save_fetch_state(FETCH_STATE_FILE, state)
+                    since_checkpoint = 0
+                if done % 25 == 0 or done == len(futures):
+                    logger.info("[%d/%d] tickers traités...", done, len(futures))
+    finally:
+        # Toujours exécuté, y compris sur Ctrl+C : --resume doit repartir de
+        # l'état RÉEL et non d'un checkpoint périodique dépassé de vingt
+        # tickers.
+        save_progress(processed_keys)
+        save_fetch_state(FETCH_STATE_FILE, state)
 
     logger.info("Terminé. OK: %d | Échecs: %d | Déjà à jour (ignorés): %d", ok_count, fail_count, skip_count)
-    save_fetch_state(FETCH_STATE_FILE, state)
 
-    if not all_frames:
+    new_rows = load_checkpoint_rows()
+    if not new_rows:
         if existing.empty:
             logger.warning("Aucune donnée financière récupérée, pas de fichier de sortie généré.")
         else:
             logger.info("Rien de nouveau à écrire : fichier existant conservé tel quel (%s).", config.FINANCIALS_FILE)
         return
 
-    df_new = pd.concat(all_frames, ignore_index=True)
+    df_new = pd.DataFrame(new_rows)
     combined = pd.concat([existing, df_new], ignore_index=True) if not existing.empty else df_new
     combined = (
         combined.sort_values(["symbol", "year"])

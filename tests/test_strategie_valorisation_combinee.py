@@ -138,9 +138,26 @@ def test_le_dispatch_par_source_refuse_une_valeur_inconnue():
         data_loader.build_strategy_signal_events("multiples_maison")
 
 
+def _contenu_lfs_disponible(*chemins) -> bool:
+    """Vrai seulement si ces fichiers portent leur CONTENU et non un pointeur.
+
+    Tester `.exists()` ne suffit pas : un dépôt cloné sans `git lfs pull` a bien
+    les fichiers, mais ils contiennent 130 octets de pointeur, et pandas échoue
+    dessus par une erreur peu parlante (« Parquet magic bytes not found »).
+    C'est l'état normal d'un clone frais, pas une panne -- le test doit donc
+    être SAUTÉ, pas rouge."""
+    for chemin in chemins:
+        if not chemin.exists():
+            return False
+        with open(chemin, "rb") as f:
+            if f.read(40).startswith(b"version https://git-lfs"):
+                return False
+    return True
+
+
 @pytest.mark.skipif(
-    not config.VALORISATION_COMBINEE_FILE.exists() or not config.DCF_HISTORY_FILE.exists(),
-    reason="données du pipeline absentes (dépôt cloné sans contenu LFS)",
+    not _contenu_lfs_disponible(config.VALORISATION_COMBINEE_FILE, config.DCF_HISTORY_FILE),
+    reason="contenu LFS non rapatrié (dépôt cloné sans `git lfs pull`)",
 )
 def test_le_signal_combine_couvre_plus_d_entreprises_que_le_DCF_seul():
     """LE fait qui justifie cette stratégie, vérifié sur les données réelles :
