@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import hierarchie_multiples
 
 logger = logging.getLogger("backtest.data_loader")
 
@@ -370,13 +371,24 @@ def build_combined_signal_events(valorisation_combinee: pd.DataFrame) -> pd.Data
     return renamed[cols].dropna(subset=["gap_pct", "published_date"])
 
 
-def build_strategy_signal_events(signal_source: str) -> pd.DataFrame:
+def build_strategy_signal_events(signal_source: str, hierarchie=None) -> pd.DataFrame:
     """Événements de signal correspondant à la source déclarée par une
     stratégie (cf. `Strategy.signal_source`). Point d'entrée unique, pour que
-    ni 09_backtest.py ni l'optimiseur n'aient à connaître les tables."""
+    ni 09_backtest.py ni l'optimiseur n'aient à connaître les tables.
+
+    `hierarchie` ne concerne que la source "combinee" : le DCF n'a pas de
+    multiples à hiérarchiser. La demander sur "dcf" est une erreur d'appelant,
+    pas un cas à ignorer en silence -- on croirait mesurer un axe qui ne
+    s'applique pas."""
     if signal_source == "combinee":
-        return build_combined_signal_events(load_valorisation_combinee_history())
+        return build_combined_signal_events(
+            load_valorisation_combinee_history(hierarchie=hierarchie))
     if signal_source == "dcf":
+        if hierarchie is not None:
+            raise ValueError(
+                "Une hiérarchie de multiples n'a pas de sens sur la source 'dcf' : "
+                "ce signal ne combine aucun multiple."
+            )
         return build_signal_events(load_dcf_history())
     raise ValueError(
         f"Source de signal inconnue : {signal_source!r}. Attendu 'dcf' ou 'combinee' "
@@ -507,10 +519,18 @@ def signal_max_age_for(signal: dict, default: int) -> int:
     return by_period.get(signal.get("period_type"), default)
 
 
-def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
+def load_valorisation_combinee_history(path=None, hierarchie=None) -> pd.DataFrame:
     """Signal de la stratégie OPTIONS (multiples sectoriels par année en
     priorité, DCF en repli -- voir 06b_calcul_valorisation_combinee.py),
-    distinct de load_dcf_history (stratégie actions, DCF seul)."""
+    distinct de load_dcf_history (stratégie actions, DCF seul).
+
+    `hierarchie` rejoue la combinaison des multiples sous une autre hiérarchie
+    de fiabilité (cf. hierarchie_multiples), à partir des prix implicites que
+    06b stocke déjà. None garde ce que porte le parquet.
+
+    LA RECOMBINAISON PASSE AVANT LE FILTRE QUALITATIF ET LE dropna, comme dans
+    06b : `gap_pct` est recalculé, donc le filtrer avant reviendrait à écarter
+    des lignes sur un écart qui n'est plus celui du signal."""
     path = path or config.VALORISATION_COMBINEE_FILE
     if not path.exists():
         raise FileNotFoundError(
@@ -518,6 +538,8 @@ def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
             "(après 05_calcul_multiples.py et 07_calcul_dcf.py)."
         )
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    if hierarchie is not None:
+        df = hierarchie_multiples.recombiner(df, hierarchie)
     df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 

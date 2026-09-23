@@ -92,6 +92,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import hierarchie_multiples
 import warranted_multiple
 import sector_history
 
@@ -200,32 +201,22 @@ def combine_implied_prices(
     multiples -- par HIÉRARCHIE DE FIABILITÉ par défaut (cf.
     config.MULTIPLE_COMBINATION), médiane à plat si "flat".
 
-    En mode "tiers", chaque ligne n'utilise que le MEILLEUR rang disponible :
-    les multiples de résultats (P/E, EV/EBITDA) quand au moins un est
-    exploitable, EV/Sales seulement à défaut. À l'intérieur d'un rang, la
-    médiane -- pour deux valeurs, c'est leur moyenne.
+    LA MÉCANIQUE EST DANS hierarchie_multiples.py, et pas ici : l'optimiseur a
+    besoin de rejouer cette combinaison SANS régénérer ce parquet, pour comparer
+    les hiérarchies entre elles sur les mêmes données. Deux implémentations
+    divergeraient ; celle-là est la seule. Cette fonction ne garde que la
+    résolution du réglage de config et la validation de son nom, qui sont le
+    contrat de CE script.
 
-    Le calcul est vectorisé par rang plutôt que ligne à ligne : le nombre de
-    rangs est fixe (deux) alors que le nombre de lignes se compte en dizaines
-    de milliers."""
+    `MULTIPLE_RELIABILITY_TIERS` reste la table qui fait foi pour le mode
+    "tiers" : elle est modifiable sans toucher au catalogue de hiérarchies."""
     if combination is None:
         combination = config.MULTIPLE_COMBINATION
-    if combination == "flat":
-        return implied.median(axis=1, skipna=True)
-    if combination != "tiers":
+    if combination not in ("flat", "tiers"):
         raise ValueError(
             f"MULTIPLE_COMBINATION attend 'tiers' ou 'flat', reçu {combination!r}.")
-
-    tiers = config.MULTIPLE_RELIABILITY_TIERS
-    resultat = pd.Series(np.nan, index=implied.index, dtype=float)
-    for rang in sorted(set(tiers.get(col, max(tiers.values()) + 1) for col in implied.columns)):
-        colonnes = [c for c in implied.columns if tiers.get(c, max(tiers.values()) + 1) == rang]
-        if not colonnes:
-            continue
-        candidat = implied[colonnes].median(axis=1, skipna=True)
-        # Un rang ne sert qu'aux lignes qu'aucun rang MEILLEUR n'a servies.
-        resultat = resultat.where(resultat.notna(), candidat)
-    return resultat
+    table = None if combination == "flat" else config.MULTIPLE_RELIABILITY_TIERS
+    return hierarchie_multiples.combiner(implied, table)
 
 
 def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:

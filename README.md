@@ -689,16 +689,18 @@ appliquer le sien.
 ### Optimisation des réglages actions (`16_optimize_strategie_actions.py`)
 
 ```bash
-make optimize-actions                                    # DCF, 432 combinaisons, ~50 min sur 4 cœurs
+make optimize-actions                                    # DCF, 108 combinaisons, ~12 min sur 4 cœurs
+make optimize-actions STRATEGY_ACTIONS=valuation_gap_combined   # 432 : l'axe de hiérarchie s'ajoute
 make optimize-actions STRATEGY_ACTIONS=valuation_gap_sector_neutral
 python 16_optimize_strategie_actions.py --report-only data/backtest/<csv>   # relire sans relancer
-python 16_optimize_strategie_actions.py --max-holding-grid -1 120 180 270   # horizon sur mesure
+python 16_optimize_strategie_actions.py --multiple-hierarchy-grid flat tiers    # hierarchies au choix
+python 16_optimize_strategie_actions.py --max-holding-grid -1 120 180 270   # rebalayer l'horizon
 python 16_optimize_strategie_actions.py --stop-loss-grid -15 -25 -40 \
     --max-weight-grid 10 20                              # rebalayer les deux axes retirés
 ```
 
 Grid-search sur **cinq axes à la fois** — take-profit, seuil d'entrée, filtre
-momentum, zone de non-négociation, et **horizon de convergence**. Les quatre
+momentum, zone de non-négociation, et **hiérarchie des multiples**. Les quatre
 optimiseurs options font varier un paramètre par run, ce qui suffit quand les
 réglages sont séparables ; ici ils ne le sont pas (le seuil d'entrée déplace le
 nombre de lignes donc l'effet de la bande, la prise de gain déplace la rotation
@@ -706,8 +708,13 @@ donc la friction), et une descente axe par axe trouverait un optimum de
 coordonnée, pas un optimum.
 
 Quatre de ces axes sont des réglages d'**exécution** : ils disent *comment on
-négocie*. Le cinquième, l'horizon, est le seul qui porte sur le **signal** : il
-dit *combien de temps on croit à la thèse*.
+négocie*. Deux axes de **signal** ont été ajoutés depuis — ils disent *ce qu'on
+croit*, pas comment on l'exécute :
+
+| Axe de signal | Ce qu'il décide | Statut |
+|---|---|---|
+| `max_holding_days` | combien de temps on croit à la thèse | mesuré, **négatif**, réduit à la production |
+| `multiple_hierarchy` | lequel des trois multiples tranche | **balayé par défaut** |
 
 Le classement porte sur la **seule fenêtre d'apprentissage** (2015-2021), avec
 un plancher de rendement contre le SPY sur cette même fenêtre — maximiser un
@@ -811,9 +818,110 @@ du seuil d'entrée, déjà connu. Et le prix de l'axe est réel : le plancher de
 bruit du Sharpe déflaté passe de 0,983 à **1,004** (1 858 essais cumulés),
 pendant que le meilleur Sharpe plein échantillon reste à 0,925.
 
-L'axe reste dans la grille : il est le plus puissant qu'elle possède, et un
-garde-fou de non-régression sur une règle que quelqu'un finira par vouloir
-activer.
+**L'axe est ensuite réduit à sa valeur de production**, comme `stop_loss_pct` et
+`max_weight_pct` avant lui, et pour la même raison : une réponse connue et
+négative ne vaut pas un facteur quatre sur la grille, d'autant qu'élargir relève
+le plancher de bruit. Il reste balayable via `--max-holding-grid`.
+
+#### La hiérarchie des multiples, et ce qu'elle a révélé en chemin
+
+Trois multiples donnent trois valeurs théoriques pour la même action, et elles
+divergent : sur les **13 240 lignes** où P/E et EV/EBITDA coexistent, l'écart
+médian entre les deux vaut **19,5 points de cours** (45,9 au troisième
+quartile). Le choix de celui qui tranche est un réglage de **signal**, et
+jusqu'ici il n'avait jamais été mesuré — `MULTIPLE_COMBINATION` était fixé sur
+un argument de littérature (Liu, Nissim & Thomas 2002), pas sur ces données.
+
+| Hiérarchie | Qui tranche | Le pari |
+|---|---|---|
+| `flat` | la médiane des trois | aucun — EV/Sales, le moins fiable, départage dès qu'il tombe au milieu |
+| `tiers` | P/E et EV/EBITDA à égalité, moyennés | les deux multiples de résultats font jeu égal |
+| `pe_first` | P/E seul, EV/EBITDA en repli | le résultat net est la mesure la mieux arbitrée |
+| `ebitda_first` | EV/EBITDA seul, P/E en repli | l'EBITDA compare mieux des pairs aux dettes différentes |
+
+**La couverture est invariante** (87,06 % pour les quatre) : l'axe déplace la
+valeur, jamais le nombre de lignes valorisées. C'est ce qui en fait un axe
+propre — on ne mesure pas un effet de couverture déguisé en effet de multiple.
+
+`06b` stocke déjà les trois prix implicites, donc la combinaison se **rejoue au
+chargement** sans régénérer le parquet. La mécanique vit dans
+`hierarchie_multiples.py`, que `06b` et `backtest.data_loader` appellent tous
+les deux : deux implémentations finiraient par diverger, et l'écart ne se
+verrait que dans les chiffres.
+
+##### Le parquet en production ne porte pas ce que la configuration dit
+
+En vérifiant que la recombinaison reproduisait bien le fichier, elle ne l'a
+reproduit que sous `flat` — **exactement, à 0,000e+00 sur les 27 674 lignes** —
+alors que `config.MULTIPLE_COMBINATION` vaut `tiers` depuis toujours.
+
+**Tous les backtests `combinee` de ce dépôt ont donc tourné sur la médiane à
+trois voix**, pas sur la hiérarchie que la configuration documente et justifie.
+Ce n'est pas un bug de code : `06b` applique bien `tiers`. C'est un fichier de
+données qui n'a jamais été régénéré depuis.
+
+Deux conséquences assumées plutôt que corrigées en silence :
+
+- **la référence du test apparié est `flat`**, pas `tiers`. Comparer la grille à
+  une configuration qui n'a jamais tourné dirait ce qu'on aurait gagné contre un
+  système inexistant ;
+- **un test verrouille la contradiction** (`test_le_parquet_en_production_porte_flat_pas_tiers`).
+  Il tombera le jour où `06b` sera rejoué, et c'est son objet : forcer à relire
+  ce que la contradiction impliquait au lieu de la redécouvrir par accident.
+
+C'est le même motif que la leçon n° 2 ci-dessous — une protection documentée qui
+ne tournait pas —, et il ne s'est vu que parce que l'instrumentation exigeait de
+reproduire le fichier au bit près.
+
+##### Ce que l'axe a donné : rien d'établi, et un ordre qui s'inverse
+
+L'axe explique **6,9 %** de la variance (étendue des moyennes 0,019) — loin de
+`take_profit_pct` (51,1 %), au niveau du seuil d'entrée. Les autres axes fixés
+sur la production :
+
+| Hiérarchie | Sharpe test | Écart apparié | IC 95 % |
+|---|---|---|---|
+| `flat` *(production)* | 0,817 | — | — |
+| `tiers` | **0,846** | +0,002 | [−0,074, +0,078] |
+| `pe_first` | 0,836 | +0,002 | [−0,088, +0,090] |
+| `ebitda_first` | 0,782 | −0,012 | [−0,091, +0,066] |
+
+**Aucune n'est distinguable de ce qui tourne.** Les intervalles sont d'ailleurs
+deux fois plus larges que ceux des axes d'exécution (±0,08 contre ±0,014 pour
+l'horizon) : la hiérarchie change le signal sur 13 000 à 18 000 lignes, donc les
+courbes de NAV se décorrèlent (0,988 → 0,982) et le test apparié y perd
+mécaniquement de la précision. C'est le prix d'un axe qui touche au signal.
+
+**L'ordre s'inverse entre les deux fenêtres**, et c'est le plus parlant :
+
+| Hiérarchie | Rang en apprentissage | Rang hors échantillon |
+|---|---|---|
+| `ebitda_first` | **1er** | **4e** |
+| `pe_first` | 2e | 1er |
+| `flat` | 3e | 3e |
+| `tiers` | 4e | **2e** |
+
+Une inversion quasi complète est la signature du bruit, pas d'un effet. À
+retenir tout de même : **hors échantillon**, l'ordre obtenu
+(`pe_first` > `tiers` > `flat` > `ebitda_first`) est celui que prédit Liu,
+Nissim & Thomas — les multiples de résultats devant, P/E en tête. C'est la
+fenêtre qui n'a rien choisi qui le dit, ce qui rend l'indication intéressante ;
+elle reste non établie, et l'ordre inverse en apprentissage interdit d'en faire
+plus qu'une note.
+
+**Rien n'est changé.** `flat` reste ce qui tourne, faute de mesure qui justifie
+d'en sortir. La seule combinaison établie meilleure de toute la grille est
+d'ailleurs en `flat` (seuil d'entrée 30 %, +0,022) — la même qu'avant l'ajout
+de l'axe.
+
+**Un avertissement sur la sélection, au passage.** Le plateau atteint 94
+combinaisons et le départage par rotation y a retenu `ebitda_first` avec prise
+de gain désactivée : rotation 535 % contre 760 %, mais **−0,048 de Sharpe hors
+échantillon** (apparié −0,033, IC [−0,134, +0,071]). Le départage ne regarde pas
+la fenêtre de test — c'est voulu, elle ne vaut que tant qu'elle n'a rien choisi
+— mais un plateau qui grossit lui donne plus d'occasions de mal tomber. Le
+plancher de bruit, lui, est monté à **1,021** (2 290 essais) pour un meilleur
+Sharpe plein échantillon de 0,900.
 
 #### Deux axes retirés du défaut, et comment on l'a su
 
@@ -893,9 +1001,9 @@ Trois conséquences dans l'outil :
   hypothèse** : tout le backtest suppose 10 bps par aller simple ;
 - le rapport dit ce que la grille **établit** (un axe sur lequel tout le
   plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les cinq axes
-  balayés, **aucun n'est unanime** une fois l'horizon ajouté — le plateau passe
-  de 23 à 120 combinaisons, et la prise de gain, jusque-là unanime, ne l'est
-  plus. Un axe réduit à un point est affiché **non balayé**, jamais
+  balayés, **aucun n'est unanime** depuis l'ajout des axes de signal — le plateau
+  est passé de 23 à 94 combinaisons, et la prise de gain, jusque-là unanime, ne
+  l'est plus. Un axe réduit à un point est affiché **non balayé**, jamais
   « unanime » : il l'est par construction, et le lire comme un résultat serait
   une erreur ;
 - chaque combinaison est **comparée à la configuration en production** par
@@ -906,44 +1014,41 @@ Trois conséquences dans l'outil :
 
 L'erreur-type marginale ci-dessus vaut pour deux stratégies **indépendantes**.
 Les 432 combinaisons sont des variantes du **même** backtest : leurs courbes de
-NAV sont corrélées à **0,988**. Leur écart est apparié, et sa dispersion est
+NAV sont corrélées à **0,982**. Leur écart est apparié, et sa dispersion est
 bien plus faible que celle de chacun de ses termes.
 
 | | demi-largeur de l'intervalle |
 |---|---|
 | Erreur-type marginale (Sharpe 0,93 sur 11,6 ans) | 0,353 |
-| Intervalle **apparié** (médiane des 432) | **0,087** |
+| Intervalle **apparié** (médiane des 432) | **0,110** |
 
-Soit **quatre fois plus précis**, et la grille passe de « rien n'est
+Soit **trois fois plus précis**, et la grille passe de « rien n'est
 distinguable » à un résultat :
 
 | | combinaisons |
 |---|---|
-| Établies **meilleures** que la production (IC au-dessus de 0) | **2** |
-| Établies **pires** (IC au-dessous de 0) | 116 |
-| Indistinguables | 314 |
+| Établies **meilleures** que la production (IC au-dessus de 0) | **1** |
+| Établies **pires** (IC au-dessous de 0) | 25 |
+| Indistinguables | 406 |
 
 Les deux demi-largeurs portent sur la **même fenêtre**, et c'est indispensable :
 l'intervalle apparié est mesuré sur la courbe entière, et le comparer à
 l'erreur-type de la seule fenêtre d'apprentissage gonflerait le rapport de
 √(11,6/7) — 25 % de précision annoncée qui n'existerait pas.
 
-Les deux établies meilleures sont la **même** configuration — celle en place
-avec le seuil d'entrée à 30 % au lieu de 20 — avec et sans horizon :
+La seule établie meilleure est la configuration en place avec le **seuil
+d'entrée à 30 %** au lieu de 20 : écart apparié **+0,022** (IC [+0,009,
++0,037]), sur la hiérarchie de production. Le gain se retrouve **sur les deux
+fenêtres** — apprentissage 1,003 → 1,027, hors échantillon 0,817 → 0,837, pour
+une rotation en léger recul (760 % → 751 %). C'est un gain réel et minuscule :
+exactement ce que le test sert à dire, là où le classement laissait croire à un
+choix entre 432 réglages.
 
-| Combinaison | Écart apparié | IC 95 % |
-|---|---|---|
-| seuil 30 %, horizon 365 j | +0,023 | [+0,004, +0,044] |
-| seuil 30 %, **aucun horizon** | +0,022 | [+0,009, +0,037] |
+Elle survit à **trois élargissements successifs** de la grille — horizon de
+convergence, puis hiérarchie des multiples — et reste la seule que le test
+établisse. Aucun des deux axes de signal ajoutés ne l'a délogée ni complétée.
 
-L'horizon ajoute **+0,001 pour un intervalle deux fois plus large** : il
-n'apporte rien, le gain est celui du seuil d'entrée. Et ce gain se retrouve
-**sur les deux fenêtres** — apprentissage 1,003 → 1,027, hors échantillon
-0,817 → 0,837, pour une rotation en léger recul (760 % → 751 %). C'est un gain
-réel et minuscule : exactement ce que le test sert à dire, là où le classement
-laissait croire à un choix entre 432 réglages.
-
-**Lire l'intervalle, pas la p-value.** Celle de la variante sans horizon vaut
+**Lire l'intervalle, pas la p-value.** Celle de cette combinaison vaut
 0,0005, c'est-à-dire **exactement 1/2 000** : un seul rééchantillonnage sur
 2 000 est passé sous zéro. C'est le **plancher de résolution** du bootstrap,
 pas une mesure — la vraie p-value peut être bien plus petite, et le chiffre ne
@@ -954,12 +1059,12 @@ par blocs est légèrement libéral ; une p-value juste sous 0,05 ne vaut pas un
 preuve, un intervalle franchement à droite de zéro, oui).
 
 **Ce n'est pas adopté pour autant.** Le Sharpe plein échantillon du meilleur
-point vaut 0,925 pour un **plancher de bruit de 1,004** à 1 858 essais
+point vaut 0,900 pour un **plancher de bruit de 1,021** à 2 290 essais
 cumulés : au niveau du programme entier, il reste sous le seuil à partir duquel
 un résultat se distingue de la sélection elle-même. Le réglage en place ne
-bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004 en ajoutant
-l'axe d'horizon : chaque essai supplémentaire relève la barre, et c'est le prix
-à payer pour tout élargissement de grille.
+bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004 puis 1,021 au fil
+des deux élargissements : chaque essai supplémentaire relève la barre, et c'est
+le prix à payer pour tout axe ajouté.
 
 **Ce test ne sélectionne pas, et ne doit pas.** Il est mesuré sur la courbe
 entière, fenêtre de test comprise ; l'y faire entrer consommerait la seule
@@ -1053,10 +1158,10 @@ démission d'un PDG que l'élection routinière d'un administrateur).
 sur sept ans vaut 0,47 ; les 432 combinaisons de la grille y tiennent toutes.
 `metrics.paired_sharpe_difference` compare donc chaque combinaison à la
 configuration **en production** par bootstrap **apparié** — leurs courbes sont
-corrélées à 0,99, et les juger à l'aune de l'erreur-type marginale revient à
+corrélées à 0,98, et les juger à l'aune de l'erreur-type marginale revient à
 déclarer « non significatif » absolument tout. Branché sur la grille, le test
-fait passer celle-ci de « rien n'est distinguable » à **118 combinaisons sur
-432 établies différentes** de ce qui tourne.
+fait passer celle-ci de « rien n'est distinguable » à **26 combinaisons sur 432
+établies différentes** de ce qui tourne.
 
 **4. Une décroissance conditionnelle n'est pas un effet causal.** Le rendement
 annualisé des positions décroît de +79 %/an sous 30 jours à +4 %/an au-delà de

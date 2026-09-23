@@ -35,7 +35,7 @@ _opt = importlib.import_module("16_optimize_strategie_actions")
 def _args(**surcharges) -> argparse.Namespace:
     base = dict(entry_threshold_grid=None, momentum_grid=None, stop_loss_grid=None,
                 take_profit_grid=None, rebalance_band_grid=None, max_weight_grid=None,
-                max_holding_grid=None, quick=False)
+                max_holding_grid=None, multiple_hierarchy_grid=None, quick=False)
     return argparse.Namespace(**{**base, **surcharges})
 
 
@@ -43,9 +43,16 @@ def _args(**surcharges) -> argparse.Namespace:
 # L'axe est branché, et il mord
 # --------------------------------------------------------------------------- #
 def test_l_horizon_est_un_axe_de_la_grille():
+    """L'axe existe toujours ; son DÉFAUT a été réduit à la valeur de production
+    après mesure (cf. tests/test_grille_hierarchie). Il se balaie à la demande,
+    et c'est ce que fait ce test."""
     grille = _opt._build_grid(_args(), "valuation_gap_combined")
     assert "max_holding_days" in grille[0]
-    assert {c["max_holding_days"] for c in grille} == {None, 90, 180, 365}
+    assert {c["max_holding_days"] for c in grille} == {None}
+
+    balaye = _opt._build_grid(
+        _args(max_holding_grid=[-1.0, 90.0, 180.0, 365.0]), "valuation_gap_combined")
+    assert {c["max_holding_days"] for c in balaye} == {None, 90, 180, 365}
 
 
 def test_l_horizon_arrive_bien_au_moteur():
@@ -158,15 +165,20 @@ def test_une_valeur_negative_en_ligne_de_commande_vaut_desactive():
     assert {c["max_holding_days"] for c in grille} == {None, 200}
 
 
-def test_la_grille_reste_entiere_apres_ajout_de_l_axe():
-    """4 take-profit x 3 momentum x 3 seuils x 3 bandes x 4 horizons = 432."""
-    assert len(_opt._build_grid(_args(), "valuation_gap_combined")) == 432
+def test_la_grille_reste_entiere_quand_on_balaie_l_horizon():
+    """4 take-profit x 3 momentum x 3 seuils x 3 bandes = 108 par horizon."""
+    balaye = _opt._build_grid(
+        _args(max_holding_grid=[-1.0, 90.0, 180.0, 365.0],
+              multiple_hierarchy_grid=["flat"]), "valuation_gap_combined")
+    assert len(balaye) == 432
 
 
 def test_le_mode_quick_garde_les_bornes_de_l_axe():
     """--quick sert à valider le montage : s'il perdait l'axe, il validerait un
     montage qui n'est pas celui qui tourne."""
-    grille = _opt._build_grid(_args(quick=True), "valuation_gap_combined")
+    grille = _opt._build_grid(
+        _args(quick=True, max_holding_grid=[-1.0, 90.0, 180.0, 365.0]),
+        "valuation_gap_combined")
     assert {c["max_holding_days"] for c in grille} == {None, 365}
 
 

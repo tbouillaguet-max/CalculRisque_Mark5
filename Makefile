@@ -36,7 +36,7 @@ help:
 	@echo "  BACKTEST ET ANALYSE"
 	@echo "    make backtest      Backtest options (STRATEGY=$(STRATEGY), START=$(START))"
 	@echo "    make backtest-actions   Backtest de la strategie actions (DCF)"
-	@echo "    make optimize-actions   Grid-search des reglages actions (432 combinaisons, ~50 min)"
+	@echo "    make optimize-actions   Grid-search des reglages actions (108 combinaisons, ~12 min)"
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"

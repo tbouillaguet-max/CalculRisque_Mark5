@@ -107,6 +107,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import hierarchie_multiples
 from backtest import data_loader, metrics as metrics_mod
 from backtest.engine import BacktestEngine
 from backtest.strategies import STRATEGY_REGISTRY
@@ -179,7 +180,36 @@ DEFAULT_MAX_WEIGHT_GRID = [20.0]
 # CE TABLEAU NE CONCLUT RIEN À LUI SEUL : il est conditionné à la façon dont
 # chaque position s'est terminée. Seul le backtest complet, qui rejoue tout
 # l'historique sous la contrainte, répond -- c'est à ça que sert cet axe.
-DEFAULT_MAX_HOLDING_GRID = [None, 90, 180, 365]
+#
+# MESURÉ, PUIS RÉDUIT À SA VALEUR DE PRODUCTION. Balayé sur 432 combinaisons,
+# l'axe s'est révélé le plus discriminant de la grille (57,3 % de la variance,
+# deux fois la prise de gain) -- et négatif sur toute sa plage : 365 j vaut
+# +0,002 (IC [-0,011, +0,016], il ne fait rien), 180 j -0,025, et 90 j -0,073
+# (IC [-0,133, -0,008]) pour +55 % de rotation. Forcer une sortie ne supprime
+# pas la thèse : le moteur la rachète, et la friction est payée deux fois.
+#
+# Même traitement que stop_loss_pct et max_weight_pct ci-dessus, et pour la
+# même raison : un axe dont la réponse est connue et négative coûte un facteur
+# quatre sur la grille ET relève le plancher de bruit du Sharpe déflaté, qui
+# croît avec le nombre d'essais. Il reste balayable via --max-holding-grid.
+DEFAULT_MAX_HOLDING_GRID = [None]
+
+# HIÉRARCHIE DES MULTIPLES -- le deuxième axe de SIGNAL de cette grille, et
+# celui qui porte sur la valeur théorique elle-même : lequel des trois
+# multiples tranche quand ils divergent ? Sur les 13 240 lignes où P/E et
+# EV/EBITDA coexistent, l'écart médian entre les deux vaut 19,5 points de
+# cours -- ce choix n'est pas cosmétique.
+#
+# Le catalogue et le raisonnement derrière chaque rang sont dans
+# hierarchie_multiples.py. La couverture est INVARIANTE (87,06 % pour les
+# quatre) : l'axe déplace la valeur, jamais le nombre de lignes valorisées, ce
+# qui en fait un axe propre -- on ne mesure pas un effet de couverture déguisé.
+#
+# CE QUE CET AXE A RÉVÉLÉ AVANT MÊME DE TOURNER : le parquet en production
+# porte `flat`, alors que config.MULTIPLE_COMBINATION vaut `tiers`. Tous les
+# backtests `combinee` de ce dépôt ont donc tourné sur la médiane à trois voix.
+# `flat` est gardé en premier pour cette raison : c'est la référence réelle.
+DEFAULT_MULTIPLE_HIERARCHY_GRID = ["flat", "tiers", "pe_first", "ebitda_first"]
 
 # Le seuil d'entrée ne se lit pas pareil d'une stratégie à l'autre (écart au
 # cours vs écart à la médiane sectorielle) : sa grille dépend donc de la
@@ -210,13 +240,25 @@ def _pool_initializer(data: dict) -> None:
     _DATA = data
 
 
-def _load_data(benchmark_symbol: str, signal_source: str = "dcf") -> dict:
+def _load_data(
+    benchmark_symbol: str, signal_source: str = "dcf",
+    hierarchies: Optional[list] = None,
+) -> dict:
     logger.info("Chargement des données (une seule fois pour toute la grille)...")
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)
     # Source déclarée par la stratégie balayée (cf. Strategy.signal_source) :
     # une grille sur valuation_gap_combined doit lire 06b, pas le DCF.
     signal_events = data_loader.build_strategy_signal_events(signal_source)
+    # UN JEU D'ÉVÉNEMENTS PAR HIÉRARCHIE, construit ICI et pas dans _run_one.
+    # La hiérarchie change le SIGNAL, pas un réglage de moteur : la recalculer
+    # par combinaison la recalculerait 108 fois pour quatre valeurs distinctes.
+    # Quatre jeux de ~27 000 lignes tiennent dans quelques mégaoctets, et le
+    # pool les reçoit par fork ou par initializer comme le reste de _DATA.
+    evenements_par_hierarchie = {
+        nom: data_loader.build_strategy_signal_events(signal_source, hierarchie=nom)
+        for nom in (hierarchies or [])
+    }
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
     material_events = data_loader.load_material_events_8k()
@@ -227,6 +269,7 @@ def _load_data(benchmark_symbol: str, signal_source: str = "dcf") -> dict:
     return {
         "price_panel": price_panel,
         "signal_events": signal_events,
+        "signal_events_par_hierarchie": evenements_par_hierarchie,
         "universe_history": universe_history,
         "fallback_symbols": fallback_symbols,
         "material_events": material_events,
@@ -283,9 +326,17 @@ def _run_one(
             "max_weight_pct": combo["max_weight_pct"],
         })
 
+        # Le signal dépend de la hiérarchie de multiples : c'est le seul axe de
+        # cette grille qui change les ÉVÉNEMENTS et non le moteur. Absent de la
+        # combinaison (stratégie DCF, ou axe non balayé) -> le jeu par défaut.
+        evenements = _DATA["signal_events"]
+        hierarchie = combo.get("multiple_hierarchy")
+        if hierarchie is not None:
+            evenements = _DATA["signal_events_par_hierarchie"][hierarchie]
+
         engine = BacktestEngine(
             price_panel=_DATA["price_panel"],
-            signal_events=_DATA["signal_events"],
+            signal_events=evenements,
             universe_history=_DATA["universe_history"],
             fallback_universe_symbols=_DATA["fallback_symbols"],
             material_events_8k=_DATA["material_events"],
@@ -369,6 +420,14 @@ def _build_grid(args, strategy_name: str) -> list[dict]:
         [None if h <= 0 else int(h) for h in args.max_holding_grid]
         if args.max_holding_grid else DEFAULT_MAX_HOLDING_GRID
     )
+    # L'axe de hiérarchie n'existe que pour les stratégies qui COMBINENT des
+    # multiples : sur le DCF seul il n'y a rien à hiérarchiser, et le balayer
+    # produirait des combinaisons identiques présentées comme distinctes.
+    if STRATEGY_REGISTRY[strategy_name].signal_source == "combinee":
+        hierarchie_grid = args.multiple_hierarchy_grid or DEFAULT_MULTIPLE_HIERARCHY_GRID
+    else:
+        hierarchie_grid = [None]
+
     axes = [
         args.stop_loss_grid or DEFAULT_STOP_LOSS_GRID,
         args.take_profit_grid or DEFAULT_TAKE_PROFIT_GRID,
@@ -377,6 +436,7 @@ def _build_grid(args, strategy_name: str) -> list[dict]:
         args.rebalance_band_grid or DEFAULT_REBALANCE_BAND_GRID,
         args.max_weight_grid or DEFAULT_MAX_WEIGHT_GRID,
         horizon_grid,
+        hierarchie_grid,
     ]
     if args.quick:
         # Montage vérifiable en une minute : on ne garde que les bornes de
@@ -458,6 +518,15 @@ def main() -> None:
     parser.add_argument("--rebalance-band-grid", type=float, nargs="+", default=None)
     parser.add_argument("--max-weight-grid", type=float, nargs="+", default=None)
     parser.add_argument(
+        "--multiple-hierarchy-grid", nargs="+", default=None, metavar="NOM",
+        choices=sorted(hierarchie_multiples.HIERARCHIES),
+        help="HIÉRARCHIE DES MULTIPLES : lequel tranche quand P/E, EV/EBITDA et EV/Sales "
+             "divergent (écart médian P/E vs EV/EBITDA : 19,5 points de cours). Axe de "
+             "SIGNAL, pas d'exécution -- il change la valeur théorique elle-même. La "
+             "couverture est invariante d'une hiérarchie à l'autre, donc l'axe ne mesure "
+             "pas un effet de couverture déguisé. Sans effet sur les stratégies DCF.",
+    )
+    parser.add_argument(
         "--max-holding-grid", type=float, nargs="+", default=None, metavar="JOURS",
         help="HORIZON DE CONVERGENCE : durées de détention maximales, en jours. Une valeur "
              "<= 0 vaut « aucun horizon », la valeur en production. Seul axe de cette grille "
@@ -497,7 +566,14 @@ def main() -> None:
     logger.info("Grille : %d combinaisons, stratégie '%s'.", len(grid), args.strategy)
 
     global _DATA
-    _DATA = _load_data(args.benchmark_symbol, STRATEGY_REGISTRY[args.strategy].signal_source)
+    # Les hiérarchies réellement présentes dans la grille, et elles seules :
+    # construire les quatre jeux d'événements quand un seul est balayé coûterait
+    # trois recombinaisons de 27 000 lignes pour rien.
+    _DATA = _load_data(
+        args.benchmark_symbol, STRATEGY_REGISTRY[args.strategy].signal_source,
+        hierarchies=sorted({c["multiple_hierarchy"] for c in grid
+                            if c.get("multiple_hierarchy") is not None}),
+    )
 
     start_date = pd.Timestamp(args.start_date) if args.start_date else None
     end_date = pd.Timestamp(args.end_date) if args.end_date else None
@@ -667,6 +743,10 @@ def _lisible(cle: str, valeur) -> str:
         if valeur is None or pd.isna(valeur):
             return "aucun horizon (on ne renonce jamais à la thèse)"
         return f"{int(valeur)} j"
+    if cle == "multiple_hierarchy":
+        if valeur is None or (not isinstance(valeur, str) and pd.isna(valeur)):
+            return "sans objet (signal sans multiples)"
+        return f"{valeur} (médiane des trois)" if valeur == "flat" else str(valeur)
     if cle == "stop_loss_pct" and valeur is not None and valeur <= STOP_LOSS_OFF:
         return f"{valeur} -> désactivé (hors d'atteinte)"
     if cle == "take_profit_pct" and valeur is not None and valeur >= TAKE_PROFIT_OFF:
@@ -680,7 +760,7 @@ def _lisible(cle: str, valeur) -> str:
 # décaler ici renommerait silencieusement les colonnes de toute la grille.
 AXES = ("stop_loss_pct", "take_profit_pct", "entry_threshold_pct",
         "momentum_min_pct", "rebalance_band_pct", "max_weight_pct",
-        "max_holding_days")
+        "max_holding_days", "multiple_hierarchy")
 
 
 def _lire_le_plateau(
@@ -823,25 +903,60 @@ def _reference_combo(strategy_name: str) -> dict:
         "rebalance_band_pct": config.BACKTEST_REBALANCE_BAND_PCT,
         "max_weight_pct": config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
         "max_holding_days": config.BACKTEST_MAX_HOLDING_DAYS,
+        # CE QUI TOURNE, PAS CE QUE LA CONFIG DIT. Le parquet de 06b porte
+        # `flat` alors que config.MULTIPLE_COMBINATION vaut `tiers` (vérifié au
+        # bit près sur les 27 674 lignes, cf. tests/test_hierarchie_multiples).
+        # La référence du test apparié doit être le signal RÉELLEMENT utilisé,
+        # sinon la grille se compare à une configuration qui n'a jamais tourné.
+        "multiple_hierarchy": (
+            "flat" if strategy_name == "valuation_gap_combined" else None),
     }
+
+
+def _est_vide(valeur) -> bool:
+    """None, NaN ou NaT -- mais PAS une chaîne, que pd.isna refuse de traiter
+    comme scalaire numérique et pour laquelle elle rend False de toute façon."""
+    if valeur is None:
+        return True
+    if isinstance(valeur, str):
+        return False
+    return bool(pd.isna(valeur))
+
+
+def _meme_valeur_d_axe(valeur, attendue) -> bool:
+    """Deux valeurs d'axe désignent-elles le même réglage ?
+
+    TROIS CAS, ET CHACUN A SA RAISON D'ÊTRE :
+      - absente des deux côtés (momentum désactivé, aucun horizon) : None et
+        NaN doivent se reconnaître, alors que None != None une fois passé par un
+        DataFrame et que NaN != NaN toujours ;
+      - une CHAÎNE (multiple_hierarchy) : égalité stricte. La convertir en
+        flottant comme les autres axes lèverait ValueError -- c'est le piège
+        qu'ouvre le premier axe non numérique de cette grille ;
+      - un nombre : tolérance, car les seuils transitent par un CSV et 15.0
+        peut revenir 14.999999999.
+    """
+    if _est_vide(attendue):
+        return _est_vide(valeur)
+    if _est_vide(valeur):
+        return False
+    if isinstance(attendue, str) or isinstance(valeur, str):
+        return str(valeur) == str(attendue)
+    return abs(float(valeur) - float(attendue)) < 1e-9
 
 
 def _index_de_reference(lignes: list[dict], reference: dict) -> Optional[int]:
     """Position de la configuration EN PRODUCTION dans la grille, ou None.
 
     `momentum_min_pct = None` ne se compare pas par égalité (None != None une
-    fois passé par un DataFrame, et NaN != NaN toujours) : d'où le test
-    explicite, sans quoi la ligne de référence resterait introuvable sans que
-    rien ne le signale."""
+    fois passé par un DataFrame, et NaN != NaN toujours) : d'où
+    `_meme_valeur_d_axe`, sans quoi la ligne de référence resterait introuvable
+    sans que rien ne le signale."""
     for i, ligne in enumerate(lignes):
         if ligne.get("error") or "_nav" not in ligne:
             continue
-        if all(
-            (ligne.get(cle) is None or pd.isna(ligne.get(cle))) if valeur is None
-            else (ligne.get(cle) is not None and not pd.isna(ligne.get(cle))
-                  and abs(float(ligne[cle]) - float(valeur)) < 1e-9)
-            for cle, valeur in reference.items()
-        ):
+        if all(_meme_valeur_d_axe(ligne.get(cle), valeur)
+               for cle, valeur in reference.items()):
             return i
     return None
 
@@ -978,11 +1093,10 @@ def _compare_a_la_reference(
     for cle, valeur in reference.items():
         if cle not in ok.columns:
             return
-        colonne = ok[cle]
-        # momentum_min_pct = None se relit en NaN depuis le CSV : comparer par
-        # égalité renverrait False partout et la ligne de référence resterait
-        # introuvable, sans que rien ne le signale.
-        masque &= colonne.isna() if valeur is None else (colonne - valeur).abs() < 1e-9
+        # Même règle que _index_de_reference, et pour les mêmes raisons :
+        # momentum_min_pct = None se relit en NaN depuis le CSV, et
+        # multiple_hierarchy est une chaîne qu'on ne peut pas soustraire.
+        masque &= ok[cle].map(lambda v, attendue=valeur: _meme_valeur_d_axe(v, attendue))
     lignes = ok[masque]
     if lignes.empty:
         logger.warning(
