@@ -74,6 +74,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 import config
+import ecriture_atomique
 import sec_filings_text as sft
 
 logger = logging.getLogger("recuperation_8k")
@@ -511,7 +512,7 @@ def save_progress(output_dir: Path, processed: set) -> None:
     path = _progress_path(output_dir)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"processed": sorted(processed), "updated_at": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    ecriture_atomique.remplacer(tmp, path)
 
 
 def append_checkpoint(output_dir: Path, rows: List[dict]) -> None:
@@ -582,7 +583,7 @@ def main() -> None:
             "trimestres TTM déjà connus pour délimiter les fenêtres de recherche des 8-K.",
             config.FINANCIALS_TTM_FILE,
         )
-        return
+        sys.exit(1)
     ttm = pd.read_parquet(config.FINANCIALS_TTM_FILE)
 
     if args.ticker:

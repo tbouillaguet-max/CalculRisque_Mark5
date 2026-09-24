@@ -16,6 +16,7 @@ Usage :
 from __future__ import annotations
 
 import logging
+import sys
 
 import pandas as pd
 
@@ -67,7 +68,7 @@ def calculer_multiples_moyens_par_secteur(df: pd.DataFrame, colonnes_multiples: 
 def main() -> None:
     if not config.MULTIPLES_FILE.exists():
         logger.error("Fichier introuvable: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
-        return
+        sys.exit(1)
 
     df = pd.read_parquet(config.MULTIPLES_FILE)
     df_resultats, df_pivot = calculer_multiples_moyens_par_secteur(df, COLONNES_MULTIPLES)

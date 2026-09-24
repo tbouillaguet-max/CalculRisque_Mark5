@@ -74,6 +74,7 @@ import pandas as pd
 from ib_insync import IB, Stock, Contract, util
 
 import config
+import ecriture_atomique
 import ib_connect
 
 IB_HOST = "127.0.0.1"
@@ -287,7 +288,7 @@ def save_fetch_state(output_dir: Path, state: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        ecriture_atomique.remplacer(tmp, path)
     except OSError as exc:
         logger.warning("État de suivi non écrit (%s) : le prochain run redemandera plus large.", exc)
 

@@ -33,6 +33,7 @@ Usage :
 from __future__ import annotations
 
 import logging
+import sys
 
 import numpy as np
 import pandas as pd
@@ -293,7 +294,7 @@ def merge_sectors(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     if not (config.FINANCIALS_FILE.exists() and config.PRICES_FILE.exists()):
         logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
-        return
+        sys.exit(1)
 
     df = calculate_multiples()
     if df.empty:

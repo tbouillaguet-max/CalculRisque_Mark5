@@ -24,8 +24,9 @@ théorique s'écarte significativement du cours de bourse.
     07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
                                     calcule l'écart en % entre cours de bourse et valeur théorique
     08_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks, UNIQUEMENT
-                                    pour les entreprises dont l'écart calculé en 07 dépasse
-                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue). IV/greeks en
+                                    pour les entreprises dont la valorisation COMBINÉE (06b)
+                                    s'écarte du cours d'un facteur 1 + VALUATION_GAP_THRESHOLD_PCT
+                                    dans un sens ou dans l'autre. IV/greeks en
                                     priorité via Alpha Vantage (gratuit, ALPHAVANTAGE_API_KEY,
                                     voir 08), Black-Scholes local en dernier repli. --av-backfill-dates
                                     permet aussi de reconstituer un VRAI historique d'options passées.
@@ -349,12 +350,18 @@ def dividend_yield_for(sector) -> float:
 # ----------------------------------------------------------------------------
 # Filtre de valorisation (déclenche la récupération des options en 08)
 # ----------------------------------------------------------------------------
-# 07_calcul_dcf.py calcule pour chaque entreprise l'écart en % entre son
-# cours de bourse et sa valeur théorique (DCF). 08_recuperation_options.py ne
-# récupère les chaînes d'options que pour les entreprises dont cet écart
-# dépasse ce seuil, en valeur absolue : la récupération d'options via IBKR
-# est lente et rate-limitée, inutile de la lancer sur tout l'univers si seule
-# une fraction des entreprises montre un écart de valorisation significatif.
+# 08_recuperation_options.py ne récupère les chaînes d'options que pour les
+# entreprises dont la valeur théorique COMBINÉE (06b) s'écarte du cours d'un
+# facteur 1 + seuil/100 dans un sens ou dans l'autre -- ratio >= 1,20 côté call,
+# <= 1/1,20 côté put : c'est l'union exacte de ce que les stratégies options
+# peuvent ouvrir (cf. 08.filter_universe_by_valuation_gap). La récupération via
+# IBKR est lente et rate-limitée, inutile de la lancer sur tout l'univers.
+#
+# Jusqu'au 2026-09, 08 lisait ici l'écart du DCF (07) : les banques, assureurs
+# et foncières, sans DCF, n'avaient jamais leurs options collectées.
+#
+# La même valeur sert, en écart SIMPLE cette fois, de seuil d'entrée à
+# valuation_gap_options (OPTIONS_ENTRY_THRESHOLD_PCT ci-dessous).
 VALUATION_GAP_THRESHOLD_PCT = 20.0
 
 # ----------------------------------------------------------------------------
@@ -1012,10 +1019,34 @@ OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 #
 # 1.0 supposerait que le cours atteint EXACTEMENT sa valeur théorique à
 # l'échéance -- hypothèse que rien n'étaye, et qui transformerait chaque écart
-# de valorisation en gain certain. 0.5 ne suppose que la moitié du chemin :
+# de valorisation en gain certain. 0.5 ne supposerait que la moitié du chemin :
 # c'est la même hypothèse implicite que valuation_gap_multiples_options, qui
 # place son strike à mi-chemin entre cours et valeur théorique, rendue ici
 # EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
+#
+# LE DÉFAUT EST 0.8, ET CE N'EST PAS CET ARGUMENT QUI LE JUSTIFIE. 0.8 suppose
+# une thèse nettement plus forte : 80 % de l'écart en log refermé à l'échéance
+# (730 jours), soit au seuil d'entrée (ratio 1,20) une dérive de 7,3 %/an au
+# lieu de 4,6 %. La valeur est là depuis le premier commit, sans trace de son
+# origine (aucune grille 11c archivée), et ce commentaire comme le README
+# disaient encore 0.5. Mesuré le 2026-09-24 sur 2015-2026 (1 M$, 06b régénéré,
+# hiérarchie `tiers`) :
+#
+#   fraction  CAGR     Sharpe  Sortino  max DD    trades  exposition
+#   0.5       -4,0 %   -0,69   -1,16    -50,9 %   2 393   28,5 %
+#   0.8       -2,4 %   -0,63   -0,99    -42,9 %   2 451   22,9 %
+#
+# Les deux valeurs sont INDISCERNABLES : test apparié sur les rendements en
+# excès du sans-risque, +0,06 de Sharpe pour 0.8, IC à 95 % [-0,45 ; +0,49] ;
+# aucune des deux moitiés ne tranche (2015-2020 : -0,11 ; 2021-2026 : +0,33,
+# IC [-0,12 ; +0,83]). 0.8 perd moins en CAGR et en drawdown, mais en
+# investissant moins : à Sharpe égal, ce n'est pas un avantage de thèse. (Sur
+# l'ancien parquet `flat`, encore versionné : +0,25, IC [-0,04 ; +0,60] -- pas
+# établi non plus.) La valeur en production reste donc 0.8 : on ne la
+# remplace que par une variante établie meilleure -- la règle de
+# 16_optimize_strategie_actions.py --, et 0.5 ne l'est pas. Surtout, la
+# stratégie PERD aux deux valeurs, comme valuation_gap_multiples_options (CAGR
+# -4,0 %) : ce n'est pas la fraction qui la rend négative.
 OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
 
 # Grille de strikes candidats, en écarts-types du log-prix à l'échéance :

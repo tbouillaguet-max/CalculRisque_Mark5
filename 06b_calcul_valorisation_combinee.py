@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import pathlib
 from typing import Optional
 
@@ -830,16 +831,16 @@ def main() -> None:
 
     if not config.MULTIPLES_FILE.exists():
         logger.error("Fichier manquant: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
-        return
+        sys.exit(1)
     if not config.DCF_HISTORY_FILE.exists():
         logger.error("Fichier manquant: %s. Lance d'abord 07_calcul_dcf.py.", config.DCF_HISTORY_FILE)
-        return
+        sys.exit(1)
 
     df = build_combined_valuation(
         point_in_time_peers=not args.no_point_in_time_peers, method=args.multiple_method)
     if df.empty:
         logger.error("Aucune valorisation combinée calculée. Vérifie les données d'entrée.")
-        return
+        sys.exit(1)
 
     sortie = pathlib.Path(args.output) if args.output else config.VALORISATION_COMBINEE_FILE
     sortie.parent.mkdir(parents=True, exist_ok=True)

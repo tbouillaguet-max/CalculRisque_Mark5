@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import sys
 from typing import Dict, Tuple
 
 import numpy as np
@@ -405,7 +406,7 @@ def calculer_dcf_par_entreprise(df: pd.DataFrame, hypotheses: Dict = HYPOTHESES_
 def main() -> None:
     if not (config.FINANCIALS_FILE.exists() and config.PRICES_FILE.exists()):
         logger.error("Fichiers manquants. Lance d'abord 03_recuperation_cours.py et 04_recuperation_10k.py.")
-        return
+        sys.exit(1)
 
     # Calculé UNE SEULE FOIS sur tout l'historique (latest_only=False), puis
     # dérivé en deux sorties : le rapport Excel (dernier exercice seulement,
@@ -416,7 +417,7 @@ def main() -> None:
 
     if df_dcf_full.empty:
         logger.error("Aucun résultat DCF calculé. Vérifiez les données d'entrée.")
-        return
+        sys.exit(1)
 
     history = df_dcf_full.rename(columns={
         "Ticker": "symbol", "Secteur": "sector", "Secteur_actuel": "sector_current",

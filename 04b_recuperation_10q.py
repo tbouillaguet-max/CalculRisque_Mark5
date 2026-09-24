@@ -88,6 +88,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 import config
+import ecriture_atomique
 import sec_http
 import sec_xbrl
 
@@ -410,7 +411,7 @@ def save_fetch_state(path: Path, state: Dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    ecriture_atomique.remplacer(tmp, path)
 
 
 def should_skip(symbol: str, existing: pd.DataFrame, state: Dict[str, str], refresh_days: int) -> bool:
@@ -446,7 +447,7 @@ def save_progress(output_dir: Path, processed: set[str]) -> None:
     tmp = path.with_suffix(".json.tmp")
     payload = {"processed": sorted(processed), "updated_at": datetime.now().isoformat(timespec="seconds")}
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    ecriture_atomique.remplacer(tmp, path)
 
 
 def append_checkpoint(output_dir: Path, rows: List[dict]) -> None:

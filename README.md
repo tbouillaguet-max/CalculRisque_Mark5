@@ -220,11 +220,56 @@ python run_pipeline_daily.py --resume         # reprend un run interrompu
 ```
 
 Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
-`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `06b` → `07` → `07b` → `08`.
-`03b` et `05/06/06b/07` sont **requises** (sans elles le signal du jour est
+`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `07` → `06b` → `07b` → `08`.
+`03b` et `05/06/07/06b` sont **requises** (sans elles le signal du jour est
 absent ou incohérent avec les cours) ; `04/04b/04c/07b/08` sont des
 enrichissements dont l'échec est journalisé sans arrêter le run, qui se
 termine alors en statut `partial`.
+
+**Sans `SEC_CONTACT_EMAIL`, le run le dit.** Les étapes qui interrogent la
+SEC (`04`, `04b`, `04c`, `07b`, marquées `needs_sec`) sont sautées d'emblée
+quand la variable manque : c'est une erreur de configuration, qu'aucun
+réessai ne corrige (six minutes perdues ainsi au run du 2026-09-05). Le run
+termine alors en `partial` **avec un avertissement** qui nomme ce qui n'a pas
+été rafraîchi : « Signal recalculé SANS dépôts SEC frais -- non rafraîchis :
+comptes annuels (10-K), comptes trimestriels (10-Q)… ». Il est écrit dans
+`report.json` (clé `avertissements`), répété sur la dernière ligne du journal
+(« Signal du jour : … ») et affiché en tête de la page 🩺 État du pipeline du
+tableau de bord. Avant, rien ne distinguait ce run d'un run complet : le
+tableau de fraîcheur, fondé sur la date de modification des fichiers,
+montrait le signal « à jour » alors qu'il venait d'être recalculé sur les
+comptes de la veille. Même avertissement quand une étape SEC échoue pour une
+autre raison ; aucun avec `--prices-only`, qui écarte la SEC par choix. En
+trimestriel, `04b` est requise : sans la variable, le run s'arrête avant de
+commencer, au lieu de recalculer tout le reste sur des comptes qu'il était
+chargé de rafraîchir. Couvert par `tests/test_prerequis_sec.py`.
+
+**`07` avant `06b`, et pas l'inverse.** `06b` lit `dcf_historique.parquet`,
+qu'écrit `07`, pour son repli DCF (les lignes dont le secteur a trop peu de
+pairs). Les deux orchestrateurs lançaient `06b` d'abord : en quotidien, ce
+repli valorisait donc les comptes du run précédent. En replay
+(`--as-of-date`), c'était pire : l'espace de travail part sans DCF, `06b`
+sortait sur « Fichier manquant »… avec le code 0, et le replay se déclarait
+réussi sans produire **aucune** valorisation combinée. Deux défauts, donc, et
+le second cachait le premier : neuf `main()` (dans `02`, `04c`, `05`, `06`,
+`06b` et `07`) journalisaient une erreur puis sortaient par un `return` nu —
+code 0, que l'orchestrateur, qui ne juge une étape qu'à son code de sortie,
+prenait pour un succès. Ils sortent désormais en erreur.
+`tests/test_ordre_et_codes_de_sortie.py` déduit les dépendances **du code**
+(qui écrit, qui lit quel `config.*_FILE`) et vérifie l'ordre des trois listes
+d'étapes, plutôt que de les recopier dans une liste qui vieillirait.
+
+**Écritures atomiques et Windows.** Les fichiers de reprise
+(`progress_qualitative.json` de `07b`, fichiers de progression de `04`,
+`04b`, `04c` et `08`, états de suivi de `03`, `04` et `04b`) et le
+`report.json` des orchestrateurs s'écrivent dans un `.tmp` qui remplace
+ensuite la cible par `os.replace`. Sous Windows, ce remplacement échoue en
+`PermissionError` tant qu'un autre processus tient la cible ouverte —
+antivirus, indexeur, synchronisation OneDrive d'un dossier Bureau, éditeur :
+c'est ce qui a fait échouer `07b` le 2026-09-05. `ecriture_atomique.remplacer`
+réessaie ce seul cas, avec un délai croissant (≈ 3 s au total), et relève
+l'erreur si le verrou persiste. `tests/test_ecriture_atomique.py` refuse
+tout nouveau `tmp.replace(...)` qui contournerait le module.
 
 **Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
 relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
@@ -456,7 +501,11 @@ export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfi
 User-Agent identifiant un contact réel, et un User-Agent générique se fait
 bloquer (403/429). Les scripts qui interrogent la SEC échouent au démarrage
 avec un message explicite si elle est absente, plutôt que de dégrader
-silencieusement.
+silencieusement. Les orchestrateurs la vérifient **avant** de lancer ces
+étapes et signalent un signal recalculé sans dépôts frais (voir « Mise à
+jour quotidienne »). La variable doit être visible du processus qui lance le
+run : une tâche planifiée Windows ou un cron ne lisent pas le profil du shell
+interactif.
 
 Sans `MISTRAL_API_KEY`, `04c` et `07b` journalisent leurs lignes en
 `non_evalue_pas_de_cle_api` au lieu d'appeler le modèle — les filtres
@@ -476,7 +525,7 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
     07b_validation_qualitative.py -> verdict LLM de cohérence qualitative
                                       (texte du 10-K/10-Q à sa date de dépôt)
                                       vs l'écart de valorisation quantitatif
-    run_pipeline_quarterly.py     -> orchestre 04b→04c→05→06→06b→07→07b→08 en
+    run_pipeline_quarterly.py     -> orchestre 04b→04c→05→06→07→06b→07b→08 en
                                       conditions réelles (mode live), ou
                                       reconstitue une valorisation point-in-time
                                       passée sans aucun appel réseau
@@ -494,8 +543,8 @@ avant si 04b n'a jamais tourné.
 ```bash
 python 04b_recuperation_10q.py
 python 04c_recuperation_8k.py
-python 05_calcul_multiples.py && python 06_calcul_multiples_moyens.py && python 06b_calcul_valorisation_combinee.py
-python 07_calcul_dcf.py
+python 05_calcul_multiples.py && python 06_calcul_multiples_moyens.py
+python 07_calcul_dcf.py && python 06b_calcul_valorisation_combinee.py   # 07 d'abord : 06b lit son DCF
 python 07b_validation_qualitative.py
 # ou, en une commande :
 python run_pipeline_quarterly.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
@@ -1797,7 +1846,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
 
 ```bash
 python 05_calcul_multiples.py
-python 07_calcul_dcf.py
+python 07_calcul_dcf.py                         # avant 06b : son repli DCF
 python 06b_calcul_valorisation_combinee.py
 python 10_backtest_options.py --strategy valuation_gap_options --start-date 2015-01-01
 ```
@@ -1820,6 +1869,26 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       reconstitue directement un VRAI historique d'options déjà expirées
       (impossible via IBKR seul, qui ne résout plus les contrats expirés),
       sans attendre l'accumulation de runs futurs.
+      `08` ne collecte que les entreprises dont l'écart de la valorisation
+      COMBINÉE (`06b`, celle que tradent les stratégies options) franchit
+      le seuil d'entrée de `valuation_gap_multiples_options`, en log et
+      symétrique : ratio théorique/cours ≥ 1,20 ou ≤ 1/1,20. Il filtrait
+      auparavant sur l'écart du DCF (`07`) : les 109 entreprises de son
+      univers sans DCF (banques, assureurs, foncières) n'étaient jamais
+      collectées quel que soit leur écart — 2 seulement figurent dans
+      l'historique de snapshots, et seulement dans les collectes de fin
+      juillet —, 56 l'étaient sans signal combiné, et la
+      bande de ratio 0,80-0,833 était tradée en put sans être collectée
+      (384 entreprises retenues désormais, contre 323). Ce correctif vaut
+      pour la collecte À VENIR : les backtests restent presque entièrement
+      simulés parce que l'historique de snapshots réels ne couvre que
+      cinq semaines (2026-07-29 → 2026-09-05) et que le moteur ne regarde
+      qu'en arrière — sur trois runs 2015-2026, toutes les positions
+      sauf une ou deux s'ouvrent avant le premier snapshot (2 732 sur
+      2 734 pour `valuation_gap_multiples_options`). Les rares positions
+      ouvertes après ont été simulées faute de chaîne : un PUT COIN, que
+      l'ancien filtre écartait faute de DCF, et un PUT IP, qui a pourtant
+      un DCF — le filtre n'explique donc pas tout.
       Du snapshot, le moteur retient le strike, l'échéance et **l'IV** — pas
       la prime : celle-ci a été cotée à un autre spot que celui d'exécution,
       et la reprendre telle quelle faisait apparaître un saut de P&L au
@@ -2051,12 +2120,34 @@ Approximation assumée — le moteur ne sait pas redemander une optimisation en
 cours de route, et la reconduction relative reste bien plus proche du choix
 initial que le retour au mi-chemin.
 
-**Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,5).
+**Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,8).
 `fraction = 1` supposerait que le cours atteint exactement sa valeur théorique
-à l'échéance — hypothèse que rien n'étaye. Le défaut de 0,5 reprend l'hypothèse
-**déjà implicite** dans `valuation_gap_multiples_options` (dont le strike à
-mi-chemin suppose exactement la moitié du chemin), mais la rend explicite, donc
-optimisable.
+à l'échéance — hypothèse que rien n'étaye. 0,5 reprendrait l'hypothèse **déjà
+implicite** dans `valuation_gap_multiples_options` (dont le strike à mi-chemin
+suppose exactement la moitié du chemin), rendue explicite, donc optimisable.
+
+Le défaut est pourtant 0,8, et ce README disait 0,5 : la valeur est là depuis
+le premier commit, sans trace de son origine (aucune grille `11c` archivée).
+0,8 suppose une thèse nettement plus forte — au seuil d'entrée (ratio 1,20),
+une dérive de 7,3 %/an sur l'échéance de 730 jours, contre 4,6 %/an à 0,5.
+Mesuré le 2026-09-24 sur 2015-2026 (1 M$, `06b` régénéré en `tiers`) :
+
+| Fraction | CAGR | Sharpe | Sortino | Max DD | Trades | Exposition |
+|---|---|---|---|---|---|---|
+| 0,5 | −4,0 % | −0,69 | −1,16 | −50,9 % | 2 393 | 28,5 % |
+| 0,8 | −2,4 % | −0,63 | −0,99 | −42,9 % | 2 451 | 22,9 % |
+
+Les deux valeurs sont **indiscernables** : le test apparié sur les rendements
+en excès donne +0,06 de Sharpe pour 0,8, intervalle à 95 % [−0,45 ; +0,49], et
+aucune des deux moitiés ne tranche (2015-2020 : −0,11 ; 2021-2026 : +0,33,
+intervalle [−0,12 ; +0,83]). 0,8 perd moins en CAGR et en drawdown, mais en
+investissant moins : à Sharpe égal, ce n'est pas un avantage de thèse. Sur
+l'ancien parquet `flat`, encore versionné, l'écart était de +0,25
+[−0,04 ; +0,60] — pas établi non plus. La production reste donc à 0,8 : on ne
+la remplace que par une variante établie meilleure, et 0,5 ne l'est pas.
+Surtout, **la stratégie perd aux deux valeurs**, comme
+`valuation_gap_multiples_options` sur la même période (CAGR −4,0 %, Sharpe
+−0,64) : ce n'est pas la fraction qui la rend négative.
 
 **Volatilité de sélection** : l'implicite réellement cotée si un snapshot est
 disponible, la volatilité réalisée sinon, et en dernier recours

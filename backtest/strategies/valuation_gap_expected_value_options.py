@@ -76,10 +76,12 @@ POURQUOI UNE CONVERGENCE PARTIELLE
 -----------------------------------
 `fraction = 1` supposerait que le cours atteint EXACTEMENT sa valeur théorique
 à l'échéance, ce que rien n'étaye et qui transformerait chaque écart de
-valorisation en gain certain. Le défaut de 0,5 reprend l'hypothèse déjà
-implicite dans valuation_gap_multiples_options -- dont le strike à mi-chemin
-suppose exactement la moitié du chemin parcourue -- mais la rend EXPLICITE,
-donc mesurable et optimisable (11c_optimize_convergence_fraction.py).
+valorisation en gain certain. 0,5 reprendrait l'hypothèse déjà implicite dans
+valuation_gap_multiples_options -- dont le strike à mi-chemin suppose
+exactement la moitié du chemin parcourue --, rendue EXPLICITE, donc mesurable
+et optimisable (11c_optimize_convergence_fraction.py). Le défaut est 0,8, une
+thèse plus forte : config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT dit ce que
+la mesure en dit, et pourquoi il reste là.
 
 
 POURQUOI UNE GRILLE ADAPTATIVE, ET CONTRAINTE PAR LES COTÉS
