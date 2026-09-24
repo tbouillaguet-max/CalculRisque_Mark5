@@ -209,6 +209,7 @@ def paired_sharpe_difference(
     n_bootstrap: int = 4000,
     block_days: int = 21,
     seed: int = 12345,
+    benchmark_returns: Optional[pd.Series] = None,
 ) -> dict:
     """Le Sharpe de B dépasse-t-il celui de A, ou est-ce du bruit ?
 
@@ -239,33 +240,58 @@ def paired_sharpe_difference(
     test en rejette environ 10% au seuil de 5%. Un bootstrap par blocs est
     légèrement LIBÉRAL -- il conclut un peu trop souvent. Une p-value juste
     sous 0,05 ne vaut donc pas une preuve ; un intervalle franchement à droite
-    de zéro, oui."""
+    de zéro, oui.
+
+    `benchmark_returns` bascule la comparaison du Sharpe vers l'INFORMATION
+    RATIO -- le Sharpe de l'écart actif (stratégie moins indice). Les deux
+    mécanismes retirent un facteur commun, mais pas le même : l'appariement
+    retire ce que les deux VARIANTES partagent, l'IR ce que la stratégie
+    partage avec le MARCHÉ. Les gains ne s'additionnent donc pas mécaniquement,
+    et `metrique` dit dans le résultat lequel a été mesuré."""
     rng = np.random.default_rng(seed)
     dates = returns_a.index.intersection(returns_b.index)
+    if benchmark_returns is not None:
+        # L'INDICE DOIT ÊTRE RÉÉCHANTILLONNÉ AVEC LES DEUX SÉRIES, sur les mêmes
+        # dates : c'est ce qui fait que le tirage déplace le marché pour A et
+        # pour B en même temps. Le tirer à part rendrait les deux écarts actifs
+        # indépendants, et l'appariement -- tout l'intérêt du test -- serait
+        # détruit exactement comme si on tirait A et B séparément.
+        dates = dates.intersection(benchmark_returns.index)
     a = returns_a.loc[dates].to_numpy(dtype=float)
     b = returns_b.loc[dates].to_numpy(dtype=float)
+    indice = (benchmark_returns.loc[dates].to_numpy(dtype=float)
+              if benchmark_returns is not None else None)
     n_obs = len(a)
     if n_obs <= block_days or n_bootstrap <= 0:
         return {}
 
     annualise = math.sqrt(TRADING_DAYS_PER_YEAR)
 
-    def sharpe(x: np.ndarray) -> float:
-        ecart_type = x.std()
-        return float(x.mean() / ecart_type * annualise) if ecart_type > 0 else float("nan")
+    def ratio(x: np.ndarray, marche: Optional[np.ndarray] = None) -> float:
+        """Sharpe annualisé, ou INFORMATION RATIO quand l'indice est fourni.
 
-    observe = sharpe(b) - sharpe(a)
+        L'IR est le Sharpe de l'écart ACTIF (stratégie moins indice). Il retire
+        le facteur marché, qui domine la variance du Sharpe et que les
+        variantes d'une même stratégie partagent intégralement -- d'où un
+        pouvoir de séparation plus élevé à données égales."""
+        serie = x if marche is None else x - marche
+        ecart_type = serie.std()
+        return float(serie.mean() / ecart_type * annualise) if ecart_type > 0 else float("nan")
+
+    observe = ratio(b, indice) - ratio(a, indice)
     n_blocs = int(np.ceil(n_obs / block_days))
     ecarts = np.empty(n_bootstrap)
     for k in range(n_bootstrap):
         departs = rng.integers(0, n_obs - block_days, n_blocs)
         indices = np.concatenate([np.arange(d, d + block_days) for d in departs])[:n_obs]
-        ecarts[k] = sharpe(b[indices]) - sharpe(a[indices])
+        marche = None if indice is None else indice[indices]
+        ecarts[k] = ratio(b[indices], marche) - ratio(a[indices], marche)
 
     bas, haut = np.percentile(ecarts, [2.5, 97.5])
     return {
-        "sharpe_a": sharpe(a),
-        "sharpe_b": sharpe(b),
+        "metrique": "information_ratio" if indice is not None else "sharpe_ratio",
+        "sharpe_a": ratio(a, indice),
+        "sharpe_b": ratio(b, indice),
         "sharpe_difference": observe,
         "difference_ci_low": float(bas),
         "difference_ci_high": float(haut),
@@ -577,8 +603,13 @@ def split_period_metrics(
     split_date: pd.Timestamp,
     risk_free_rate: float = 0.0,
     benchmark_prices: Optional[pd.Series] = None,
+    # `information_ratio`, `alpha_pct` et `beta` sont calculés par fenêtre comme
+    # les autres -- `compute_metrics` reçoit la courbe DÉJÀ découpée et aligne
+    # l'indice dessus. Ils manquaient seulement de cette liste, ce qui rendait
+    # l'IR indisponible comme critère de classement (cf. --rank-metric).
     keys: tuple = ("cagr_pct", "sharpe_ratio", "sortino_ratio", "calmar_ratio",
-                   "max_drawdown_pct", "total_return_pct", "num_trades", "profit_factor"),
+                   "max_drawdown_pct", "total_return_pct", "num_trades", "profit_factor",
+                   "information_ratio", "alpha_pct", "beta", "tracking_error_pct"),
 ) -> dict:
     """Mêmes métriques, calculées SÉPARÉMENT avant et après `split_date`, et
     préfixées `train_` / `test_`.

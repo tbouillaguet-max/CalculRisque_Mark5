@@ -518,6 +518,17 @@ def main() -> None:
     parser.add_argument("--rebalance-band-grid", type=float, nargs="+", default=None)
     parser.add_argument("--max-weight-grid", type=float, nargs="+", default=None)
     parser.add_argument(
+        "--rank-metric", default="sharpe_ratio",
+        choices=("sharpe_ratio", "information_ratio", "sortino_ratio", "calmar_ratio"),
+        help="Métrique qui CLASSE la grille, sur la fenêtre d'apprentissage. "
+             "information_ratio retire le facteur marché (c'est le Sharpe de l'écart "
+             "actif contre l'indice), que toutes les variantes partagent : à données "
+             "égales il sépare mieux. Mesuré sur ce dépôt, le gain recouvre en grande "
+             "partie celui du test apparié, qui retire déjà un facteur commun -- ne pas "
+             "les compter comme multiplicatifs. Le départage du plateau (rotation) et "
+             "la fenêtre de test ne changent pas.",
+    )
+    parser.add_argument(
         "--multiple-hierarchy-grid", nargs="+", default=None, metavar="NOM",
         choices=sorted(hierarchie_multiples.HIERARCHIES),
         help="HIÉRARCHIE DES MULTIPLES : lequel tranche quand P/E, EV/EBITDA et EV/Sales "
@@ -627,7 +638,7 @@ def main() -> None:
     # CSV (une colonne de 3000 nombres par ligne le rendrait illisible et
     # énorme) : elles restent en mémoire, sous des clés préfixées d'un
     # underscore, et sont retirées avant écriture.
-    _ajoute_stats_appariees(rows, args.strategy, args.paired_bootstrap)
+    _ajoute_stats_appariees(rows, args.strategy, args.paired_bootstrap, args.rank_metric)
 
     resultat_wf = walk_forward(rows, args, args.plateau_tolerance) if args.walk_forward else None
 
@@ -684,6 +695,23 @@ def fenetres_walk_forward(
         fenetres.append((debut, coupure, fin_test))
         coupure = fin_test
     return fenetres
+
+
+# Libellés des métriques de classement. Une découpe de chaîne
+# (`removesuffix("_ratio")`) donnait « un information estimé sur 7 ans » : le
+# rapport est lu par quelqu'un, pas seulement grepé.
+LIBELLE_METRIQUE = {
+    "sharpe_ratio": "Sharpe",
+    "information_ratio": "information ratio",
+    "sortino_ratio": "Sortino",
+    "calmar_ratio": "Calmar",
+}
+
+
+def _libelle(cle: str) -> str:
+    """Nom lisible d'une colonne de métrique, préfixe de fenêtre compris."""
+    nu = cle.removeprefix("train_").removeprefix("test_")
+    return LIBELLE_METRIQUE.get(nu, nu.replace("_", " "))
 
 
 def _erreur_type_sharpe(sharpe: float, annees: float) -> float:
@@ -779,10 +807,10 @@ def _lire_le_plateau(
     annees = 7.0
     logger.info(
         "--- Ce que la grille établit ---\n"
-        "Erreur-type d'un Sharpe estimé sur ~%.0f ans : %.2f. Sur %d combinaisons, %d sont à "
+        "Erreur-type d'un %s estimé sur ~%.0f ans : %.2f. Sur %d combinaisons, %d sont à "
         "moins d'une erreur-type du maximum : le classement ne les départage donc PAS.\n"
         "Plateau retenu (à %.2f du maximum) : %d combinaisons.",
-        annees, _erreur_type_sharpe(meilleur, annees), len(ranked),
+        _libelle(rank_key), annees, _erreur_type_sharpe(meilleur, annees), len(ranked),
         int((ranked[rank_key] >= meilleur - _erreur_type_sharpe(meilleur, annees)).sum()),
         tolerance, len(plateau),
     )
@@ -965,6 +993,7 @@ def _index_de_reference(lignes: list[dict], reference: dict) -> Optional[int]:
 
 def _ajoute_stats_appariees(
     lignes: list[dict], strategy_name: str, n_bootstrap: int,
+    metrique: str = "sharpe_ratio",
 ) -> Optional[int]:
     """Écart de Sharpe APPARIÉ de chaque combinaison contre la configuration en
     production, avec son intervalle de confiance.
@@ -1007,6 +1036,20 @@ def _ajoute_stats_appariees(
     serie_ref = pd.Series(ref["_nav"], index=ref["_dates"])
     rendements_ref = serie_ref.pct_change(fill_method=None).dropna()
 
+    # LE TEST DOIT PORTER SUR LA MÉTRIQUE QUI CLASSE. Classer sur l'information
+    # ratio en jugeant sur le Sharpe reviendrait à choisir selon un critère et
+    # à conclure selon un autre -- et l'écart entre les deux est précisément ce
+    # que le facteur marché explique.
+    rendements_indice = None
+    if metrique == "information_ratio":
+        indice = _DATA.get("benchmark_prices")
+        if indice is None or len(indice) < 2:
+            logger.warning(
+                "Pas de série d'indice : le test apparié reste sur le Sharpe alors que "
+                "le classement porte sur l'information ratio.")
+        else:
+            rendements_indice = indice.pct_change(fill_method=None).dropna()
+
     logger.info(
         "Test apparié contre la configuration actuelle (%d rééchantillonnages par "
         "combinaison)...", n_bootstrap,
@@ -1017,7 +1060,7 @@ def _ajoute_stats_appariees(
         serie = pd.Series(ligne["_nav"], index=ligne["_dates"])
         resultat = metrics_mod.paired_sharpe_difference(
             rendements_ref, serie.pct_change(fill_method=None).dropna(),
-            n_bootstrap=n_bootstrap,
+            n_bootstrap=n_bootstrap, benchmark_returns=rendements_indice,
         )
         if not resultat:
             continue
@@ -1035,9 +1078,15 @@ def _ajoute_stats_appariees(
     return i_ref
 
 
-def _lire_le_test_apparie(ok: pd.DataFrame, tolerance: float) -> None:
+def _lire_le_test_apparie(ok: pd.DataFrame, tolerance: float,
+                          metrique: str = "sharpe_ratio") -> None:
     """Ce que le test apparié départage, et que l'erreur-type marginale ne
-    départageait pas."""
+    départageait pas.
+
+    `metrique` doit être celle qui a CLASSÉ : l'erreur-type de Lo se calcule sur
+    la valeur du ratio, et celle d'un information ratio n'est pas celle d'un
+    Sharpe. Les afficher côte à côte en mélangeant les deux ferait dire au
+    rapport un facteur de précision qui n'existe pas."""
     if "paired_ci_low" not in ok.columns or ok["paired_ci_low"].isna().all():
         return
     avec = ok[ok["paired_ci_low"].notna()]
@@ -1053,7 +1102,8 @@ def _lire_le_test_apparie(ok: pd.DataFrame, tolerance: float) -> None:
     # la durée relue du test lui-même, et le Sharpe plein échantillon avec elle.
     annees = (float(avec["paired_n_observations"].median()) / metrics_mod.TRADING_DAYS_PER_YEAR
               if "paired_n_observations" in avec.columns else 7.0)
-    se_marginale = _erreur_type_sharpe(float(avec["sharpe_ratio"].max()), annees)
+    colonne = metrique if metrique in avec.columns else "sharpe_ratio"
+    se_marginale = _erreur_type_sharpe(float(avec[colonne].max()), annees)
     logger.info(
         "--- Ce que le test apparié départage ---\n"
         "Demi-largeur médiane de l'intervalle apparié : %.3f, contre %.3f pour l'erreur-type "
@@ -1108,8 +1158,11 @@ def _compare_a_la_reference(
         return
 
     ref = lignes.iloc[0]
-    colonnes = [rank_key, "test_sharpe_ratio", "train_cagr_pct", "test_cagr_pct"] if split_date is not None \
-        else ["sharpe_ratio", "cagr_pct"]
+    # La colonne de TEST doit être celle de la métrique qui a classé : la
+    # comparaison hors échantillon perd son sens si elle porte sur autre chose.
+    test_key = rank_key.replace("train_", "test_", 1)
+    colonnes = [rank_key, test_key, "train_cagr_pct", "test_cagr_pct"] if split_date is not None \
+        else [rank_key, "cagr_pct"]
     colonnes += ["annualized_turnover_pct", "max_drawdown_pct", "num_positions_closed"]
     colonnes = [c for c in colonnes if c in ok.columns]
 
@@ -1117,11 +1170,11 @@ def _compare_a_la_reference(
         [ref[colonnes], best[colonnes]], index=["configuration actuelle", "meilleur point"],
     )
     logger.info("--- Meilleur point contre configuration actuelle ---\n%s", tableau.to_string())
-    if split_date is not None and pd.notna(ref.get("test_sharpe_ratio")) and pd.notna(best.get("test_sharpe_ratio")):
-        ecart = best["test_sharpe_ratio"] - ref["test_sharpe_ratio"]
+    if split_date is not None and pd.notna(ref.get(test_key)) and pd.notna(best.get(test_key)):
         logger.info(
-            "Écart de Sharpe HORS ÉCHANTILLON : %+.3f. C'est le seul chiffre de cette "
-            "comparaison que la sélection n'a pas pu fabriquer.", ecart,
+            "Écart de %s HORS ÉCHANTILLON : %+.3f. C'est le seul chiffre de cette "
+            "comparaison que la sélection n'a pas pu fabriquer.",
+            _libelle(test_key), best[test_key] - ref[test_key],
         )
 
 
@@ -1132,7 +1185,21 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
         logger.error("Toutes les combinaisons ont échoué -- voir le CSV.")
         sys.exit(1)
 
-    rank_key = "train_sharpe_ratio" if split_date is not None and "train_sharpe_ratio" in ok.columns else "sharpe_ratio"
+    # LA MÉTRIQUE DE CLASSEMENT EST UN RÉGLAGE, plus une constante. Le Sharpe
+    # reste le défaut ; --rank-metric information_ratio retire le facteur marché
+    # (cf. le pavé sur --rank-metric). La fenêtre, elle, ne se négocie pas :
+    # c'est toujours l'apprentissage quand il y en a une.
+    metrique = getattr(args, "rank_metric", "sharpe_ratio")
+    rank_key = (f"train_{metrique}"
+                if split_date is not None and f"train_{metrique}" in ok.columns
+                else metrique)
+    if rank_key not in ok.columns:
+        logger.error(
+            "Métrique de classement absente du CSV : %s. Les colonnes disponibles sont %s. "
+            "Un CSV produit avant l'ajout de cette métrique doit être relancé, pas relu.",
+            rank_key, sorted(c for c in ok.columns if "ratio" in c or "pct" in c),
+        )
+        sys.exit(1)
     cagr_key = "train_cagr_pct" if rank_key.startswith("train_") else "cagr_pct"
     bench_key = "train_benchmark_cagr_pct" if rank_key.startswith("train_") else None
 
@@ -1168,7 +1235,7 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
     # colonne varie en silence.
     colonnes = [*AXES, rank_key]
     if split_date is not None:
-        colonnes += ["test_sharpe_ratio", "train_cagr_pct", "test_cagr_pct"]
+        colonnes += [rank_key.replace("train_", "test_", 1), "train_cagr_pct", "test_cagr_pct"]
     else:
         colonnes += ["cagr_pct"]
     colonnes += ["annualized_turnover_pct", "max_drawdown_pct", "avg_exposure_pct"]
@@ -1178,18 +1245,20 @@ def _report(results: pd.DataFrame, args, split_date: Optional[pd.Timestamp]) -> 
 
     _lire_le_plateau(ranked, plateau, rank_key, args.plateau_tolerance)
 
-    _lire_le_test_apparie(ok, args.plateau_tolerance)
+    _lire_le_test_apparie(ok, args.plateau_tolerance, args.rank_metric)
 
     _compare_a_la_reference(ok, best, args.strategy, rank_key, split_date)
 
     logger.info("--- Meilleur point ---")
     for key in AXES:
         logger.info("  %s = %s", key, _lisible(key, best.get(key)))
-    if split_date is not None and pd.notna(best.get("test_sharpe_ratio")):
+    cle_test = rank_key.replace("train_", "test_", 1)
+    if split_date is not None and pd.notna(best.get(cle_test)):
         logger.info(
-            "Sharpe apprentissage %.3f -> test %.3f (coupure %s). C'est le SECOND chiffre qui "
+            "%s apprentissage %.3f -> test %.3f (coupure %s). C'est le SECOND chiffre qui "
             "dit si l'optimum survit à des données qui ne l'ont pas choisi.",
-            best.get(rank_key), best.get("test_sharpe_ratio"), split_date.date(),
+            _libelle(rank_key).capitalize(), best.get(rank_key), best.get(cle_test),
+            split_date.date(),
         )
     logger.info(
         "Sharpe plein échantillon %.3f, plancher de bruit %.3f pour %d essais, Sharpe déflaté %.3f. "

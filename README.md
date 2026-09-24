@@ -1158,6 +1158,62 @@ fenêtre qui n'a rien choisi. Il se lit **après**, au même titre que
 `test_sharpe_ratio`. La sélection reste le Sharpe d'apprentissage départagé par
 la rotation.
 
+#### Changer de métrique : l'information ratio (`--rank-metric`)
+
+Le Sharpe d'une stratégie actions long-only est dominé par le facteur **marché**,
+que toutes les combinaisons d'une grille portent ensemble : il les bruite toutes
+sans en séparer aucune. L'**information ratio** est le Sharpe de l'écart *actif*
+(stratégie moins indice) — le facteur commun disparaît.
+
+```bash
+python 16_optimize_strategie_actions.py --rank-metric information_ratio
+```
+
+Le classement, le test apparié, la colonne de test et l'erreur-type affichée
+suivent tous la métrique choisie : classer sur l'IR en jugeant sur le Sharpe
+reviendrait à choisir selon un critère et à conclure selon un autre.
+
+**Mesuré, à grille identique** (432 combinaisons, même signal) :
+
+| | Sharpe | Information ratio |
+|---|---|---|
+| Étendue de la grille | 0,138 | 0,280 |
+| Demi-largeur appariée | 0,097 | 0,152 |
+| **Étendue / demi-largeur** | **1,43** | **1,84** |
+| Établies **pires** que la production | 41 | **68** |
+| Établies **meilleures** | 0 | 0 |
+
+**Le gain est réel mais modeste : ×1,29**, pas le ×1,9 annoncé au départ. Cette
+première estimation se mesurait contre l'erreur-type *marginale* — la base
+d'avant le test apparié. Sur cette base-là, l'IR vaut bien ×2,4 (0,94 contre
+0,39). Mais l'appariement retire déjà un facteur commun, et **les deux gains ne
+se multiplient pas**.
+
+Le classement, lui, ne bouge presque pas : corrélation de rang **+0,904** entre
+les deux, et **la même combinaison en tête**. Ce que l'IR améliore est la
+*résolution* — quelles combinaisons sont établies différentes —, pas l'ordre.
+
+##### Un piège d'échelle, qui a failli me faire conclure l'inverse
+
+Les demi-largeurs de deux métriques **ne se comparent pas**. Dans un régime
+dominé par le marché, l'IR d'une stratégie vaut plusieurs fois son Sharpe, et
+son intervalle est plus large dans la même proportion — ici 0,152 contre 0,097.
+Lus bruts, ces deux nombres disent que l'IR sépare *moins* bien. C'est faux :
+seul le rapport sans dimension (étendue / demi-largeur) se compare, et il donne
+l'inverse. Un test verrouille ce piège.
+
+**Le mécanisme du gain résiduel n'est pas établi.** L'hypothèse naturelle — que
+l'appariement n'annule le marché que si les variantes le portent à l'identique,
+et que leurs bêtas diffèrent (0,66 à 0,70 sur la grille) — ne s'est pas
+reproduite proprement en simulation. Les tests qui prétendaient l'isoler ont été
+retirés plutôt qu'ajustés jusqu'à passer : ce qui est vérifié est la mécanique
+du calcul, pas l'explication.
+
+**Le Sharpe reste le défaut.** Basculer changerait rétroactivement le sens de
+tous les réglages retenus jusqu'ici, pour un gain de résolution qui ne désigne
+aucun gagnant nouveau — la grille classée sur l'IR établit elle aussi **zéro**
+combinaison meilleure que la production.
+
 **La comparaison se fait contre la production, pas entre combinaisons.** La
 question qui décide d'un changement n'est pas « laquelle de ces 108 gagne ? »
 mais « laquelle bat ce qui tourne déjà ? ». C'est aussi pourquoi retirer un axe
