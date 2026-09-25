@@ -543,14 +543,8 @@ def main() -> None:
         symbols = [args.ticker.upper()]
     else:
         tickers_file = args.tickers or config.default_universe_file()
-        if args.tickers is None and tickers_file == config.UNIVERSE_FULL_FILE:
-            logger.info(
-                "Univers point-in-time retenu (%s) : les entreprises RADIÉES sont incluses. "
-                "Sans elles, le backtest ne peut choisir que parmi des survivantes alors que "
-                "son indice de référence porte l'indice entier -- biais de survivance. "
-                "Le premier run est plus long ; les suivants ignorent les tickers en cache.",
-                tickers_file,
-            )
+        if args.tickers is None:
+            config.journaliser_univers_retenu(logger, tickers_file)
         universe = pd.read_csv(tickers_file, encoding="utf-8-sig")
         symbols = universe["RIC"].dropna().unique().tolist()
         if args.limit:

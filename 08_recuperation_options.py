@@ -115,6 +115,7 @@ from ib_insync import IB, Stock, Option, Contract, util
 
 import config
 import ecriture_atomique
+import reprise_jsonl
 import ib_connect
 
 IB_HOST = "127.0.0.1"
@@ -1117,16 +1118,15 @@ def append_checkpoint(output_dir: Path, rows: list[dict]) -> None:
 
 
 def load_checkpoint_rows(output_dir: Path) -> list[dict]:
-    path = _checkpoint_path(output_dir)
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    """Une ligne par contrat : un ticker refait après une reprise (--resume)
+    écrit ses chaînes une seconde fois -- la dernière, plus fraîche, est
+    retenue (cf. reprise_jsonl). Le con_id IBKR identifie le contrat ; les
+    autres champs le complètent quand il manque."""
+    return reprise_jsonl.lire_sans_doublons(
+        _checkpoint_path(output_dir),
+        cle=lambda row: (row.get("symbol"), row.get("expiry"), row.get("strike"),
+                         row.get("option_type"), row.get("trading_class"), row.get("con_id")),
+        journal=logger)
 
 
 def main() -> None:

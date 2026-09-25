@@ -47,8 +47,8 @@ Prérequis :
     pip install requests beautifulsoup4
     export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
                                       sec_filings_text.fournisseur_llm -- sans
-    cette variable, les 8-K sont journalisés avec category="non_evalue"
-    plutôt que de planter)
+    clé, chaque 8-K est téléchargé et classé PAR RÈGLES à partir de son texte,
+    cf. classify_8k_par_regles ; le modèle les reprend quand une clé arrive)
     export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers le
     LLM, Gemini ou Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
 
@@ -67,7 +67,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -75,6 +75,7 @@ import pandas as pd
 
 import config
 import ecriture_atomique
+import reprise_jsonl
 import sec_filings_text as sft
 
 logger = logging.getLogger("recuperation_8k")
@@ -298,13 +299,35 @@ def classify_8k_par_regles(item_codes: List[str], text: str) -> dict:
     }
 
 
-def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
+def date_limite_llm(aujourd_hui: datetime, jours: Optional[int]) -> Optional[str]:
+    """Date (AAAA-MM-JJ) à partir de laquelle un 8-K passe par le modèle ;
+    None -- 0 jour ou moins -- pour tout l'historique (cf.
+    config.LLM_8K_FENETRE_JOURS)."""
+    if not jours or jours <= 0:
+        return None
+    return (aujourd_hui - timedelta(days=jours)).date().isoformat()
+
+
+def llm_pour(filed_date, limite: Optional[str]) -> bool:
+    """Ce 8-K est-il assez récent pour le modèle ? Une date absente ou
+    illisible ne le prive pas du modèle : le doute profite au meilleur verdict."""
+    if limite is None or not filed_date:
+        return True
+    return str(filed_date)[:10] >= limite
+
+
+def classify_8k(symbol: str, filed_date: str, text: str, llm: bool = True) -> dict:
     """Classification d'un 8-K à partir de son texte.
 
     Le modèle est prioritaire quand une clé est disponible ; à défaut, la
     règle documentaire (`classify_8k_par_regles`) prend le relais plutôt que de
-    renvoyer `non_evalue` et de jeter le document. Voir le pavé plus haut."""
+    renvoyer `non_evalue` et de jeter le document. Voir le pavé plus haut.
+
+    `llm=False` : directement la règle, sans appel -- un 8-K trop ancien pour
+    toucher un signal encore vivant (cf. config.LLM_8K_FENETRE_JOURS)."""
     item_codes = extract_item_codes(text)
+    if not llm:
+        return classify_8k_par_regles(item_codes, text)
     prompt = build_prompt(symbol, filed_date, item_codes, text)
     result = sft.analyser_texte_llm(prompt)
     if result is None or "category" not in result:
@@ -343,13 +366,41 @@ def is_cacheable(classification: dict) -> bool:
     return classification.get("category") not in NON_CACHEABLE_CATEGORIES
 
 
-def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
+def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
+    """Ce que la mémoire doit garder de chaque 8-K : son dernier verdict du
+    MODÈLE, plus son dernier verdict PAR RÈGLES s'il est plus récent.
+
+    C'est exactement ce que load_llm_cache peut retenir : avec une clé d'API,
+    les verdicts par règles sont ignorés et le dernier verdict du modèle sert ;
+    sans clé, le plus récent des deux. Tout le reste est un doublon -- une
+    ré-analyse (--no-llm-cache), ou un 8-K repris par le modèle le jour où une
+    clé arrive, ajoute une ligne sans effacer l'ancienne."""
+    dernier_modele: Dict[str, int] = {}
+    dernier_regles: Dict[str, int] = {}
+    for i, entree in enumerate(entrees):
+        cle = cache_key(entree["symbol"], entree["accession_number"])
+        if entree.get("classification_source") == "regles_document":
+            dernier_regles[cle] = i
+        else:
+            dernier_modele[cle] = i
+    garder = set(dernier_modele.values()) | {
+        i for cle, i in dernier_regles.items() if i > dernier_modele.get(cle, -1)}
+    return [entree for i, entree in enumerate(entrees) if i in garder]
+
+
+def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[str, dict]:
     """Cache des classifications déjà obtenues, indexé par symbole:accession.
 
     Tolérant aux lignes corrompues (un run tué en plein write laisse une ligne
     tronquée) : on ignore la ligne fautive plutôt que de perdre tout le cache
-    -- une entrée manquante coûte un appel Mistral, un cache illisible en
+    -- une entrée manquante coûte un appel au modèle, un cache illisible en
     coûte des milliers.
+
+    SANS DOUBLONS : à chaque chargement, les lignes illisibles et les verdicts
+    remplacés (cf. entrees_a_conserver) sont retirés du fichier, réécrit d'un
+    bloc. Le fichier ne fait qu'ajouter des lignes en cours de run -- c'est ce
+    qui protège un appel payé d'un Ctrl-C --, il est donc compacté ici, au
+    seul moment où rien d'autre n'y écrit.
 
     Les verdicts rendus PAR RÈGLES (`classification_source == "regles_document"`)
     sont ignorés dès qu'une clé d'API est disponible : ils ont été produits
@@ -358,34 +409,38 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
     path = llm_cache_path(output_dir)
     if not path.exists():
         return {}
-    cache: Dict[str, dict] = {}
-    ignorees = 0
+    lignes, illisibles = reprise_jsonl.lire_lignes(path)
+    entrees = [e for e in lignes if e.get("symbol") and e.get("accession_number")]
+    ignorees = illisibles + len(lignes) - len(entrees)
+    conservees = entrees_a_conserver(entrees)
+    doublons = len(entrees) - len(conservees)
+    if ignorees:
+        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    if doublons or ignorees:
+        reprise_jsonl.reecrire(path, conservees)
+        logger.info(
+            "Mémoire des classifications nettoyée : %d doublon(s) et %d ligne(s) illisible(s) "
+            "retirés de %s.", doublons, ignorees, path)
+
     # Gemini OU Mistral : une seule des deux clés suffit à rendre la main au
     # modèle (voir sft.fournisseur_llm).
     llm_disponible = sft.llm_disponible()
-    remis_en_jeu = 0
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                ignorees += 1
-                continue
-            symbol, accession = entry.get("symbol"), entry.get("accession_number")
-            if not symbol or not accession:
-                ignorees += 1
-                continue
-            if llm_disponible and entry.get("classification_source") == "regles_document":
-                remis_en_jeu += 1
-                continue
-            # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
-            # remplace l'ancien verdict sans qu'il faille réécrire le fichier.
-            cache[cache_key(symbol, accession)] = entry
-    if ignorees:
-        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    cache: Dict[str, dict] = {}
+    par_regles = set()
+    for entree in conservees:
+        cle = cache_key(entree["symbol"], entree["accession_number"])
+        if (llm_disponible and entree.get("classification_source") == "regles_document"
+                and llm_pour(entree.get("filed_date"), limite_llm)):
+            # Seul un 8-K RÉCENT repart au modèle : un ancien, classé par
+            # règles, reste servi par le cache (cf. config.LLM_8K_FENETRE_JOURS).
+            par_regles.add(cle)
+            continue
+        # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
+        # remplace l'ancien verdict.
+        cache[cle] = entree
+    # Remis en jeu : les 8-K qui n'ont QU'UN verdict par règles. Ceux qui ont
+    # aussi un verdict du modèle le gardent, et ne repartent pas au modèle.
+    remis_en_jeu = len(par_regles - set(cache))
     if remis_en_jeu:
         logger.info(
             "%d 8-K classés par règles remis en jeu : %s est disponible, "
@@ -428,9 +483,11 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
 def process_ticker_8k(
     symbol: str, cik: str, windows: List[tuple],
     llm_cache: Optional[Dict[str, dict]] = None, output_dir: Optional[Path] = None,
+    limite_llm: Optional[str] = None,
 ) -> tuple:
     """Lignes 8-K du ticker, plus le nombre de classifications servies par le
-    cache. `llm_cache` à None désactive complètement la mémoire (--no-llm-cache)."""
+    cache. `llm_cache` à None désactive complètement la mémoire (--no-llm-cache).
+    `limite_llm` : seuls les 8-K déposés à partir de cette date vont au modèle."""
     rows = []
     cache_hits = 0
     seen_accessions = set()
@@ -472,7 +529,9 @@ def process_ticker_8k(
                 continue
             text, _extraction_mode = extracted
 
-            classification = classify_8k(symbol, filing["filing_date"], text)
+            classification = classify_8k(
+                symbol, filing["filing_date"], text,
+                llm=llm_pour(filing["filing_date"], limite_llm))
             row = {
                 "symbol": symbol, "cik": cik, "filed_date": filing["filing_date"],
                 "accession_number": filing["accession_number"],
@@ -528,16 +587,11 @@ def append_checkpoint(output_dir: Path, rows: List[dict]) -> None:
 
 
 def load_checkpoint_rows(output_dir: Path) -> List[dict]:
-    path = _checkpoint_path(output_dir)
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    """Un 8-K par ligne : un ticker refait après une reprise (--resume) écrit
+    ses 8-K une seconde fois (cf. reprise_jsonl)."""
+    return reprise_jsonl.lire_sans_doublons(
+        _checkpoint_path(output_dir),
+        cle=lambda row: (row.get("symbol"), row.get("accession_number")), journal=logger)
 
 
 def main() -> None:
@@ -557,12 +611,20 @@ def main() -> None:
              "(à réserver à un changement de prompt ou de modèle : chaque appel est payant).",
     )
     parser.add_argument(
+        "--llm-depuis-jours", type=int, default=config.LLM_8K_FENETRE_JOURS,
+        help="Seuls les 8-K déposés depuis ce nombre de jours passent par le modèle ; les plus "
+             "anciens sont classés par règles, sans appel (défaut: %(default)s, la plus longue "
+             "durée de vie d'un signal -- un 8-K plus ancien ne touche plus aucun signal actif). "
+             "0 : tout l'historique.",
+    )
+    parser.add_argument(
         "--max-failure-ratio", type=float, default=DEFAULT_MAX_FAILURE_RATIO,
         help="Part maximale d'entreprises en échec RÉSEAU tolérée avant d'abandonner le run "
              "sans rien écrire (défaut: %(default)s). Un material_events_8k.parquet incomplet "
              "désactive silencieusement le filtre d'événements matériels du backtest.",
     )
     args = parser.parse_args()
+    limite_llm = date_limite_llm(datetime.now(), args.llm_depuis_jours)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -570,17 +632,23 @@ def main() -> None:
         sys.exit(1)
 
     if not sft.llm_disponible():
-        logger.warning(
-            "Aucune clé LLM (%s ou %s) : les 8-K seront journalisés avec category='non_evalue' "
-            "(pas d'appel au modèle). Définis l'une des deux pour activer la classification.",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
+        # Ce message annonçait « category='non_evalue' », le comportement
+        # d'AVANT la classification par règles : il faisait croire à un run
+        # inutile alors que chaque 8-K est bel et bien lu et classé.
+        logger.info(
+            "Aucune clé LLM (%s ou %s) : chaque 8-K est téléchargé et classé PAR RÈGLES à partir "
+            "de son texte. Pour que le modèle classe les 8-K récents : %s",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info(
-            "Classification par %s. Débit : un appel toutes les %.2fs (%s pour l'ajuster au "
-            "quota de ton offre). Le débit se resserre automatiquement en cas de 429.",
-            sft.description_llm(), sft.MISTRAL_RATE_LIMITER.interval,
-            sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
+            "Classification par %s %s. Débit : un appel toutes les %.2fs (%s pour l'ajuster "
+            "au quota de ton offre). Le débit se resserre automatiquement en cas de 429.",
+            sft.description_llm(),
+            "de tout l'historique" if limite_llm is None else
+            f"des 8-K déposés depuis le {limite_llm} ({args.llm_depuis_jours} jours) -- les plus "
+            "anciens sont classés par règles",
+            sft.MISTRAL_RATE_LIMITER.interval, sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
         )
 
     if not config.FINANCIALS_TTM_FILE.exists():
@@ -596,14 +664,8 @@ def main() -> None:
         symbols_ric = [args.ticker.upper()]
     else:
         tickers_file = args.tickers or config.default_universe_file()
-        if args.tickers is None and tickers_file == config.UNIVERSE_FULL_FILE:
-            logger.info(
-                "Univers point-in-time retenu (%s) : les entreprises RADIÉES sont incluses. "
-                "Sans elles, le backtest ne peut choisir que parmi des survivantes alors que "
-                "son indice de référence porte l'indice entier -- biais de survivance. "
-                "Le premier run est plus long ; les suivants ignorent les tickers en cache.",
-                tickers_file,
-            )
+        if args.tickers is None:
+            config.journaliser_univers_retenu(logger, tickers_file)
         universe = pd.read_csv(tickers_file, encoding="utf-8-sig")
         symbols_ric = universe["RIC"].dropna().unique().tolist()
         if args.limit:
@@ -630,7 +692,7 @@ def main() -> None:
             "--no-llm-cache : les 8-K déjà classifiés seront re-téléchargés et re-soumis à Mistral."
         )
     else:
-        llm_cache = load_llm_cache(args.output_dir)
+        llm_cache = load_llm_cache(args.output_dir, limite_llm)
 
     today = datetime.now()
     to_process = []
@@ -659,7 +721,7 @@ def main() -> None:
             logger.info("[%d/%d] %s (CIK %s, %d fenêtre(s))...", i, len(to_process), symbol, cik, len(windows))
             hits = 0
             try:
-                rows, hits = process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir)
+                rows, hits = process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir, limite_llm)
             except KeyboardInterrupt:
                 # Ctrl-C pendant une attente de quota : sortie propre (le
                 # cache et le checkpoint sont déjà sur disque), pas une trace
@@ -738,6 +800,14 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if args.ticker or args.limit or args.tickers:
+        # Run PARTIEL : il ne remplace que ses propres 8-K dans le fichier
+        # complet, que le backtest et le paper trading lisent (cf. reprise_jsonl).
+        df, conserves = reprise_jsonl.fusionner_run_partiel(
+            df, config.MATERIAL_EVENTS_8K_FILE, ["symbol", "accession_number"])
+        logger.info(
+            "Run partiel (--ticker, --limit ou --tickers) : %d 8-K de ce run fusionnés dans %s, "
+            "%d autres conservés tels quels.", len(rows), config.MATERIAL_EVENTS_8K_FILE, conserves)
     if "from_cache" in df.columns:
         # Un checkpoint écrit par une version antérieure n'a pas la colonne :
         # sans normalisation, le mélange bool/NaN part en colonne "object" et

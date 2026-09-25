@@ -272,6 +272,19 @@ réessaie ce seul cas, avec un délai croissant (≈ 3 s au total), et relève
 l'erreur si le verrou persiste. `tests/test_ecriture_atomique.py` refuse
 tout nouveau `tmp.replace(...)` qui contournerait le module.
 
+**Reprises sans doublons.** `04c`, `07b` et `08` écrivent chaque ligne dans
+leur checkpoint dès qu'elle est produite, mais ne sauvegardent la liste des
+éléments traités que toutes les dix unités. Un run interrompu puis repris
+(`--resume`) refait donc jusqu'à neuf unités et réécrit leurs lignes, que les
+trois scripts recopiaient telles quelles dans leur fichier de sortie. Ils
+relisent désormais leur checkpoint par `reprise_jsonl` : une ligne par 8-K,
+par période ou par contrat, la dernière écriture gagnant. Une dernière ligne
+tronquée par l'interruption est ignorée au lieu de faire planter la reprise.
+La mémoire des 8-K de `04c` (`cache_8k_mistral.jsonl`) est en outre nettoyée
+à chaque démarrage : les verdicts remplacés en sont retirés, sans rien changer
+à ce qu'elle rend, avec ou sans clé LLM. Mesuré au 2026-09-25 sur les fichiers
+du dépôt : aucun doublon, aucun fichier réécrit.
+
 **Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
 relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
 récupération des cours laisserait le signal du jour calculé sur ceux de la
@@ -600,10 +613,30 @@ parquet réécrit en bloc ne l'est pas.
 
 ## Configuration requise
 
+**Le plus simple, surtout sous Windows : un fichier `.env`.** Copie
+`.env.example` en `.env` à la racine du dépôt et remplis-le :
+
+```
+SEC_CONTACT_EMAIL=ton.adresse@exemple.fr      # obligatoire pour 04, 04b, 04c, 07b
+GEMINI_API_KEY=ta_cle                         # optionnel : 02, 04c, 07b (LLM)
+ALPHAVANTAGE_API_KEY=ta_cle                   # optionnel : 08 --av-backfill-dates
+```
+
+Tous les scripts le lisent au démarrage (`env_local.py`, appelé par
+`config.py`), d'où qu'ils soient lancés : terminal, éditeur, tâche planifiée.
+`.env` est ignoré par git, et une variable déjà définie dans l'environnement
+l'emporte sur lui. C'est la réponse à un piège constaté : « Aucune clé LLM »
+alors que la clé avait été « mise ». Sous Windows, `setx` n'agit que sur les
+terminaux ouverts après lui, `$env:CLE = ...` que sur la fenêtre PowerShell
+courante, et `set CLE=...` (syntaxe de cmd) pas du tout sous PowerShell. Le
+message affiché quand aucune clé n'est vue dit maintenant quoi vérifier.
+
+Les variables d'environnement restent possibles :
+
 ```bash
-export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"   # obligatoire pour 04, 04b, 04c, 07b
-export GEMINI_API_KEY="ta_cle"                      # optionnel : 02, 04c, 07b (LLM)
-export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfill-dates
+export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"
+export GEMINI_API_KEY="ta_cle"
+export ALPHAVANTAGE_API_KEY="ta_cle"
 ```
 
 `SEC_CONTACT_EMAIL` n'a **pas** de valeur par défaut : la SEC exige un
@@ -643,11 +676,39 @@ Au démarrage, `04c` et `07b` affichent le fournisseur retenu
 400…) est journalisé avec le message renvoyé par le fournisseur, qui en dit
 la cause.
 
-Sans aucune clé, `04c` et `07b` journalisent leurs lignes en
-`non_evalue_pas_de_cle_api` au lieu d'appeler le modèle — les filtres
-qualitatifs restent alors sans effet, ce qui est le comportement voulu. Le
-cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert quel que soit le
-fournisseur : un 8-K déjà classé n'est pas re-soumis.
+Sans aucune clé, `07b` journalise ses lignes en `non_evalue_pas_de_cle_api`
+au lieu d'appeler le modèle, et `04c` classe chaque 8-K **par règles** à partir
+de son texte. Le cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert
+quel que soit le fournisseur : un 8-K déjà classé par le modèle n'est pas
+re-soumis. Un 8-K classé par règles, lui, est repris par le modèle dès qu'une
+clé est définie.
+
+**Seuls les 8-K récents vont au modèle.** Un 8-K ne sert qu'à périmer un
+signal encore actionnable. Au-delà de la plus longue durée de vie d'un signal
+(400 jours, `config.LLM_8K_FENETRE_JOURS`, déduit des durées de
+`BACKTEST_SIGNAL_MAX_AGE_DAYS*`), il ne touche plus aucune décision. `04c` ne
+soumet donc au modèle que les 8-K déposés dans cette fenêtre, et classe les
+plus anciens par règles, sans appel ; un ancien 8-K classé par règles n'est
+pas non plus rendu au modèle quand une clé arrive. Au 2026-09-26 : 6 338 8-K
+sur 99 147 (6,4 %) dans la fenêtre, au lieu de tout l'historique.
+`--llm-depuis-jours N` change la fenêtre, `0` rend tout l'historique au
+modèle. Le backtest historique s'appuie donc sur la classification par règles
+pour tout ce qui est plus ancien.
+
+**Le quota.** Même réduit à environ 6 300 appels, le premier run avec une clé
+peut dépasser le quota quotidien du palier gratuit de Gemini. Un
+**disjoncteur** coupe alors le modèle : après trois analyses de suite refusées
+pour quota malgré leurs réessais, plus aucun appel jusqu'à la fin du run. Les
+8-K restants sont classés par règles, et le modèle reprend les récents au run
+suivant. Sans lui, chaque appel attendait ses six réessais, jusqu'à 90 s
+chacun, et le run rampait. Sur une offre payante, relève
+`MISTRAL_REQUESTS_PER_SECOND`.
+
+**Essayer sur quelques entreprises sans risque.** `04c --ticker AAPL`,
+`04c --limit 5` ou `07b --limit 5` ne remplacent, dans le fichier de sortie
+complet, que les lignes qu'ils ont refaites. Avant, ils réécrivaient le
+fichier avec leurs seules lignes : un essai sur AAPL réduisait les 99 147 8-K
+à ceux d'AAPL, et le filtre d'événements du backtest et du paper trading avec.
 
 ## Rafraîchissement trimestriel (04b, 04c, 07b, run_pipeline_quarterly.py)
 
@@ -671,8 +732,10 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
 
 04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
 filings SEC + appel LLM générique) et nécessitent `GEMINI_API_KEY` ou
-`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict --
-sans clé, ils journalisent "non_evalue" plutôt que de planter.
+`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict de
+modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue", et
+04c classe chaque 8-K PAR RÈGLES à partir de son texte, verdicts que le modèle
+reprend dès qu'une clé est définie.
 
 05/06b/07 consomment automatiquement le TTM (`FINANCIALS_TTM_FILE`) dès que
 04b a tourné une fois, en plus de l'annuel -- sans régression : identique à

@@ -106,8 +106,8 @@ def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
         logger.warning(
             "Aucune clé LLM (%s ou %s) : %d entreprises sans secteur GICS "
             "exploitable resteront 'indetermine' (renseigne secteurs_manuels.json "
-            "ou définis une clé pour les résoudre via l'API).",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, len(entreprises),
+            "ou définis une clé pour les résoudre via l'API). %s",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, len(entreprises), sft.aide_cle_absente(),
         )
         return {}
 

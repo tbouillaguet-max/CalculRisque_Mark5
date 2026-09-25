@@ -54,6 +54,7 @@ import pandas as pd
 
 import config
 import ecriture_atomique
+import reprise_jsonl
 import sec_filings_text as sft
 
 logger = logging.getLogger("validation_qualitative")
@@ -213,16 +214,13 @@ def append_checkpoint(output_dir: Path, row: dict) -> None:
 
 
 def load_checkpoint_rows(output_dir: Path) -> list:
-    path = _checkpoint_path(output_dir)
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    """Une ligne par période : une période refaite après une reprise
+    (--resume) écrit son verdict une seconde fois (cf. reprise_jsonl)."""
+    return reprise_jsonl.lire_sans_doublons(
+        _checkpoint_path(output_dir),
+        cle=lambda row: (row.get("symbol"), row.get("period_type"),
+                         row.get("fiscal_year"), row.get("fiscal_quarter")),
+        journal=logger)
 
 
 def main() -> None:
@@ -237,9 +235,8 @@ def main() -> None:
     if not sft.llm_disponible():
         logger.warning(
             "Aucune clé LLM (%s ou %s) : toutes les périodes seront journalisées comme "
-            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). Définis l'une des deux "
-            "pour activer la validation qualitative.",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
+            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info("Validation qualitative par %s.", sft.description_llm())
@@ -305,6 +302,15 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if args.limit:
+        # Run PARTIEL : il ne remplace que ses propres périodes dans le fichier
+        # complet, que le filtre qualitatif du backtest lit (cf. reprise_jsonl).
+        df, conservees = reprise_jsonl.fusionner_run_partiel(
+            df, config.QUALITATIVE_VALIDATION_FILE,
+            ["symbol", "period_type", "fiscal_year", "fiscal_quarter"])
+        logger.info(
+            "Run partiel (--limit) : %d période(s) de ce run fusionnée(s) dans %s, %d autres "
+            "conservées telles quelles.", len(rows), config.QUALITATIVE_VALIDATION_FILE, conservees)
     config.QUALITATIVE_VALIDATION_FILE.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(config.QUALITATIVE_VALIDATION_FILE, index=False, engine="pyarrow")
     logger.info("Validation qualitative sauvegardée : %s (%d lignes).", config.QUALITATIVE_VALIDATION_FILE, len(df))
