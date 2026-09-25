@@ -8,11 +8,11 @@ Corrections / changements par rapport à CateEntMark2 :
     - Utilise le secteur GICS déjà présent dans l'univers (ajouté par
       01_build_universe.py) via un mapping direct GICS -> ta liste de
       secteurs : la quasi-totalité des entreprises US n'ont donc plus besoin
-      d'appel API. Mistral n'est appelé qu'en dernier recours (GICS absent
+      d'appel API. Le LLM n'est appelé qu'en dernier recours (GICS absent
       ou mapping ambigu), ce qui réduit fortement le coût/temps par rapport
       au script d'origine qui appelait l'API pour les 600 entreprises.
-    - API_KEY se lit maintenant depuis la variable d'environnement
-      MISTRAL_API_KEY (au lieu d'être en dur dans le fichier) : évite de
+    - La clé d'API se lit depuis l'environnement (GEMINI_API_KEY ou
+      MISTRAL_API_KEY, au lieu d'être en dur dans le fichier) : évite de
       committer une clé par erreur. Le script tourne sans clé si le mapping
       GICS suffit (cas le plus fréquent) et sans fichier secteurs_manuels.json.
 
@@ -25,30 +25,24 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
-import os
-import random
-import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import requests
 
 import config
+import sec_filings_text as sft
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# --- Config API Mistral (fallback uniquement) --------------------------------
-# ⚠️ La clé était précédemment codée en dur dans ce fichier (committée dans un
-# dépôt public) : si tu utilises encore cette clé, RÉVOQUE-LA côté Mistral et
-# régénères-en une nouvelle avant toute chose. Elle se lit maintenant
-# uniquement depuis la variable d'environnement MISTRAL_API_KEY, ex:
-#   export MISTRAL_API_KEY="ta_nouvelle_cle"
-API_KEY = os.environ.get("MISTRAL_API_KEY")
-MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
-HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+# --- LLM (fallback uniquement) -------------------------------------------------
+# L'appel passe par sec_filings_text.analyser_texte_llm, partagé avec 04c et
+# 07b : Gemini si GEMINI_API_KEY est définie, sinon Mistral (MISTRAL_API_KEY).
+# ⚠️ Une clé Mistral était autrefois codée en dur dans ce fichier (committée
+# dans un dépôt public) : si tu utilises encore cette clé, RÉVOQUE-LA côté
+# Mistral. Les clés se lisent uniquement depuis l'environnement, ex:
+#   export GEMINI_API_KEY="ta_cle"
 
 SECTEURS = [
     "Agro-alimentaire et boissons", "Assurance", "Automobiles et équipementiers",
@@ -83,9 +77,6 @@ CACHE_FILE = Path("secteur_cache.json")
 MANUAL_SECTORS_FILE = Path("secteurs_manuels.json")
 
 BATCH_SIZE = 5
-MAX_RETRIES = 3
-RETRY_DELAY = 2
-TEMPERATURE = 0.1
 MAX_TOKENS = 100
 
 
@@ -107,15 +98,15 @@ def sauvegarder_cache(cache: Dict[str, str]) -> None:
         logger.error("Erreur de sauvegarde du cache: %s", e)
 
 
-def appeler_mistral(entreprises: List[str]) -> Dict[str, Optional[str]]:
+def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
     if not entreprises:
         return {}
-    if not API_KEY:
+    if not sft.llm_disponible():
         logger.warning(
-            "MISTRAL_API_KEY non définie : %d entreprises sans secteur GICS "
+            "Aucune clé LLM (%s ou %s) : %d entreprises sans secteur GICS "
             "exploitable resteront 'indetermine' (renseigne secteurs_manuels.json "
-            "ou exporte MISTRAL_API_KEY pour les résoudre via l'API).",
-            len(entreprises),
+            "ou définis une clé pour les résoudre via l'API).",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, len(entreprises),
         )
         return {}
 
@@ -130,38 +121,16 @@ def appeler_mistral(entreprises: List[str]) -> Dict[str, Optional[str]]:
     Réponds UNIQUEMENT avec un JSON valide au format:
     {{"{entreprises[0]}": "secteur ou indetermine"}}
     """
-    data = {
-        "model": "mistral-large-latest",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": TEMPERATURE,
-        "max_tokens": MAX_TOKENS * max(1, len(entreprises)),
-    }
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(MISTRAL_URL, headers=HEADERS, json=data, timeout=30)
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"].strip()
-            if not content.startswith("{") or not content.endswith("}"):
-                logger.warning("Réponse invalide de Mistral: %s", content)
-                return {}
-            result = json.loads(content)
-            for entreprise in entreprises:
-                if entreprise not in result:
-                    logger.warning("Entreprise manquante dans la réponse: %s", entreprise)
-                    return {}
-            return result
-        except requests.exceptions.RequestException as e:
-            delay = RETRY_DELAY * (2 ** attempt) + random.uniform(0, 1)
-            logger.warning("Tentative %d échouée pour %s: %s. Nouvel essai dans %.1fs...",
-                            attempt + 1, entreprises, e, delay)
-            time.sleep(delay)
-        except (KeyError, json.JSONDecodeError) as e:
-            logger.error("Erreur de parsing pour %s: %s", entreprises, e)
+    # Réessais, débit et parsing du JSON sont gérés par analyser_texte_llm.
+    result = sft.analyser_texte_llm(prompt, max_tokens=MAX_TOKENS * max(1, len(entreprises)))
+    if result is None:
+        logger.error("Pas de réponse exploitable du LLM pour %s", entreprises)
+        return {}
+    for entreprise in entreprises:
+        if entreprise not in result:
+            logger.warning("Entreprise manquante dans la réponse: %s", entreprise)
             return {}
-
-    logger.error("Échec après %d tentatives pour %s", MAX_RETRIES, entreprises)
-    return {}
+    return result
 
 
 # Bucket retenu pour une financière dont la sous-industrie est absente ou
@@ -236,7 +205,7 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
 
     logger.info(
         "%d entreprises résolues via secteurs manuels/cache/GICS (dont %d financières "
-        "découpées par sous-industrie), %d via API Mistral (fallback).",
+        "découpées par sous-industrie), %d via le LLM (fallback).",
         len(secteurs), fines, len(a_appeler),
     )
     if financieres_sans_sous_industrie:
@@ -253,7 +222,7 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
 
     for i in range(0, len(a_appeler), BATCH_SIZE):
         batch = a_appeler[i:i + BATCH_SIZE]
-        result = appeler_mistral(batch)
+        result = appeler_llm(batch)
         for nom in batch:
             secteurs[nom] = result.get(nom, "indetermine")
 
@@ -286,10 +255,10 @@ def main() -> None:
     if "GICS_Sector" not in df.columns:
         # UNIVERSE_FULL_FILE (01b) ne porte pas le secteur GICS : les radiées
         # ne figurent plus dans la table Wikipedia des membres actuels. Tout
-        # passe donc par le cache, les secteurs manuels et Mistral.
+        # passe donc par le cache, les secteurs manuels et le LLM.
         logger.info(
             "%s n'a pas de colonne GICS_Sector : catégorisation via le cache, %s et "
-            "l'API Mistral uniquement (attendu pour l'univers complet de 01b).",
+            "le LLM uniquement (attendu pour l'univers complet de 01b).",
             args.universe, MANUAL_SECTORS_FILE,
         )
     df_categorise = categoriser_df(df)
