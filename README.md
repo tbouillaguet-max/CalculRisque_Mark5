@@ -272,6 +272,19 @@ réessaie ce seul cas, avec un délai croissant (≈ 3 s au total), et relève
 l'erreur si le verrou persiste. `tests/test_ecriture_atomique.py` refuse
 tout nouveau `tmp.replace(...)` qui contournerait le module.
 
+**Reprises sans doublons.** `04c`, `07b` et `08` écrivent chaque ligne dans
+leur checkpoint dès qu'elle est produite, mais ne sauvegardent la liste des
+éléments traités que toutes les dix unités. Un run interrompu puis repris
+(`--resume`) refait donc jusqu'à neuf unités et réécrit leurs lignes, que les
+trois scripts recopiaient telles quelles dans leur fichier de sortie. Ils
+relisent désormais leur checkpoint par `reprise_jsonl` : une ligne par 8-K,
+par période ou par contrat, la dernière écriture gagnant. Une dernière ligne
+tronquée par l'interruption est ignorée au lieu de faire planter la reprise.
+La mémoire des 8-K de `04c` (`cache_8k_mistral.jsonl`) est en outre nettoyée
+à chaque démarrage : les verdicts remplacés en sont retirés, sans rien changer
+à ce qu'elle rend, avec ou sans clé LLM. Mesuré au 2026-09-25 sur les fichiers
+du dépôt : aucun doublon, aucun fichier réécrit.
+
 **Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
 relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
 récupération des cours laisserait le signal du jour calculé sur ceux de la

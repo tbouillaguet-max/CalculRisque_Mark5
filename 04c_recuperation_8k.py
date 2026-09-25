@@ -75,6 +75,7 @@ import pandas as pd
 
 import config
 import ecriture_atomique
+import reprise_jsonl
 import sec_filings_text as sft
 
 logger = logging.getLogger("recuperation_8k")
@@ -343,13 +344,41 @@ def is_cacheable(classification: dict) -> bool:
     return classification.get("category") not in NON_CACHEABLE_CATEGORIES
 
 
+def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
+    """Ce que la mémoire doit garder de chaque 8-K : son dernier verdict du
+    MODÈLE, plus son dernier verdict PAR RÈGLES s'il est plus récent.
+
+    C'est exactement ce que load_llm_cache peut retenir : avec une clé d'API,
+    les verdicts par règles sont ignorés et le dernier verdict du modèle sert ;
+    sans clé, le plus récent des deux. Tout le reste est un doublon -- une
+    ré-analyse (--no-llm-cache), ou un 8-K repris par le modèle le jour où une
+    clé arrive, ajoute une ligne sans effacer l'ancienne."""
+    dernier_modele: Dict[str, int] = {}
+    dernier_regles: Dict[str, int] = {}
+    for i, entree in enumerate(entrees):
+        cle = cache_key(entree["symbol"], entree["accession_number"])
+        if entree.get("classification_source") == "regles_document":
+            dernier_regles[cle] = i
+        else:
+            dernier_modele[cle] = i
+    garder = set(dernier_modele.values()) | {
+        i for cle, i in dernier_regles.items() if i > dernier_modele.get(cle, -1)}
+    return [entree for i, entree in enumerate(entrees) if i in garder]
+
+
 def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
     """Cache des classifications déjà obtenues, indexé par symbole:accession.
 
     Tolérant aux lignes corrompues (un run tué en plein write laisse une ligne
     tronquée) : on ignore la ligne fautive plutôt que de perdre tout le cache
-    -- une entrée manquante coûte un appel Mistral, un cache illisible en
+    -- une entrée manquante coûte un appel au modèle, un cache illisible en
     coûte des milliers.
+
+    SANS DOUBLONS : à chaque chargement, les lignes illisibles et les verdicts
+    remplacés (cf. entrees_a_conserver) sont retirés du fichier, réécrit d'un
+    bloc. Le fichier ne fait qu'ajouter des lignes en cours de run -- c'est ce
+    qui protège un appel payé d'un Ctrl-C --, il est donc compacté ici, au
+    seul moment où rien d'autre n'y écrit.
 
     Les verdicts rendus PAR RÈGLES (`classification_source == "regles_document"`)
     sont ignorés dès qu'une clé d'API est disponible : ils ont été produits
@@ -358,34 +387,35 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
     path = llm_cache_path(output_dir)
     if not path.exists():
         return {}
-    cache: Dict[str, dict] = {}
-    ignorees = 0
+    lignes, illisibles = reprise_jsonl.lire_lignes(path)
+    entrees = [e for e in lignes if e.get("symbol") and e.get("accession_number")]
+    ignorees = illisibles + len(lignes) - len(entrees)
+    conservees = entrees_a_conserver(entrees)
+    doublons = len(entrees) - len(conservees)
+    if ignorees:
+        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    if doublons or ignorees:
+        reprise_jsonl.reecrire(path, conservees)
+        logger.info(
+            "Mémoire des classifications nettoyée : %d doublon(s) et %d ligne(s) illisible(s) "
+            "retirés de %s.", doublons, ignorees, path)
+
     # Gemini OU Mistral : une seule des deux clés suffit à rendre la main au
     # modèle (voir sft.fournisseur_llm).
     llm_disponible = sft.llm_disponible()
-    remis_en_jeu = 0
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                ignorees += 1
-                continue
-            symbol, accession = entry.get("symbol"), entry.get("accession_number")
-            if not symbol or not accession:
-                ignorees += 1
-                continue
-            if llm_disponible and entry.get("classification_source") == "regles_document":
-                remis_en_jeu += 1
-                continue
-            # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
-            # remplace l'ancien verdict sans qu'il faille réécrire le fichier.
-            cache[cache_key(symbol, accession)] = entry
-    if ignorees:
-        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
+    cache: Dict[str, dict] = {}
+    par_regles = set()
+    for entree in conservees:
+        cle = cache_key(entree["symbol"], entree["accession_number"])
+        if llm_disponible and entree.get("classification_source") == "regles_document":
+            par_regles.add(cle)
+            continue
+        # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
+        # remplace l'ancien verdict.
+        cache[cle] = entree
+    # Remis en jeu : les 8-K qui n'ont QU'UN verdict par règles. Ceux qui ont
+    # aussi un verdict du modèle le gardent, et ne repartent pas au modèle.
+    remis_en_jeu = len(par_regles - set(cache))
     if remis_en_jeu:
         logger.info(
             "%d 8-K classés par règles remis en jeu : %s est disponible, "
@@ -528,16 +558,11 @@ def append_checkpoint(output_dir: Path, rows: List[dict]) -> None:
 
 
 def load_checkpoint_rows(output_dir: Path) -> List[dict]:
-    path = _checkpoint_path(output_dir)
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    """Un 8-K par ligne : un ticker refait après une reprise (--resume) écrit
+    ses 8-K une seconde fois (cf. reprise_jsonl)."""
+    return reprise_jsonl.lire_sans_doublons(
+        _checkpoint_path(output_dir),
+        cle=lambda row: (row.get("symbol"), row.get("accession_number")), journal=logger)
 
 
 def main() -> None:

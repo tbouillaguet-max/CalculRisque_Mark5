@@ -54,6 +54,7 @@ import pandas as pd
 
 import config
 import ecriture_atomique
+import reprise_jsonl
 import sec_filings_text as sft
 
 logger = logging.getLogger("validation_qualitative")
@@ -213,16 +214,13 @@ def append_checkpoint(output_dir: Path, row: dict) -> None:
 
 
 def load_checkpoint_rows(output_dir: Path) -> list:
-    path = _checkpoint_path(output_dir)
-    if not path.exists():
-        return []
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+    """Une ligne par période : une période refaite après une reprise
+    (--resume) écrit son verdict une seconde fois (cf. reprise_jsonl)."""
+    return reprise_jsonl.lire_sans_doublons(
+        _checkpoint_path(output_dir),
+        cle=lambda row: (row.get("symbol"), row.get("period_type"),
+                         row.get("fiscal_year"), row.get("fiscal_quarter")),
+        journal=logger)
 
 
 def main() -> None:
