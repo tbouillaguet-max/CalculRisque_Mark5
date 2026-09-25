@@ -671,8 +671,10 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
 
 04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
 filings SEC + appel LLM générique) et nécessitent `GEMINI_API_KEY` ou
-`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict --
-sans clé, ils journalisent "non_evalue" plutôt que de planter.
+`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict de
+modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue", et
+04c classe chaque 8-K PAR RÈGLES à partir de son texte, verdicts que le modèle
+reprend dès qu'une clé est définie.
 
 05/06b/07 consomment automatiquement le TTM (`FINANCIALS_TTM_FILE`) dès que
 04b a tourné une fois, en plus de l'annuel -- sans régression : identique à

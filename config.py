@@ -136,6 +136,48 @@ def default_universe_file():
     interrogées."""
     return UNIVERSE_FULL_FILE if UNIVERSE_FULL_FILE.exists() else UNIVERSE_FILE
 
+
+def nombre_de_radiees() -> Optional[int]:
+    """Entreprises SORTIES de l'indice que porte l'historique de 01b
+    (`is_current_member` faux), ou None s'il est absent ou illisible.
+
+    L'historique, et non une différence entre les deux CSV d'univers : celle-ci
+    compte aussi les écarts entre deux instantanés de l'indice ACTUEL pris à
+    des dates différentes (mesuré : AVB et EQR d'un côté, RDDT et VMRK de
+    l'autre), qui ne sont pas des radiations."""
+    try:
+        import pandas as pd
+        historique = pd.read_parquet(UNIVERSE_HISTORY_FILE, columns=["is_current_member"])
+    except Exception:  # noqa: BLE001 -- absent, pointeur LFS, colonne manquante : on ne sait pas
+        return None
+    return int((~historique["is_current_member"].astype(bool)).sum())
+
+
+def journaliser_univers_retenu(logger_, tickers_file) -> None:
+    """Dit ce que l'univers point-in-time retenu par défaut contient VRAIMENT
+    (04, 04b, 04c).
+
+    L'ancien message affirmait « les entreprises RADIÉES sont incluses » dès
+    que le fichier de 01b existait, sans l'ouvrir. Or le fichier du dépôt ne
+    porte que les membres actuels -- 0 radiée au 2026-09-25 : le journal
+    annonçait une correction du biais de survivance qui n'avait pas lieu."""
+    if tickers_file != UNIVERSE_FULL_FILE:
+        return
+    radiees = nombre_de_radiees()
+    if radiees == 0:
+        logger_.warning(
+            "Univers point-in-time retenu (%s), mais il ne contient AUCUNE entreprise radiée : "
+            "ce sont les membres actuels de l'indice, le biais de survivance reste entier. "
+            "Relance 01b_historique_univers_sp500.py (accès à Wikipedia requis) pour l'alimenter.",
+            tickers_file)
+        return
+    logger_.info(
+        "Univers point-in-time retenu (%s) : %s incluses. Sans elles, le backtest ne peut "
+        "choisir que parmi des survivantes alors que son indice de référence porte l'indice "
+        "entier -- biais de survivance. Le premier run est plus long ; les suivants ignorent "
+        "les tickers en cache.",
+        tickers_file, "des entreprises radiées" if radiees is None else f"{radiees} entreprises radiées")
+
 # Cours quotidiens (contrairement à PRICES_FILE qui ne garde que la clôture
 # de fin d'année) : nécessaires pour un backtest à granularité journalière.
 DAILY_PRICES_FILE = DIR_PRICES / "daily_prices.parquet"       # sortie de 03b

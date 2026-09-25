@@ -47,8 +47,8 @@ Prérequis :
     pip install requests beautifulsoup4
     export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
                                       sec_filings_text.fournisseur_llm -- sans
-    cette variable, les 8-K sont journalisés avec category="non_evalue"
-    plutôt que de planter)
+    clé, chaque 8-K est téléchargé et classé PAR RÈGLES à partir de son texte,
+    cf. classify_8k_par_regles ; le modèle les reprend quand une clé arrive)
     export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers le
     LLM, Gemini ou Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
 
@@ -570,9 +570,13 @@ def main() -> None:
         sys.exit(1)
 
     if not sft.llm_disponible():
-        logger.warning(
-            "Aucune clé LLM (%s ou %s) : les 8-K seront journalisés avec category='non_evalue' "
-            "(pas d'appel au modèle). Définis l'une des deux pour activer la classification.",
+        # Ce message annonçait « category='non_evalue' », le comportement
+        # d'AVANT la classification par règles : il faisait croire à un run
+        # inutile alors que chaque 8-K est bel et bien lu et classé.
+        logger.info(
+            "Aucune clé LLM (%s ou %s) : chaque 8-K est téléchargé et classé PAR RÈGLES à partir "
+            "de son texte. Définis l'une des deux pour que le modèle classe les nouveaux 8-K et "
+            "reprenne ceux-là.",
             sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
         )
     else:
@@ -596,14 +600,8 @@ def main() -> None:
         symbols_ric = [args.ticker.upper()]
     else:
         tickers_file = args.tickers or config.default_universe_file()
-        if args.tickers is None and tickers_file == config.UNIVERSE_FULL_FILE:
-            logger.info(
-                "Univers point-in-time retenu (%s) : les entreprises RADIÉES sont incluses. "
-                "Sans elles, le backtest ne peut choisir que parmi des survivantes alors que "
-                "son indice de référence porte l'indice entier -- biais de survivance. "
-                "Le premier run est plus long ; les suivants ignorent les tickers en cache.",
-                tickers_file,
-            )
+        if args.tickers is None:
+            config.journaliser_univers_retenu(logger, tickers_file)
         universe = pd.read_csv(tickers_file, encoding="utf-8-sig")
         symbols_ric = universe["RIC"].dropna().unique().tolist()
         if args.limit:
