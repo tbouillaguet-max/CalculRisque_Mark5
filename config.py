@@ -166,6 +166,46 @@ DIR_BACKTEST_OPTIONS = BASE_DIR / "backtest_options"  # sortie de 10_backtest_op
 DIR_PIPELINE_RUNS = BASE_DIR / "pipeline_runs"
 PIPELINE_RUN_REPORT_NAME = "report.json"
 
+# ----------------------------------------------------------------------------
+# Paper trading (17_paper_trading.py, paper_trading.py)
+# ----------------------------------------------------------------------------
+# Journal des runs sur le compte paper : ordres et état du compte, complétés à
+# chaque run, plus le détail du dernier. Du texte petit, versionné SANS LFS
+# (cf. .gitattributes) : pousser ce dossier suffit pour comparer le compte au
+# backtest depuis une autre machine. Créé au premier run, pas à l'import.
+DIR_PAPER_TRADING = BASE_DIR / "paper_trading"
+
+# Étiquette posée sur chaque ordre envoyé (Order.orderRef). C'est elle qui
+# permet d'annuler NOS ordres encore ouverts avant d'en passer de nouveaux --
+# et seulement les nôtres : un ordre passé à la main sur le compte n'est
+# jamais touché.
+PAPER_TRADING_ORDER_REF = "calculrisque-paper"
+
+# Identifiant client API FIXE : IBKR ne laisse annuler un ordre qu'au client
+# qui l'a passé. Un identifiant qui changerait d'un run à l'autre rendrait les
+# ordres de la veille inannulables. Distinct de ceux de 03b et 08.
+PAPER_TRADING_CLIENT_ID = 17
+
+# Stratégie et date de départ rejouées par défaut. La date est celle des runs
+# de référence du README : le compte réplique le portefeuille que CE backtest
+# détient aujourd'hui.
+PAPER_TRADING_STRATEGY = "valuation_gap_combined_ancre"
+PAPER_TRADING_START_DATE = "2015-01-01"
+
+# Une ligne détenue des deux côtés que le moteur ne trade pas n'est corrigée
+# qu'au-delà de cet écart, en points de NAV (cf. paper_trading.planifier_ordres).
+PAPER_TRADING_TOLERANCE_PCT = 1.0
+
+# Âge maximal, en jours calendaires, de la dernière clôture des données au
+# moment d'envoyer des ordres : au-delà, le plan vaudrait pour une autre date.
+# 4 couvre un week-end prolongé.
+PAPER_TRADING_MAX_DATA_AGE_DAYS = 4
+
+# Garde-fou contre une erreur d'échelle (NAV lu dans la mauvaise devise, bug
+# de dimensionnement) : aucun ordre au-delà de cette part du NAV n'est envoyé.
+# Les plafonds de la stratégie limitent une ligne bien en deçà.
+PAPER_TRADING_MAX_ORDER_PCT_OF_NAV = 25.0
+
 for d in (
     DIR_UNIVERSE, DIR_PRICES, DIR_OPTIONS, DIR_OPTIONS_HISTORY, DIR_FINANCIALS,
     DIR_MULTIPLES, DIR_DCF, DIR_BACKTEST, DIR_BACKTEST_OPTIONS, DIR_PIPELINE_RUNS,

@@ -333,6 +333,38 @@ class BacktestEngine:
             self._execute_trade(symbol, shares_delta, price, today, reason)
         self._execute_buys(buys, today, self._montant_minimal(nav))
 
+    def cibles_ouverture_suivante(self) -> tuple[pd.Timestamp, float, dict[str, tuple[float, float, str]]]:
+        """Ce que le moteur détiendra après l'ouverture suivante, lu à la
+        DERNIÈRE clôture simulée : (date, NAV, {symbole: (valeur visée,
+        cours, raison)}), valeurs en dollars du moteur.
+
+        C'est exactement ce que `_execute_pending_orders` exécutera à la
+        prochaine séance : un ordre en attente porte une CIBLE (pas un delta,
+        0 pour une liquidation), et une ligne sans ordre garde ses actions.
+        Lu par le paper trading (paper_trading.py), qui réplique ce
+        portefeuille sur un compte ; tenu ICI pour que les deux lectures de
+        `pending_orders` ne puissent pas diverger. Raison vide : ligne
+        conservée telle quelle.
+
+        Le cours est la dernière clôture connue, ou à défaut le prix de
+        revient -- la même règle que `_mark_price`."""
+        today = self.calendar[-1]
+        cibles: dict[str, tuple[float, float, str]] = {}
+        for symbol, pos in self.positions.items():
+            cours = self._mark_price(pos, today)
+            cibles[symbol] = (pos.shares * cours, cours, "")
+        for symbol, order in self.pending_orders.items():
+            cours = self.prices.close_at(symbol, today)
+            if cours is None and symbol in self.positions:
+                cours = self._mark_price(self.positions[symbol], today)
+            if cours is None:
+                logger.warning(
+                    "%s : ordre en attente (%s) sans aucun cours au %s -- ignoré par la "
+                    "lecture des cibles.", symbol, order.reason, today.date())
+                continue
+            cibles[symbol] = (max(order.target_dollar, 0.0), cours, order.reason)
+        return today, self._current_nav(today), cibles
+
     def _execute_buys(
         self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp,
         minimum: float = MIN_TRADE_DOLLAR,

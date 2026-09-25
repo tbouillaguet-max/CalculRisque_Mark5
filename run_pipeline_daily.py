@@ -117,12 +117,15 @@ STEP_TIMEOUT_IBKR = 6 * 3600
 FILINGS_REFRESH_DAYS = 7
 
 
-def daily_steps(filings_refresh_days: int) -> List[Step]:
+def daily_steps(filings_refresh_days: int, paper_trading: bool = False) -> List[Step]:
     """Étapes du run quotidien.
 
     Construites par fonction plutôt que déclarées en constante : les arguments
     de fraîcheur (--refresh-days) dépendent de la ligne de commande, et les
-    figer dans une constante obligerait à les réécrire à l'exécution."""
+    figer dans une constante obligerait à les réécrire à l'exécution.
+
+    `paper_trading` ajoute 17_paper_trading.py --transmettre, qui envoie au
+    compte paper les ordres de l'ouverture suivante (cf. paper_trading.py)."""
     refresh = ("--refresh-days", str(filings_refresh_days))
     return [
         # La seule étape qui apporte de l'information nouvelle un jour
@@ -148,6 +151,12 @@ def daily_steps(filings_refresh_days: int) -> List[Step]:
         Step("06b_calcul_valorisation_combinee.py"),
         Step("07b_validation_qualitative.py", required=False, accepts_limit=True,
              needs_sec=True),
+        # Sur demande seulement (--paper-trading) : après le signal et 07b, dont
+        # le verdict qualitatif filtre ce signal ; AVANT 08, qui peut durer plus
+        # d'une heure -- les ordres doivent être posés avant l'ouverture, pas
+        # attendre une collecte d'options dont ils ne dépendent pas.
+        *([Step("17_paper_trading.py", required=False, needs_gateway=True,
+                extra_args=("--transmettre",))] if paper_trading else []),
         # Même cadence IBKR que 03b, sur des chaînes d'options bien plus
         # volumineuses que des cours : même délai généreux.
         Step("08_recuperation_options.py", required=False, needs_gateway=True,
@@ -162,14 +171,18 @@ PRICES_ONLY = {
     "03b_recuperation_cours_quotidiens.py",
     "05_calcul_multiples.py", "06_calcul_multiples_moyens.py",
     "06b_calcul_valorisation_combinee.py", "07_calcul_dcf.py",
+    # Le paper trading ne lit que les cours et le signal : il a sa place dans
+    # le run le plus court, quand il est demandé.
+    "17_paper_trading.py",
 }
 
 
 def run_daily(
     report: RunReport, limit: Optional[int], skip_options: bool, prices_only: bool,
     retries: int, timeout: int, already_done: set[str], filings_refresh_days: int,
+    paper_trading: bool = False,
 ) -> None:
-    for step in daily_steps(filings_refresh_days):
+    for step in daily_steps(filings_refresh_days, paper_trading):
         if step.script in already_done:
             skip_step(step, report, "déjà réussie lors du run repris (--resume)")
             continue
@@ -217,6 +230,10 @@ def main() -> None:
     parser.add_argument(
         "--resume", action="store_true",
         help="Reprend le dernier run quotidien interrompu en sautant les étapes déjà réussies.")
+    parser.add_argument(
+        "--paper-trading", action="store_true",
+        help="Ajoute 17_paper_trading.py --transmettre : envoie au compte PAPER les ordres de "
+             "l'ouverture suivante (IB Gateway en mode Paper Trading requis).")
     parser.add_argument("--run-id", default=None, help="Nom du sous-dossier de journal.")
     args = parser.parse_args()
 
@@ -247,8 +264,10 @@ def main() -> None:
         run_daily(
             report, args.limit, args.skip_options, args.prices_only,
             args.retries, args.step_timeout, already_done, args.filings_refresh_days,
+            args.paper_trading,
         )
-        avertissement = avertissement_depots_sec(report, daily_steps(args.filings_refresh_days))
+        avertissement = avertissement_depots_sec(
+            report, daily_steps(args.filings_refresh_days, args.paper_trading))
         if avertissement:
             report.avertissements.append(avertissement)
         failed_optional = [s["script"] for s in report.steps if s["status"] == "failed"]
