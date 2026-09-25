@@ -45,7 +45,7 @@ def sec(monkeypatch):
                 "summary": "Départ du directeur financier."}
 
     monkeypatch.setattr(sft, "fetch_filing_text", faux_fetch)
-    monkeypatch.setattr(sft, "analyser_texte_mistral", faux_classify)
+    monkeypatch.setattr(sft, "analyser_texte_llm", faux_classify)
     return compteurs
 
 
@@ -72,7 +72,7 @@ def test_un_8k_deja_classifie_n_est_ni_retelecharge_ni_reanalyse(sec, tmp_path):
 def test_un_verdict_manquant_n_est_pas_memorise(sec, tmp_path, monkeypatch):
     """Quota Mistral épuisé -> category="non_evalue". Le mémoriser gèlerait
     définitivement le trou : ce 8-K ne serait plus jamais reproposé."""
-    monkeypatch.setattr(module_04c.sft, "analyser_texte_mistral", lambda *a, **k: None)
+    monkeypatch.setattr(module_04c.sft, "analyser_texte_llm", lambda *a, **k: None)
 
     cache = {}
     rows, _ = module_04c.process_ticker_8k(

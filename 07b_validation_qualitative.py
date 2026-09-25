@@ -30,9 +30,10 @@ la détection d'événements matériels).
 
 Prérequis :
     pip install requests beautifulsoup4
-    export MISTRAL_API_KEY="ta_cle"   (voir 02_categoriser_secteurs.py -- sans
+    export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
+                                      sec_filings_text.fournisseur_llm -- sans
     cette variable, le script journalise chaque ligne comme "non_evalue" et
-    n'appelle jamais Mistral, plutôt que de planter)
+    n'appelle jamais le modèle, plutôt que de planter)
 
 Usage :
     python 07b_validation_qualitative.py
@@ -45,7 +46,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -138,10 +138,13 @@ def evaluate_period(row: pd.Series) -> dict:
             "risques_cites": None,
         }
 
-    if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
+    if not sft.llm_disponible():
         return {
             "verdict": "non_evalue_pas_de_cle_api",
-            "justification": f"{sft.MISTRAL_API_KEY_ENV} non définie : aucun appel au modèle.",
+            "justification": (
+                f"Ni {sft.GEMINI_API_KEY_ENV} ni {sft.MISTRAL_API_KEY_ENV} définie : "
+                "aucun appel au modèle."
+            ),
             "risques_cites": None,
             "accession_number": filing["accession_number"],
             "form": filing["form"],
@@ -149,11 +152,11 @@ def evaluate_period(row: pd.Series) -> dict:
         }
 
     prompt = build_prompt(symbol, filing["form"], filed_date, float(row["gap_pct"]), filing["text"])
-    result = sft.analyser_texte_mistral(prompt)
+    result = sft.analyser_texte_llm(prompt)
     if result is None or "verdict" not in result:
         return {
             "verdict": "non_evalue_reponse_invalide",
-            "justification": "Réponse Mistral indisponible ou invalide.",
+            "justification": "Réponse du LLM indisponible ou invalide.",
             "risques_cites": None,
             "accession_number": filing["accession_number"],
             "form": filing["form"],
@@ -230,12 +233,15 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
+    if not sft.llm_disponible():
         logger.warning(
-            "MISTRAL_API_KEY non définie : toutes les périodes seront journalisées comme "
-            "'non_evalue_pas_de_cle_api' (pas d'appel Mistral). export MISTRAL_API_KEY=... "
-            "pour activer la validation qualitative."
+            "Aucune clé LLM (%s ou %s) : toutes les périodes seront journalisées comme "
+            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). Définis l'une des deux "
+            "pour activer la validation qualitative.",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
         )
+    else:
+        logger.info("Validation qualitative par %s.", sft.description_llm())
 
     periods = load_signal_periods(limit=args.limit)
     if periods.empty:
