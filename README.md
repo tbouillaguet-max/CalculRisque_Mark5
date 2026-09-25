@@ -663,15 +663,25 @@ quel que soit le fournisseur : un 8-K déjà classé par le modèle n'est pas
 re-soumis. Un 8-K classé par règles, lui, est repris par le modèle dès qu'une
 clé est définie.
 
-**Le volume, avant de lancer `04c` avec une clé.** Le fichier des 8-K du dépôt
-en compte 99 147, jamais lus par un modèle. Avec une clé, `04c` les soumet
-tous : au débit par défaut d'un appel par seconde, plus d'une journée entière,
-et bien au-delà du quota quotidien du palier gratuit de Gemini. Une fois ce
-quota atteint, un **disjoncteur** coupe le modèle : après trois analyses de
-suite refusées pour quota malgré leurs réessais, plus aucun appel jusqu'à la
-fin du run. Les 8-K restants sont classés par règles, et le modèle les reprend
-au run suivant. Sans lui, chaque appel attendait ses six réessais, jusqu'à
-90 s chacun, et le run rampait des jours. Sur une offre payante, relève
+**Seuls les 8-K récents vont au modèle.** Un 8-K ne sert qu'à périmer un
+signal encore actionnable. Au-delà de la plus longue durée de vie d'un signal
+(400 jours, `config.LLM_8K_FENETRE_JOURS`, déduit des durées de
+`BACKTEST_SIGNAL_MAX_AGE_DAYS*`), il ne touche plus aucune décision. `04c` ne
+soumet donc au modèle que les 8-K déposés dans cette fenêtre, et classe les
+plus anciens par règles, sans appel ; un ancien 8-K classé par règles n'est
+pas non plus rendu au modèle quand une clé arrive. Au 2026-09-26 : 6 338 8-K
+sur 99 147 (6,4 %) dans la fenêtre, au lieu de tout l'historique.
+`--llm-depuis-jours N` change la fenêtre, `0` rend tout l'historique au
+modèle. Le backtest historique s'appuie donc sur la classification par règles
+pour tout ce qui est plus ancien.
+
+**Le quota.** Même réduit à environ 6 300 appels, le premier run avec une clé
+peut dépasser le quota quotidien du palier gratuit de Gemini. Un
+**disjoncteur** coupe alors le modèle : après trois analyses de suite refusées
+pour quota malgré leurs réessais, plus aucun appel jusqu'à la fin du run. Les
+8-K restants sont classés par règles, et le modèle reprend les récents au run
+suivant. Sans lui, chaque appel attendait ses six réessais, jusqu'à 90 s
+chacun, et le run rampait. Sur une offre payante, relève
 `MISTRAL_REQUESTS_PER_SECOND`.
 
 **Essayer sur quelques entreprises sans risque.** `04c --ticker AAPL`,

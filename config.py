@@ -793,6 +793,18 @@ BACKTEST_SIGNAL_MAX_AGE_DAYS = 400
 # BACKTEST_SIGNAL_MAX_AGE_DAYS reste le repli quand le period_type est inconnu.
 BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD = {"FY": 270, "TTM": 120}
 
+# 8-K confiés au LLM par 04c : seulement ceux déposés depuis ce nombre de
+# jours ; les plus anciens sont classés par règles, sans appel au modèle.
+# DÉDUIT, pas choisi : un 8-K ne sert qu'à périmer un signal encore
+# actionnable -- un événement matériel déposé APRÈS le 10-K/10-Q qui l'a
+# produit (data_loader.MaterialEventResolver) -- et un signal vit au plus la
+# plus longue des durées ci-dessus. Un 8-K plus ancien ne peut plus toucher
+# aucun signal vivant, donc aucune décision du paper trading. Mesuré au
+# 2026-09-26 : 6 338 8-K sur 99 147 (6,4 %) dans la fenêtre, au lieu de
+# soumettre tout l'historique au modèle. Le backtest HISTORIQUE s'appuie, lui,
+# sur la classification par règles pour tout ce qui est plus ancien.
+LLM_8K_FENETRE_JOURS = max(BACKTEST_SIGNAL_MAX_AGE_DAYS, *BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD.values())
+
 # Verdicts de 07b_validation_qualitative.py qui DISQUALIFIENT un signal dans
 # les backtests (voir backtest/data_loader.apply_qualitative_gate). Vide ->
 # filtre désactivé. "non_evalue" ne doit PAS y figurer : c'est la valeur prise
