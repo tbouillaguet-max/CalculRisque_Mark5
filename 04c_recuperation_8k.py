@@ -309,10 +309,12 @@ def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
     result = sft.analyser_texte_llm(prompt)
     if result is None or "category" not in result:
         return classify_8k_par_regles(item_codes, text)
+    # Le fournisseur qui a réellement répondu ("gemini" ou "mistral"), pas un
+    # libellé figé : c'est la trace qui permet de comparer les verdicts.
     return {
         "item_codes": item_codes, "category": result.get("category"),
         "materiality": result.get("materiality"), "summary": result.get("summary"),
-        "classification_source": "mistral",
+        "classification_source": sft.fournisseur_llm() or "llm",
     }
 
 
@@ -358,7 +360,9 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
         return {}
     cache: Dict[str, dict] = {}
     ignorees = 0
-    llm_disponible = bool(os.environ.get(sft.MISTRAL_API_KEY_ENV))
+    # Gemini OU Mistral : une seule des deux clés suffit à rendre la main au
+    # modèle (voir sft.fournisseur_llm).
+    llm_disponible = sft.llm_disponible()
     remis_en_jeu = 0
     with path.open(encoding="utf-8") as f:
         for line in f:
@@ -384,8 +388,8 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
         logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
     if remis_en_jeu:
         logger.info(
-            "%d 8-K classés par règles remis en jeu : MISTRAL_API_KEY est définie, "
-            "le modèle reprend la main dessus.", remis_en_jeu,
+            "%d 8-K classés par règles remis en jeu : %s est disponible, "
+            "le modèle reprend la main dessus.", remis_en_jeu, sft.description_llm(),
         )
     logger.info("Mémoire des classifications : %d 8-K déjà analysés dans %s.", len(cache), path)
     return cache
