@@ -157,7 +157,7 @@ def test_une_mention_de_passage_dans_un_depot_administratif_ne_compte_pas():
 def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
     """Sans clé d'API, `analyser_texte_mistral` rend None : le document doit
     alors être classé par règles au lieu de repartir en `non_evalue`."""
-    monkeypatch.setattr(_c8k.sft, "analyser_texte_mistral", lambda *a, **k: None)
+    monkeypatch.setattr(_c8k.sft, "analyser_texte_llm", lambda *a, **k: None)
     resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nThe Company recorded an impairment charge.")
 
     assert resultat["category"] != "non_evalue"
@@ -165,18 +165,27 @@ def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
     assert resultat["classification_source"] == "regles_document"
 
 
-def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch):
+@pytest.mark.parametrize("fournisseur,cle", [
+    ("gemini", "GEMINI_API_KEY"), ("mistral", "MISTRAL_API_KEY"),
+])
+def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch, fournisseur, cle):
     """La règle est un repli, pas un remplacement : un verdict du modèle ne
-    doit jamais être écrasé par elle."""
+    doit jamais être écrasé par elle -- et il porte le nom du fournisseur qui
+    l'a rendu, Gemini comme Mistral.
+
+    `analyser_texte_llm`, et non l'ancien nom `analyser_texte_mistral` : ce
+    n'est plus qu'un alias, et 04c appelle le nouveau. Patcher l'alias laissait
+    le vrai appel en place, et le test mesurait la règle au lieu du modèle."""
+    monkeypatch.setenv(cle, "une-cle")
     monkeypatch.setattr(
-        _c8k.sft, "analyser_texte_mistral",
+        _c8k.sft, "analyser_texte_llm",
         lambda *a, **k: {"category": "rachat_actions", "materiality": True, "summary": "verdict du modèle"},
     )
     resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nimpairment charge")
 
     assert resultat["category"] == "rachat_actions"
     assert resultat["summary"] == "verdict du modèle"
-    assert resultat["classification_source"] == "mistral"
+    assert resultat["classification_source"] == fournisseur
 
 
 def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch):
