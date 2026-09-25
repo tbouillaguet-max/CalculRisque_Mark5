@@ -303,6 +303,15 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if args.limit:
+        # Run PARTIEL : il ne remplace que ses propres périodes dans le fichier
+        # complet, que le filtre qualitatif du backtest lit (cf. reprise_jsonl).
+        df, conservees = reprise_jsonl.fusionner_run_partiel(
+            df, config.QUALITATIVE_VALIDATION_FILE,
+            ["symbol", "period_type", "fiscal_year", "fiscal_quarter"])
+        logger.info(
+            "Run partiel (--limit) : %d période(s) de ce run fusionnée(s) dans %s, %d autres "
+            "conservées telles quelles.", len(rows), config.QUALITATIVE_VALIDATION_FILE, conservees)
     config.QUALITATIVE_VALIDATION_FILE.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(config.QUALITATIVE_VALIDATION_FILE, index=False, engine="pyarrow")
     logger.info("Validation qualitative sauvegardée : %s (%d lignes).", config.QUALITATIVE_VALIDATION_FILE, len(df))

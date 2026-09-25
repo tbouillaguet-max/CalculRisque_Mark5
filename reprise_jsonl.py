@@ -87,3 +87,47 @@ def reecrire(chemin: Path, lignes: Iterable[dict]) -> None:
     """Réécrit le fichier d'un bloc, sans jamais le laisser à moitié écrit."""
     ecriture_atomique.ecrire_texte(
         chemin, "".join(json.dumps(ligne, default=str, ensure_ascii=False) + "\n" for ligne in lignes))
+
+
+# --------------------------------------------------------------------------- #
+# Sortie d'un run PARTIEL
+# --------------------------------------------------------------------------- #
+def _valeur_de_cle(valeur) -> str:
+    """Une même clé lue du JSON ou du parquet : None et NaN se valent, 2023 et
+    2023.0 aussi -- sans quoi une ligne refaite ne reconnaîtrait pas son
+    ancienne version, et la fusion la doublerait."""
+    if valeur is None:
+        return ""
+    if isinstance(valeur, float):
+        if valeur != valeur:
+            return ""
+        if valeur.is_integer():
+            return str(int(valeur))
+    return str(valeur)
+
+
+def _cles(df, colonnes: list[str]) -> list[tuple]:
+    return [tuple(_valeur_de_cle(v) for v in ligne)
+            for ligne in df[colonnes].itertuples(index=False, name=None)]
+
+
+def fusionner_run_partiel(nouveau, chemin: Path, cle: list[str]):
+    """(sortie fusionnée, nombre de lignes anciennes conservées).
+
+    POURQUOI. 04c et 07b écrivaient leur fichier de sortie avec les SEULES
+    lignes du run. Un essai sur un ticker (`--ticker AAPL`) ou quelques-uns
+    (`--limit 5`) réduisait donc les 99 147 8-K du fichier à ceux d'AAPL -- et
+    le filtre d'événements du backtest comme du paper trading avec, sans rien
+    signaler. Un run partiel remplace désormais les lignes qu'il a refaites
+    (même clé) et garde toutes les autres."""
+    import pandas as pd
+
+    if not Path(chemin).exists():
+        return nouveau, 0
+    ancien = pd.read_parquet(chemin)
+    manquantes = [c for c in cle if c not in ancien.columns or c not in nouveau.columns]
+    if manquantes:
+        raise ValueError(f"{chemin} : colonne(s) de clé absente(s) {manquantes}, fusion impossible.")
+    refaites = set(_cles(nouveau, cle))
+    anciennes = ancien[[k not in refaites for k in _cles(ancien, cle)]]
+    return pd.concat([anciennes, nouveau], ignore_index=True), len(anciennes)

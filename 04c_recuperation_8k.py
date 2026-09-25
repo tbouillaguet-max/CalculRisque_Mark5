@@ -761,6 +761,14 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if args.ticker or args.limit or args.tickers:
+        # Run PARTIEL : il ne remplace que ses propres 8-K dans le fichier
+        # complet, que le backtest et le paper trading lisent (cf. reprise_jsonl).
+        df, conserves = reprise_jsonl.fusionner_run_partiel(
+            df, config.MATERIAL_EVENTS_8K_FILE, ["symbol", "accession_number"])
+        logger.info(
+            "Run partiel (--ticker, --limit ou --tickers) : %d 8-K de ce run fusionnés dans %s, "
+            "%d autres conservés tels quels.", len(rows), config.MATERIAL_EVENTS_8K_FILE, conserves)
     if "from_cache" in df.columns:
         # Un checkpoint écrit par une version antérieure n'a pas la colonne :
         # sans normalisation, le mélange bool/NaN part en colonne "object" et

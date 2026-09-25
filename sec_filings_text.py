@@ -848,6 +848,38 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
     return str(getattr(response, "text", "") or "")[:300]
 
 
+# --------------------------------------------------------------------------- #
+# Disjoncteur de quota
+# --------------------------------------------------------------------------- #
+# POURQUOI. Un quota PAR MINUTE se résorbe pendant les réessais ; un quota PAR
+# JOUR, non. Une fois celui du palier gratuit de Gemini atteint, chaque appel
+# épuisait ses MISTRAL_MAX_RETRIES tentatives, espacées jusqu'à
+# MISTRAL_MAX_RETRY_DELAY secondes, avant de rendre None : plusieurs minutes
+# par document, pour rien. Sur les ~97 500 8-K que 04c avait à classer, le run
+# rampait des jours au lieu de finir.
+#
+# Après LLM_REFUS_QUOTA_AVANT_COUPURE analyses de suite refusées pour quota
+# (429 jusqu'à la dernière tentative), plus aucun appel pour le reste du
+# PROCESSUS : analyser_texte_llm rend None tout de suite, et chaque appelant
+# fait ce qu'il fait déjà sans modèle (04c classe par règles -- verdicts que
+# le modèle reprend au run suivant --, 07b journalise non_evalue). Un seul
+# succès, ou un échec d'une autre nature, remet le compte à zéro.
+LLM_REFUS_QUOTA_AVANT_COUPURE = 3
+_refus_quota_consecutifs = 0
+_llm_coupe_pour_ce_run = False
+
+
+def reinitialiser_disjoncteur_llm() -> None:
+    """Réarme le disjoncteur (tests ; un run de production est un processus)."""
+    global _refus_quota_consecutifs, _llm_coupe_pour_ce_run
+    _refus_quota_consecutifs = 0
+    _llm_coupe_pour_ce_run = False
+
+
+def llm_coupe_pour_ce_run() -> bool:
+    return _llm_coupe_pour_ce_run
+
+
 def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     """Appelle le LLM configuré (Gemini ou Mistral, voir fournisseur_llm) avec
     un prompt demandant une réponse JSON stricte -- retries avec backoff
@@ -861,8 +893,9 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter),
     commun aux deux fournisseurs : espacés en amont pour ne pas provoquer de
     429, et espacés DAVANTAGE dès qu'un 429 survient malgré tout."""
+    global _refus_quota_consecutifs, _llm_coupe_pour_ce_run
     fournisseur = fournisseur_llm()
-    if fournisseur is None:
+    if fournisseur is None or _llm_coupe_pour_ce_run:
         return None
     if fournisseur == "gemini":
         url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
@@ -883,6 +916,7 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
             statut = getattr(resp, "status_code", None)
             if statut is not None and statut >= 400:
                 raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
+            _refus_quota_consecutifs = 0     # le fournisseur répond : pas de quota épuisé
             content = extraire(resp.json())
         except requests.exceptions.RequestException as e:
             statut = getattr(getattr(e, "response", None), "status_code", None)
@@ -890,6 +924,7 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
                 # 401 (clé invalide), 403, 422... : la réponse ne changera pas.
                 logger.error("Appel %s refusé définitivement (HTTP %s), aucun réessai : %s",
                              nom, statut, _extrait_erreur(getattr(e, "response", None)) or e)
+                _refus_quota_consecutifs = 0
                 return None
 
             network_failures += 1
@@ -930,6 +965,19 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
         logger.warning("Réponse %s non parsable, une nouvelle tentative : %s", nom, str(content)[:200])
 
     logger.error("Échec après %d tentatives %s : %s", MISTRAL_MAX_RETRIES, nom, derniere_erreur)
+    statut_final = getattr(getattr(derniere_erreur, "response", None), "status_code", None)
+    if statut_final != 429:
+        _refus_quota_consecutifs = 0
+        return None
+    _refus_quota_consecutifs += 1
+    if _refus_quota_consecutifs >= LLM_REFUS_QUOTA_AVANT_COUPURE:
+        _llm_coupe_pour_ce_run = True
+        logger.error(
+            "Quota %s épuisé : %d analyses de suite refusées (429) malgré %d tentatives chacune. "
+            "Plus aucun appel au modèle jusqu'à la fin de ce run -- les documents restants sont "
+            "traités sans lui (04c les classe par règles, et le modèle les reprendra au prochain "
+            "run). Relance plus tard, ou passe à une offre payante et relève %s.",
+            nom, _refus_quota_consecutifs, MISTRAL_MAX_RETRIES, MISTRAL_REQUESTS_PER_SECOND_ENV)
     return None
 
 

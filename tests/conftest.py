@@ -125,3 +125,18 @@ def _isoler_les_cles_llm(monkeypatch):
     pose lui-même celles dont il a besoin."""
     for nom in ("GEMINI_API_KEY", "GEMINI_MODEL", "MISTRAL_API_KEY", "LLM_PROVIDER"):
         monkeypatch.delenv(nom, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _rearmer_le_disjoncteur_llm():
+    """Le disjoncteur de quota (sec_filings_text) garde son état pour tout le
+    PROCESSUS -- voulu en production, où un run est un processus -- donc aussi
+    d'un test à l'autre. Réarmé avant et après chacun ; sans importer le
+    module pour les tests qui ne s'en servent pas."""
+    sft = sys.modules.get("sec_filings_text")
+    if sft is not None:
+        sft.reinitialiser_disjoncteur_llm()
+    yield
+    sft = sys.modules.get("sec_filings_text")
+    if sft is not None:
+        sft.reinitialiser_disjoncteur_llm()

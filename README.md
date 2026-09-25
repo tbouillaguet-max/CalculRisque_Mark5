@@ -656,11 +656,29 @@ Au démarrage, `04c` et `07b` affichent le fournisseur retenu
 400…) est journalisé avec le message renvoyé par le fournisseur, qui en dit
 la cause.
 
-Sans aucune clé, `04c` et `07b` journalisent leurs lignes en
-`non_evalue_pas_de_cle_api` au lieu d'appeler le modèle — les filtres
-qualitatifs restent alors sans effet, ce qui est le comportement voulu. Le
-cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert quel que soit le
-fournisseur : un 8-K déjà classé n'est pas re-soumis.
+Sans aucune clé, `07b` journalise ses lignes en `non_evalue_pas_de_cle_api`
+au lieu d'appeler le modèle, et `04c` classe chaque 8-K **par règles** à partir
+de son texte. Le cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert
+quel que soit le fournisseur : un 8-K déjà classé par le modèle n'est pas
+re-soumis. Un 8-K classé par règles, lui, est repris par le modèle dès qu'une
+clé est définie.
+
+**Le volume, avant de lancer `04c` avec une clé.** Le fichier des 8-K du dépôt
+en compte 99 147, jamais lus par un modèle. Avec une clé, `04c` les soumet
+tous : au débit par défaut d'un appel par seconde, plus d'une journée entière,
+et bien au-delà du quota quotidien du palier gratuit de Gemini. Une fois ce
+quota atteint, un **disjoncteur** coupe le modèle : après trois analyses de
+suite refusées pour quota malgré leurs réessais, plus aucun appel jusqu'à la
+fin du run. Les 8-K restants sont classés par règles, et le modèle les reprend
+au run suivant. Sans lui, chaque appel attendait ses six réessais, jusqu'à
+90 s chacun, et le run rampait des jours. Sur une offre payante, relève
+`MISTRAL_REQUESTS_PER_SECOND`.
+
+**Essayer sur quelques entreprises sans risque.** `04c --ticker AAPL`,
+`04c --limit 5` ou `07b --limit 5` ne remplacent, dans le fichier de sortie
+complet, que les lignes qu'ils ont refaites. Avant, ils réécrivaient le
+fichier avec leurs seules lignes : un essai sur AAPL réduisait les 99 147 8-K
+à ceux d'AAPL, et le filtre d'événements du backtest et du paper trading avec.
 
 ## Rafraîchissement trimestriel (04b, 04c, 07b, run_pipeline_quarterly.py)
 
