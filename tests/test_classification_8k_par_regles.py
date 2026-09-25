@@ -155,7 +155,7 @@ def test_une_mention_de_passage_dans_un_depot_administratif_ne_compte_pas():
 # Intégration : le repli s'enclenche, et n'écrase pas le modèle
 # --------------------------------------------------------------------------- #
 def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
-    """Sans clé d'API, `analyser_texte_mistral` rend None : le document doit
+    """Sans clé d'API, `analyser_texte_llm` rend None : le document doit
     alors être classé par règles au lieu de repartir en `non_evalue`."""
     monkeypatch.setattr(_c8k.sft, "analyser_texte_llm", lambda *a, **k: None)
     resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nThe Company recorded an impairment charge.")
@@ -165,17 +165,12 @@ def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
     assert resultat["classification_source"] == "regles_document"
 
 
-@pytest.mark.parametrize("fournisseur,cle", [
-    ("gemini", "GEMINI_API_KEY"), ("mistral", "MISTRAL_API_KEY"),
-])
-def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch, fournisseur, cle):
+@pytest.mark.parametrize("fournisseur", ["gemini", "mistral"])
+def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch, fournisseur):
     """La règle est un repli, pas un remplacement : un verdict du modèle ne
-    doit jamais être écrasé par elle -- et il porte le nom du fournisseur qui
-    l'a rendu, Gemini comme Mistral.
-
-    `analyser_texte_llm`, et non l'ancien nom `analyser_texte_mistral` : ce
-    n'est plus qu'un alias, et 04c appelle le nouveau. Patcher l'alias laissait
-    le vrai appel en place, et le test mesurait la règle au lieu du modèle."""
+    doit jamais être écrasé par elle. La source enregistrée est le fournisseur
+    qui a répondu, pas un « mistral » figé."""
+    cle = {"gemini": _c8k.sft.GEMINI_API_KEY_ENV, "mistral": _c8k.sft.MISTRAL_API_KEY_ENV}[fournisseur]
     monkeypatch.setenv(cle, "une-cle")
     monkeypatch.setattr(
         _c8k.sft, "analyser_texte_llm",
@@ -188,9 +183,11 @@ def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch, fournisseur, c
     assert resultat["classification_source"] == fournisseur
 
 
-def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cle_env", ["GEMINI_API_KEY", "MISTRAL_API_KEY"])
+def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch, cle_env):
     """Un repli mémorisé ne doit pas devenir un plafond : dès qu'une clé d'API
-    est disponible, les lignes classées par règles repartent au modèle."""
+    est disponible -- Gemini comme Mistral -- les lignes classées par règles
+    repartent au modèle."""
     import json
 
     cache = _c8k.llm_cache_path(tmp_path)
@@ -203,10 +200,9 @@ def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, m
         encoding="utf-8",
     )
 
-    monkeypatch.delenv(_c8k.sft.MISTRAL_API_KEY_ENV, raising=False)
     assert len(_c8k.load_llm_cache(tmp_path)) == 2, "sans clé, le repli mémorisé doit être réutilisé"
 
-    monkeypatch.setenv(_c8k.sft.MISTRAL_API_KEY_ENV, "une-cle")
+    monkeypatch.setenv(cle_env, "une-cle")
     avec_cle = _c8k.load_llm_cache(tmp_path)
     assert len(avec_cle) == 1
     assert _c8k.cache_key("AAPL", "0000-2") in avec_cle

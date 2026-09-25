@@ -309,12 +309,11 @@ def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
     result = sft.analyser_texte_llm(prompt)
     if result is None or "category" not in result:
         return classify_8k_par_regles(item_codes, text)
+    # Le fournisseur qui a réellement répondu ("gemini" ou "mistral"), pas un
+    # libellé figé : c'est la trace qui permet de comparer les verdicts.
     return {
         "item_codes": item_codes, "category": result.get("category"),
         "materiality": result.get("materiality"), "summary": result.get("summary"),
-        # Le fournisseur qui a RÉELLEMENT répondu (analyser_texte_llm n'en
-        # interroge qu'un, celui de fournisseur_llm) : « mistral » en dur
-        # étiquetait aussi les verdicts de Gemini.
         "classification_source": sft.fournisseur_llm() or "llm",
     }
 
@@ -361,8 +360,8 @@ def load_llm_cache(output_dir: Path) -> Dict[str, dict]:
         return {}
     cache: Dict[str, dict] = {}
     ignorees = 0
-    # Gemini OU Mistral : depuis le passage à Gemini, la seule clé Mistral ne
-    # dit plus si un modèle peut reprendre la main (et `os` n'est plus importé).
+    # Gemini OU Mistral : une seule des deux clés suffit à rendre la main au
+    # modèle (voir sft.fournisseur_llm).
     llm_disponible = sft.llm_disponible()
     remis_en_jeu = 0
     with path.open(encoding="utf-8") as f:
