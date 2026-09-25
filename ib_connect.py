@@ -1,5 +1,5 @@
 """
-Connexion à IB Gateway / TWS, partagée par 03, 03b et 08.
+Connexion à IB Gateway / TWS, partagée par 03, 03b, 08 et 17.
 
 POURQUOI CE MODULE : `IB.connect()` échoue là où le pipeline n'a besoin de rien
 ---------------------------------------------------------------------------
@@ -29,9 +29,12 @@ l'API en lecture seule côté Gateway, sur certains comptes papier, ou selon la
 version de la passerelle --, `connect()` lève TimeoutError, se déconnecte, et
 le script s'arrête.
 
-Or AUCUN script de ce pipeline ne passe d'ordre : 03 et 03b ne demandent que
+Or aucun script du PIPELINE ne passe d'ordre : 03 et 03b ne demandent que
 des barres historiques, 08 des détails de contrat et des données de marché.
-Positions, ordres et exécutions ne servent à rien ici.
+Positions, ordres et exécutions ne leur servent à rien. Seul
+17_paper_trading.py en passe, sur un compte paper, en `readonly=False` ; il
+redemande lui-même positions, résumé de compte et ordres ouverts
+(paper_trading.py), si bien que le repli ci-dessous lui suffit aussi.
 
 STRATÉGIE : on tente d'abord la connexion normale (rien ne change quand elle
 fonctionne), et sur dépassement de délai on se rabat sur la connexion API
@@ -51,10 +54,11 @@ logger = logging.getLogger("ib_connect")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_TIMEOUT_SEC = 30
 
-# Le pipeline ne passe JAMAIS d'ordre. En lecture seule, ib_insync saute déjà
-# les requêtes d'ordres ouverts et exécutés -- ça ne suffit pas à éviter le
-# blocage sur les exécutions (voir la docstring du module), mais ça réduit
-# d'autant la phase de synchronisation, et c'est la posture correcte.
+# Le pipeline ne passe JAMAIS d'ordre (seul 17_paper_trading.py en passe, et le
+# demande explicitement). En lecture seule, ib_insync saute déjà les requêtes
+# d'ordres ouverts et exécutés -- ça ne suffit pas à éviter le blocage sur les
+# exécutions (voir la docstring du module), mais ça réduit d'autant la phase de
+# synchronisation, et c'est la posture correcte.
 DEFAULT_READONLY = True
 
 
@@ -93,7 +97,8 @@ def connect(
             "La synchronisation de compte d'ib_insync a dépassé %ds (%s). La session API "
             "elle-même s'était pourtant ouverte : c'est la requête d'exécutions finale qui "
             "reste sans réponse (voir la docstring de ib_connect.py). Nouvelle tentative en "
-            "connexion API SEULE -- suffisante pour ce pipeline, qui ne passe aucun ordre.",
+            "connexion API SEULE -- suffisante ici : le pipeline ne lit que des données, et "
+            "17_paper_trading.py redemande lui-même positions et ordres ouverts.",
             timeout, type(exc).__name__,
         )
 
@@ -114,7 +119,7 @@ def connect(
 
     logger.info(
         "Connecté à IBKR sur %s:%s (clientId=%s) en mode API seule : positions, ordres et "
-        "exécutions NE sont pas synchronisés. Sans effet sur ce script, qui ne lit que des "
-        "données de marché.", host, port, client_id,
+        "exécutions NE sont pas synchronisés -- sans effet sur le pipeline, qui ne lit que "
+        "des données de marché, ni sur 17_paper_trading.py, qui les redemande.", host, port, client_id,
     )
     return ib

@@ -217,6 +217,7 @@ python run_pipeline_daily.py                  # run complet
 python run_pipeline_daily.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
 python run_pipeline_daily.py --prices-only    # cours + signal, hors ligne SEC/LLM
 python run_pipeline_daily.py --resume         # reprend un run interrompu
+python run_pipeline_daily.py --paper-trading  # + ordres au compte paper (voir « Paper trading »)
 ```
 
 Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
@@ -286,6 +287,114 @@ Cron (jours de bourse, après la clôture US) :
 
 ```
 30 22 * * 1-5  cd /chemin/vers/CalculRisque_Mark5 && python3 run_pipeline_daily.py >> logs/daily.log 2>&1
+```
+
+## Paper trading sur IB Gateway (`17_paper_trading.py`)
+
+Pour essayer la stratégie actions en conditions réelles d'exécution, sur un
+compte **paper** IBKR. Stratégie par défaut : `valuation_gap_combined_ancre`.
+
+**Le principe : le compte paper réplique le portefeuille du backtest.**
+Chaque run rejoue le moteur depuis 2015 jusqu'à la dernière clôture, avec
+exactement la configuration de `09_backtest.py` : les deux scripts partagent
+`backtest/construction_moteur.py`, et un test refuse qu'un réglage soit
+redéclaré ailleurs. Le moteur décide à la clôture et exécute à l'ouverture
+suivante ; à la fin du run, ses positions plus ses ordres en attente forment le
+portefeuille qu'il détiendra demain matin. Le script le traduit en **poids du
+NAV**, le rapporte au NAV du compte, et envoie la différence en ordres au
+marché **à l'ouverture** (MOO) — l'hypothèse d'exécution du backtest.
+
+Rejouer tout l'historique plutôt que tenir un état local est délibéré. Les
+sorties dépendent du passé de chaque position (référence du stop figée à
+l'entrée, plus haut du stop suiveur, durée de détention), et le ciblage de
+volatilité lit les 60 dernières séances de NAV. Recopier cette comptabilité
+dans un fichier d'état, c'est diverger du moteur au premier cas limite. Le
+rejeu coûte environ 30 secondes, et un test vérifie que les cibles lues sont
+exactement ce que le moteur exécute le lendemain.
+
+```bash
+python 17_paper_trading.py                  # simulation : plan affiché et journalisé, RIEN n'est envoyé
+python 17_paper_trading.py --transmettre    # envoie les ordres au compte paper
+python 17_paper_trading.py --hors-ligne     # sans Gateway : plan d'un premier run sur un compte vide
+python run_pipeline_daily.py --paper-trading   # le run quotidien, puis l'envoi (après 06b/07b, avant 08)
+```
+
+Raccourcis : `make paper`, `make paper-transmettre`, `make paper-hors-ligne`.
+
+**Prérequis côté IB Gateway :**
+- connexion en mode **Paper Trading** (port 4002 par défaut, ou `IB_GATEWAY_PORT` du `.env`) ;
+- dans *Configure > Settings > API > Settings*, « Enable ActiveX and Socket
+  Clients » coché, et **« Read-Only API » décoché** : sinon IBKR refuse les ordres.
+
+Le script se connecte avec l'identifiant client fixe 17
+(`PAPER_TRADING_CLIENT_ID`) : IBKR ne laisse annuler un ordre qu'au client qui
+l'a passé.
+
+**Les trois règles de réconciliation** (`paper_trading.planifier_ordres`) :
+1. Une ligne que le moteur trade demain est amenée à sa cible, avec le même
+   plancher de taille que le moteur. Une liquidation (stop, prise de gain…)
+   passe toujours.
+2. Un écart de structure est toujours corrigé. Une action dotée d'un signal
+   que le compte détient sans que le moteur la détienne est vendue ; une ligne du
+   moteur absente du compte est achetée. C'est ainsi que le premier run
+   construit le portefeuille, et qu'un ordre refusé ou un run manqué se
+   rattrapent.
+3. Une ligne détenue des deux côtés, que le moteur ne touche pas, n'est
+   recalée qu'au-delà de `--tolerance-pct` (1 point de NAV). Les deux
+   portefeuilles bougent avec les mêmes cours ; corriger chaque jour l'écart
+   d'exécution recréerait la rotation que la stratégie ancrée supprime.
+
+**Les garde-fous :**
+
+| Garde-fou | Comportement |
+|---|---|
+| Compte réel | Refusé : IBKR numérote ses comptes papier « D… » (`DU1234567`) et ses comptes réels « U… ». |
+| Pas de `--transmettre` | Simulation : le plan est affiché et journalisé, aucun ordre n'est envoyé. |
+| Données périmées | Envoi refusé si la dernière clôture date de plus de 4 jours (`--max-data-age-days`). |
+| Ordre démesuré | Envoi refusé si un ordre dépasse 25 % du NAV : c'est le signe d'une erreur d'échelle (devise, NAV). |
+| Levier | Jamais : les achats sont ramenés au cash disponible, ventes du jour comprises, moins 1 % de marge. |
+| Relance le même soir | Seuls NOS ordres encore ouverts (étiquette `calculrisque-paper`) sont annulés, puis remplacés. |
+| Autres positions | Options, autre devise, titre sans signal de la stratégie (SPY compris) : jamais touchés, seulement listés. |
+
+**Le compte doit être dédié à la stratégie** : toute action US dotée d'un
+signal que le moteur ne détient pas y est vendue (règle 2).
+
+**Compte en euros.** Un compte paper hérite de la devise de base du compte réel.
+Le NAV est alors converti en dollars avec le taux publié par IBKR dans le
+résumé du compte. Si ce taux manque, le script s'arrête et demande `--capital`
+(montant en dollars alloué à la stratégie). `--capital` sert aussi à ne confier
+à la stratégie qu'une partie du compte.
+
+**Le journal** (`data/paper_trading/`, versionné en texte simple, hors LFS) :
+`ordres.csv` (chaque ordre, simulé ou transmis, avec son statut IBKR),
+`compte.csv` (NAV du compte et du moteur, exposition des deux, à chaque run)
+et `dernier_run.json` (le détail complet du dernier run). Pousser ce dossier
+suffit pour comparer le compte paper au backtest depuis une autre machine.
+
+**Premier run, mesuré hors ligne** (données au 2026-09-04, compte vide de
+1 M$) : le moteur vise 98 lignes pour une exposition de 69,4 %, le ciblage de
+volatilité réduisant l'exposition. Le plan compte **97 achats pour 683 k$**.
+La 98e ligne, NVR, cote 6 299 $ pour une cible de 4 660 $ : moins d'une action
+entière, elle est signalée et laissée de côté.
+
+**Ce que le compte paper ne reproduit pas :**
+- **Le prix d'exécution.** L'ouverture réelle remplace l'ouverture simulée,
+  frais IBKR réels compris.
+- **Le niveau du NAV.** Seuls les poids sont répliqués. Le rendement du compte
+  se compare à celui du moteur à partir de la date du premier run.
+- **Les fractions d'action.** Les ordres portent sur des actions entières,
+  ce qui écarte les lignes plus petites qu'une action.
+
+**Horaire.** Les ordres MOO doivent partir avant l'ouverture : lance le script
+le soir, après le run quotidien. Pour un run en séance, `--type-ordre marche`
+envoie des ordres au marché immédiats. Si le run quotidien signale des dépôts
+SEC non rafraîchis, le paper trading tourne quand même : il trade le signal
+tel qu'il est, avertissement compris.
+
+Cron (paper trading compris) :
+
+```
+30 22 * * 1-5  cd /chemin/vers/CalculRisque_Mark5 && python3 run_pipeline_daily.py --paper-trading >> logs/daily.log 2>&1
 ```
 
 ## Ce que le backtest fait payer, et ce qu'il vaut

@@ -22,7 +22,7 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
         compare report test install universe bootstrap slippage merite lfs lfs-apply \
-        backtest-distant optimize-actions
+        backtest-distant optimize-actions paper paper-transmettre paper-hors-ligne
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -32,6 +32,11 @@ help:
 	@echo "    make daily-fast    Cours + recalcul du signal seulement (aucun appel SEC ni LLM)"
 	@echo "    make quarterly     Rafraichissement TRIMESTRIEL (10-Q, 8-K, valorisation)"
 	@echo "    make replay AS_OF=2024-06-30   Reconstitution point-in-time, hors ligne"
+	@echo
+	@echo "  PAPER TRADING (IB Gateway en mode Paper Trading)"
+	@echo "    make paper              Plan d'ordres du compte paper, SANS rien envoyer"
+	@echo "    make paper-transmettre  Envoie ce plan au compte paper (ordres a l'ouverture)"
+	@echo "    make paper-hors-ligne   Plan d'un premier run sur un compte vide, sans Gateway"
 	@echo
 	@echo "  BACKTEST ET ANALYSE"
 	@echo "    make backtest      Backtest options (STRATEGY=$(STRATEGY), START=$(START))"
@@ -78,6 +83,24 @@ quarterly:
 replay:
 	@test -n "$(AS_OF)" || (echo "Renseigne AS_OF, ex: make replay AS_OF=2024-06-30" && false)
 	$(PYTHON) run_pipeline_quarterly.py --as-of-date $(AS_OF)
+
+# ---------------------------------------------------------------------------
+# Paper trading (17_paper_trading.py, compte PAPER uniquement)
+# ---------------------------------------------------------------------------
+
+# Simulation : rejoue la strategie, lit le compte paper, affiche et journalise
+# le plan d'ordres. Rien n'est envoye.
+paper:
+	$(PYTHON) 17_paper_trading.py
+
+# Envoie le plan au compte paper, en ordres au marche a l'ouverture suivante.
+# A lancer apres `make daily`, apres la cloture americaine.
+paper-transmettre:
+	$(PYTHON) 17_paper_trading.py --transmettre
+
+# Sans IB Gateway : le plan d'un premier run, contre un compte vide.
+paper-hors-ligne:
+	$(PYTHON) 17_paper_trading.py --hors-ligne
 
 # ---------------------------------------------------------------------------
 # Backtest et analyse
