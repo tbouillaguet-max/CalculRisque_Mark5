@@ -100,6 +100,8 @@ from typing import List, Optional
 import pandas as pd
 
 import config
+import ecriture_atomique
+import sec_http
 
 logger = logging.getLogger("run_pipeline_quarterly")
 
@@ -119,6 +121,16 @@ class Step:
                    l'univers/les périodes ; 05/06/06b/07 calculent en une
                    passe sur le cache existant, --limit n'y aurait pas de sens).
     needs_gateway: IB Gateway doit répondre avant de la lancer.
+    needs_sec    : SEC_CONTACT_EMAIL doit être définie avant de la lancer.
+                   Vérifiée AVANT le lancement, comme le Gateway, et pour une
+                   raison de plus : son absence est une erreur de
+                   CONFIGURATION, que le réessai ne résout jamais. Sans cette
+                   vérification, chaque étape SEC partait, échouait, était
+                   relancée trois fois à 30 s d'intervalle -- six minutes
+                   perdues au run du 2026-09-05 -- puis finissait « failed »
+                   dans un run « partial », sans que rien ne dise que le
+                   signal du jour venait d'être recalculé sur les comptes de
+                   la veille (cf. avertissement_depots_sec).
     degraded_args: arguments à utiliser AU LIEU DE SAUTER l'étape quand IB
                    Gateway est indisponible, pour une étape qui sait travailler
                    depuis une autre source (03b se replie sur Stooq via
@@ -154,19 +166,29 @@ class Step:
     required: bool = True
     accepts_limit: bool = False
     needs_gateway: bool = False
+    needs_sec: bool = False
     degraded_args: tuple = ()
     extra_args: tuple = ()
     timeout: Optional[int] = None
 
 
 LIVE_STEPS: List[Step] = [
-    Step("04b_recuperation_10q.py", accepts_limit=True),
-    Step("04c_recuperation_8k.py", required=False, accepts_limit=True),
+    # Requise ET dépendante de la SEC : sans SEC_CONTACT_EMAIL, le run
+    # trimestriel s'arrête dès la première étape, au lieu de recalculer tout
+    # le reste sur des comptes qu'il était précisément chargé de rafraîchir.
+    Step("04b_recuperation_10q.py", accepts_limit=True, needs_sec=True),
+    Step("04c_recuperation_8k.py", required=False, accepts_limit=True, needs_sec=True),
     Step("05_calcul_multiples.py"),
     Step("06_calcul_multiples_moyens.py"),
-    Step("06b_calcul_valorisation_combinee.py"),
+    # 07 AVANT 06b : 06b lit dcf_historique.parquet, que 07 écrit, pour le repli
+    # DCF de la valorisation combinée. Dans l'ordre inverse, ce repli (3 580
+    # lignes sur 27 674) valorisait les comptes du run PRÉCÉDENT -- et les
+    # périodes que ce run venait de récupérer n'y trouvaient aucun DCF du tout.
     Step("07_calcul_dcf.py"),
-    Step("07b_validation_qualitative.py", required=False, accepts_limit=True),
+    Step("06b_calcul_valorisation_combinee.py"),
+    # Télécharge le texte des dépôts depuis la SEC (via sec_filings_text) :
+    # sans adresse de contact, chaque période est « ignorée » une à une.
+    Step("07b_validation_qualitative.py", required=False, accepts_limit=True, needs_sec=True),
     # Interroge IBKR contrat par contrat, à la cadence imposée par le courtier :
     # sa durée est dictée par la taille de l'univers retenu, pas par la machine.
     # Le délai global de 2 h la coupait sur un univers large (cf. Step.timeout).
@@ -175,8 +197,12 @@ LIVE_STEPS: List[Step] = [
 ]
 
 REPLAY_STEPS: List[Step] = [
+    # Même ordre, et ici il n'était pas seulement faux mais BLOQUANT : l'espace
+    # de replay part vide de tout DCF, donc 06b y tournait sans le fichier
+    # qu'il lit. Il sortait sur « Fichier manquant » -- avec le code 0 --, le
+    # replay se déclarait réussi, et ne produisait aucune valorisation combinée.
     Step("05_calcul_multiples.py"), Step("06_calcul_multiples_moyens.py"),
-    Step("06b_calcul_valorisation_combinee.py"), Step("07_calcul_dcf.py"),
+    Step("07_calcul_dcf.py"), Step("06b_calcul_valorisation_combinee.py"),
 ]
 
 
@@ -195,6 +221,11 @@ class RunReport:
     finished_at: Optional[str] = None
     duration_seconds: Optional[float] = None
     replay_workspace: Optional[str] = None
+    # Ce que le statut seul ne dit pas. « partial » couvre aussi bien un 08
+    # sauté faute de Gateway -- dégradation bénigne -- qu'un signal recalculé
+    # sur des comptes périmés. Les avertissements nomment la seconde, en
+    # clair, dans le rapport que lit le tableau de bord.
+    avertissements: List[str] = field(default_factory=list)
 
     def record(self, entry: dict) -> None:
         self.steps.append(entry)
@@ -206,13 +237,16 @@ class RunReport:
             "run_id": self.run_id, "mode": self.mode, "status": self.status,
             "started_at": self.started_at, "finished_at": self.finished_at,
             "duration_seconds": self.duration_seconds, "steps": self.steps,
+            "avertissements": self.avertissements,
         }
         if self.replay_workspace:
             payload["replay_workspace"] = self.replay_workspace
-        path = self.directory / config.PIPELINE_RUN_REPORT_NAME
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
+        # Via ecriture_atomique : le rapport est justement le fichier qu'un
+        # tableau de bord ou un éditeur tient ouvert pendant le run, et un
+        # WinError 5 ici ferait tomber l'orchestrateur lui-même.
+        ecriture_atomique.ecrire_texte(
+            self.directory / config.PIPELINE_RUN_REPORT_NAME,
+            json.dumps(payload, indent=2, ensure_ascii=False))
 
 
 RESUMABLE_STATUSES = ("failed", "running")
@@ -385,6 +419,92 @@ def ensure_gateway_available() -> bool:
 
 
 # ----------------------------------------------------------------------------
+# SEC (04, 04b, 04c, 07b)
+# ----------------------------------------------------------------------------
+
+# Raison de saut reconnaissable : c'est elle qui distingue, à la fin du run, une
+# étape SEC sautée PAR CHOIX (--prices-only) d'une étape sautée PARCE QU'ELLE NE
+# POUVAIT PAS TOURNER -- seule la seconde mérite un avertissement.
+RAISON_SEC_ABSENTE = f"{sec_http.SEC_CONTACT_EMAIL_ENV} absente de l'environnement"
+
+# Ce que chaque étape SEC apporte au signal : c'est ce que l'avertissement doit
+# nommer. Dire « 04 a été sautée » oblige à savoir ce que fait 04 ; dire « les
+# comptes annuels n'ont pas été rafraîchis » ne l'oblige pas.
+APPORT_DES_ETAPES_SEC = {
+    "04_recuperation_10k.py": "comptes annuels (10-K)",
+    "04b_recuperation_10q.py": "comptes trimestriels (10-Q)",
+    "04c_recuperation_8k.py": "événements 8-K (péremption des signaux)",
+    "07b_validation_qualitative.py": "validation qualitative des dépôts",
+}
+
+
+def sec_contact_configure() -> bool:
+    """True si l'adresse de contact SEC est définie.
+
+    Délègue à sec_http plutôt que de relire la variable ici : la règle
+    (variable présente ET non vide une fois les espaces retirés) ne doit
+    exister qu'à un endroit, sinon l'orchestrateur et les scripts finiraient
+    par ne plus être d'accord sur ce qui est « configuré »."""
+    try:
+        sec_http.contact_email()
+        return True
+    except sec_http.SecContactEmailMissing:
+        return False
+
+
+def resolve_sec_prerequisite(step: Step, report: RunReport) -> bool:
+    """True si l'étape peut tourner, False si elle vient d'être sautée.
+
+    Une étape REQUISE sans adresse SEC arrête le run (RuntimeError, que main()
+    transforme en statut « failed ») : c'est le cas de 04b dans le run
+    trimestriel, dont c'est la raison d'être. Une étape OPTIONNELLE est
+    sautée, avec une raison qui le dit -- et c'est avertissement_depots_sec qui
+    en tirera la conséquence pour le signal."""
+    if not step.needs_sec or sec_contact_configure():
+        return True
+    if step.required:
+        raise RuntimeError(
+            f"{step.script} est requise et interroge la SEC.\n{sec_http.MISSING_EMAIL_MESSAGE}")
+    skip_step(step, report, RAISON_SEC_ABSENTE)
+    return False
+
+
+def avertissement_depots_sec(report: RunReport, steps: List[Step]) -> Optional[str]:
+    """Le signal vient-il d'être recalculé sur des dépôts SEC NON rafraîchis ?
+
+    C'est la question que le statut « partial » ne permet pas de trancher, et
+    celle qui compte : 06b recalcule l'écart de valorisation à chaque run, donc
+    le fichier de signal est toujours « récent » -- le tableau de bord le
+    marque à jour d'après sa date de modification -- même quand les comptes
+    qu'il valorise datent du dernier run réussi.
+
+    Ne compte que les étapes qui DEVAIENT tourner et n'ont pas abouti : échec,
+    ou saut faute d'adresse SEC. Un saut par choix (--prices-only) ou parce
+    que l'étape avait déjà réussi (--resume) n'appelle aucun avertissement."""
+    attendues = {s.script for s in steps if s.needs_sec}
+    manquees, causes = [], []
+    for entree in report.steps:
+        script = entree.get("script")
+        if script not in attendues:
+            continue
+        if entree.get("status") == "failed":
+            manquees.append(script)
+            causes.append("échec de l'étape")
+        elif entree.get("status") == "skipped" and entree.get("reason") == RAISON_SEC_ABSENTE:
+            manquees.append(script)
+            causes.append(RAISON_SEC_ABSENTE)
+    if not manquees:
+        return None
+
+    apports = ", ".join(APPORT_DES_ETAPES_SEC.get(s, s) for s in manquees)
+    cause = " ; ".join(dict.fromkeys(causes))
+    return (
+        f"Signal recalculé SANS dépôts SEC frais -- non rafraîchis : {apports}. "
+        f"Les fondamentaux valorisés sont ceux du dernier run réussi. Cause : {cause}."
+    )
+
+
+# ----------------------------------------------------------------------------
 # Mode live
 # ----------------------------------------------------------------------------
 
@@ -414,6 +534,8 @@ def run_live(report: RunReport, limit: Optional[int], skip_options: bool, retrie
             continue
         if skip_options and step.needs_gateway:
             skip_step(step, report, "--skip-options")
+            continue
+        if not resolve_sec_prerequisite(step, report):
             continue
         gateway_args = resolve_gateway_args(step, report)
         if gateway_args is None:
@@ -540,10 +662,18 @@ def main() -> None:
             run_replay(report, args.as_of_date, args.retries, args.step_timeout)
         else:
             run_live(report, args.limit, args.skip_options, args.retries, args.step_timeout, already_done)
+            avertissement = avertissement_depots_sec(report, LIVE_STEPS)
+            if avertissement:
+                report.avertissements.append(avertissement)
         failed_optional = [s["script"] for s in report.steps if s["status"] == "failed"]
-        report.status = "partial" if failed_optional else "success"
+        # Un avertissement suffit à rendre le run « partial » : une étape SEC
+        # SAUTÉE n'est plus « failed », et sans cette règle le run qui tournait
+        # sans comptes frais finirait « success » -- pire qu'avant le correctif.
+        report.status = "partial" if (failed_optional or report.avertissements) else "success"
         if failed_optional:
             logger.warning("Run terminé en mode dégradé : étape(s) optionnelle(s) en échec -> %s", ", ".join(failed_optional))
+        for avertissement in report.avertissements:
+            logger.warning("%s", avertissement)
     except (RuntimeError, FileNotFoundError, ValueError) as exc:
         report.status = "failed"
         logger.error("Pipeline arrêté : %s", exc)

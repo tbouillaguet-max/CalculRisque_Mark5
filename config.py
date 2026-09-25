@@ -24,8 +24,9 @@ théorique s'écarte significativement du cours de bourse.
     07_calcul_dcf.py            -> valorisation théorique (DCF) à partir de 04 (+ 02 + 03),
                                     calcule l'écart en % entre cours de bourse et valeur théorique
     08_recuperation_options.py  -> chaînes d'options (ITM/ATM/OTM) via IBKR + greeks, UNIQUEMENT
-                                    pour les entreprises dont l'écart calculé en 07 dépasse
-                                    VALUATION_GAP_THRESHOLD_PCT (en valeur absolue). IV/greeks en
+                                    pour les entreprises dont la valorisation COMBINÉE (06b)
+                                    s'écarte du cours d'un facteur 1 + VALUATION_GAP_THRESHOLD_PCT
+                                    dans un sens ou dans l'autre. IV/greeks en
                                     priorité via Alpha Vantage (gratuit, ALPHAVANTAGE_API_KEY,
                                     voir 08), Black-Scholes local en dernier repli. --av-backfill-dates
                                     permet aussi de reconstituer un VRAI historique d'options passées.
@@ -349,12 +350,18 @@ def dividend_yield_for(sector) -> float:
 # ----------------------------------------------------------------------------
 # Filtre de valorisation (déclenche la récupération des options en 08)
 # ----------------------------------------------------------------------------
-# 07_calcul_dcf.py calcule pour chaque entreprise l'écart en % entre son
-# cours de bourse et sa valeur théorique (DCF). 08_recuperation_options.py ne
-# récupère les chaînes d'options que pour les entreprises dont cet écart
-# dépasse ce seuil, en valeur absolue : la récupération d'options via IBKR
-# est lente et rate-limitée, inutile de la lancer sur tout l'univers si seule
-# une fraction des entreprises montre un écart de valorisation significatif.
+# 08_recuperation_options.py ne récupère les chaînes d'options que pour les
+# entreprises dont la valeur théorique COMBINÉE (06b) s'écarte du cours d'un
+# facteur 1 + seuil/100 dans un sens ou dans l'autre -- ratio >= 1,20 côté call,
+# <= 1/1,20 côté put : c'est l'union exacte de ce que les stratégies options
+# peuvent ouvrir (cf. 08.filter_universe_by_valuation_gap). La récupération via
+# IBKR est lente et rate-limitée, inutile de la lancer sur tout l'univers.
+#
+# Jusqu'au 2026-09, 08 lisait ici l'écart du DCF (07) : les banques, assureurs
+# et foncières, sans DCF, n'avaient jamais leurs options collectées.
+#
+# La même valeur sert, en écart SIMPLE cette fois, de seuil d'entrée à
+# valuation_gap_options (OPTIONS_ENTRY_THRESHOLD_PCT ci-dessous).
 VALUATION_GAP_THRESHOLD_PCT = 20.0
 
 # ----------------------------------------------------------------------------
@@ -365,7 +372,21 @@ VALUATION_GAP_THRESHOLD_PCT = 20.0
 # significative). Ajustable via --entry-threshold-pct sur 09_backtest.py.
 BACKTEST_ENTRY_THRESHOLD_PCT = VALUATION_GAP_THRESHOLD_PCT
 BACKTEST_STOP_LOSS_PCT = -15.0     # clôture la position si le cours baisse de 15% depuis l'entrée
-BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 30% depuis l'entrée
+
+# INCHANGÉ à 30%, et c'est un résultat, pas un oubli. La grille de
+# 16_optimize_strategie_actions.py (576 combinaisons par stratégie) retient 30
+# à l'unanimité de son plateau d'apprentissage côté DCF. Une prise de gain plus
+# large (60%, 100%) fait l'inverse sur chaque fenêtre : elle DÉGRADE
+# l'apprentissage et AMÉLIORE le test, régulièrement, dans les deux stratégies
+# (DCF : test 0,744 -> 0,785 -> 0,810 de 30 à 100 ; sectorielle : 0,726 ->
+# 0,762 -> 0,801), en divisant la rotation par deux au passage.
+#
+# Ce n'est pas du bruit -- c'est trop régulier et trop monotone pour ça. Mais le
+# retenir reviendrait à CHOISIR SUR LA FENÊTRE DE TEST, qui ne vaut que tant
+# qu'elle n'a rien choisi : elle serait consommée, et il ne resterait plus rien
+# pour juger. Le sujet mérite son étude propre, avec une fenêtre de validation
+# neuve. Voir README, « Optimisation des réglages actions ».
+BACKTEST_TAKE_PROFIT_PCT = 30.0
 
 # Plafond de concentration : part maximale du portefeuille pour UNE ligne,
 # quel que soit son écart de valorisation. Les stratégies pondèrent au prorata
@@ -373,6 +394,22 @@ BACKTEST_TAKE_PROFIT_PCT = 30.0    # clôture la position si le cours monte de 3
 # zéro -> plusieurs milliers de %) capte à lui seul l'essentiel du capital.
 # Le NOMBRE de positions n'étant pas plafonné, c'est le seul garde-fou de
 # concentration du portefeuille. 0 ou None le désactive.
+#
+# INCHANGÉ à 20%, contre l'avis de l'apprentissage, et c'est le cas d'école de
+# ce que la fenêtre de test sert à empêcher.
+#
+# 10% est le seul axe sur lequel les plateaux d'APPRENTISSAGE des deux grilles
+# soient unanimes : toutes les combinaisons indiscernables du maximum le
+# retiennent, et le gain y est le plus large de toute l'étude (Sharpe
+# d'apprentissage 0,924 -> 1,014 côté DCF). Sur la fenêtre de TEST, le même
+# changement fait PERDRE 0,05 (0,795 -> 0,744) côté DCF et 0,02 côté
+# sectorielle. Un gain massif en apprentissage qui s'inverse hors échantillon,
+# c'est la signature du sur-ajustement, pas celle d'un réglage.
+#
+# Le paramètre reste balayable par stratégie (`max_weight_pct`) : c'est la
+# VALEUR PAR DÉFAUT qui n'est pas changée, pas la possibilité de l'explorer.
+# Partagé avec base.capped_weights, donc avec les stratégies options -- raison
+# de plus de ne pas y toucher sur la foi d'une grille qui ne les mesure pas.
 BACKTEST_MAX_WEIGHT_PER_POSITION_PCT = 20.0
 
 # Plafond de poids CUMULÉ par secteur (stratégie valuation_gap_sector_neutral).
@@ -386,6 +423,12 @@ BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT = 30.0
 # SECTEUR (10 points d'excès sur ses pairs est bien plus sélectif que 10%
 # d'écart au cours), le second est le garde-fou absolu qui empêche d'acheter
 # la "moins pire" d'un secteur entièrement survalorisé.
+# INCHANGÉ à 10 : la grille ne départage PAS cet axe. Sur les trois valeurs
+# balayées (5, 10, 20), le Sharpe d'apprentissage tient en 0,007 (0,908 / 0,907
+# / 0,915) et celui de test en 0,005 (0,747 / 0,742 / 0,742). Un axe plat est
+# une réponse : il n'y a rien à optimiser là, et bouger la valeur reviendrait à
+# présenter un tirage au sort comme un réglage. Même constat côté DCF (0,927 /
+# 0,924 / 0,930 en apprentissage).
 BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT = 10.0
 BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 
@@ -396,13 +439,253 @@ BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT = 10.0
 # s'élargit parce que le marché intègre une dégradation que les derniers
 # états financiers publiés ne montrent pas encore.
 # None désactive le filtre (0.0 est un seuil valide : "aucune baisse tolérée").
+#
+# PARTAGÉ AVEC LE MOTEUR OPTIONS (options_engine, 10, 11, 11b, 11c, 11d, 13) :
+# il reste à -10 pour la même raison que le plafond de concentration ci-dessus.
+# Les stratégies ACTIONS ont leur propre valeur juste en dessous.
 BACKTEST_MOMENTUM_MIN_PCT = -10.0
+
+# ----------------------------------------------------------------------------
+# Sorties FACULTATIVES du moteur actions, toutes désactivées par défaut
+# ----------------------------------------------------------------------------
+# Le moteur ne ferme une position que sur stop-loss ou prise de gain : un écart
+# qui se referme ne vend pas, la ligne devient GELÉE. C'est un choix explicite
+# de l'utilisateur, documenté dans le README. Les trois réglages ci-dessous le
+# rendent MESURABLE sans le renverser -- à None, le moteur se comporte
+# exactement comme avant leur ajout.
+
+# Stop SUIVEUR : recul maximal toléré depuis le plus haut atteint DEPUIS
+# L'ENTRÉE. Le stop fixe mesure la perte depuis l'ouverture de la thèse : une
+# ligne montée de 60% puis redescendue de 55% n'approche jamais son stop alors
+# qu'elle a rendu tout son gain.
+#
+# ACTIVÉ à -20, et c'est le seul réglage de sortie que l'étude ait retenu. Ce
+# qui le rend crédible n'est pas son Sharpe mais sa forme : l'effet est une
+# DOSE-RÉPONSE lisse et monotone, nul à -35 (le stop ne se déclenche jamais) et
+# croissant jusqu'à -15, ce qu'un pic de bruit ne produit pas. Sur la fenêtre
+# de TEST, écart apparié +0,120 (IC [+0,025, +0,198], p = 0,008) pour
+# valuation_gap_combined.
+#
+# LA RÉSERVE, à garder en tête : il n'est significatif que sur UNE des trois
+# stratégies actions (+0,070 p = 0,07 sur DCF, +0,033 p = 0,29 sur la neutre au
+# secteur), même si la direction est la même partout. Et -20 est un choix de
+# MILIEU de plage : la fenêtre d'apprentissage ne départage pas les valeurs
+# entre -15 et -30 (Sharpe de 0,966 à 0,995, pour une erreur-type de 0,46), et
+# retenir la meilleure sur le test reviendrait à consommer la fenêtre qui sert
+# à juger. None le désactive.
+BACKTEST_TRAILING_STOP_PCT = -20.0
+
+# Durée de détention maximale, en jours. Une thèse de convergence qui ne s'est
+# pas réalisée en N ans n'est plus une thèse : c'est une position que plus rien
+# ne ferme, puisque seuls les stops le peuvent.
+BACKTEST_MAX_HOLDING_DAYS = None
+
+# Sortie sur PERTE DE SIGNAL : seuil d'écart sous lequel une ligne détenue est
+# vendue. En points d'écart, comme le seuil d'entrée -- à 0, on sort dès que la
+# valeur théorique repasse sous le cours, c'est-à-dire dès que la thèse qui
+# justifiait la position n'existe plus.
+#
+# ACTIVÉ SUR DÉCISION DE L'UTILISATEUR. Ce réglage renverse la règle des
+# POSITIONS GELÉES -- « une ligne n'est jamais vendue parce que son écart s'est
+# refermé, seuls un stop-loss ou une prise de gain la ferment » -- qui était un
+# choix explicite, documenté dans le README et dans la docstring du moteur. Il
+# a donc été implémenté, mesuré, puis laissé à None jusqu'à ce que la décision
+# soit prise.
+#
+# Mesuré sur `valuation_gap_combined`, CONTRE LA CONFIGURATION COMPLÈTE (stop
+# suiveur compris) :
+#
+#     Sharpe plein échantillon   0,918  ->  0,977
+#     Sharpe hors échantillon    0,795  ->  0,910
+#     écart apparié              +0,055 (IC [+0,006, +0,109], p = 0,013)
+#     dont hors échantillon      +0,105 (IC [+0,015, +0,197], p = 0,012)
+#
+# CE CHIFFRE EST PLUS BAS QUE CELUI MESURÉ D'ABORD (+0,162), et la différence
+# n'est pas du bruit : la première mesure comparait à une configuration SANS
+# stop suiveur. Les deux sorties se recouvrent -- toutes deux ferment une ligne
+# qui a tourné -- donc l'apport marginal de celle-ci, une fois l'autre en
+# place, est plus faible. C'est l'apport MARGINAL qui compte pour décider,
+# puisque c'est celui qu'on obtient réellement en l'activant.
+#
+# Significatif sur la stratégie combinée seulement : +0,066 (p = 0,20) sur DCF
+# et +0,074 (p = 0,15) sur la neutre au secteur, même si la direction est la
+# même partout et que le Sharpe monte sur les trois.
+#
+# LE DRAWDOWN SE DÉGRADE, et il faut le savoir : -34,4% -> -36,1% sur la
+# combinée, avec le même ordre de grandeur sur les deux autres. Le Calmar
+# s'améliore malgré tout (0,516 -> 0,540) parce que le CAGR monte davantage,
+# mais ce réglage achète du Sharpe, pas de la tranquillité.
+#
+# La valeur 0 plutôt que 10 : les deux se valent en mesure, mais 0 est le seul
+# seuil qui ait un sens économique -- on sort quand la valeur théorique repasse
+# sous le cours, pas à un niveau de conviction arbitraire. Les 637 sorties
+# correspondantes rapportent +6,4% en moyenne après 130 jours : elles
+# encaissent une thèse réalisée au lieu de la laisser courir jusqu'à un stop.
+#
+# Un signal PÉRIMÉ ne déclenche PAS de vente : la péremption gèle une ligne,
+# elle ne la vend pas (cf. engine._these_refermee). Vendre sur la dernière
+# valeur connue d'un signal trop vieux reviendrait à agir sur une information
+# qu'on vient de déclarer inutilisable. None rétablit la règle des positions
+# gelées dans sa forme d'origine.
+BACKTEST_EXIT_GAP_THRESHOLD_PCT = 0.0
+
+# Écart de valorisation au-delà duquel un signal est tenu pour une ERREUR et
+# non pour une opportunité. En pourcentage du cours.
+#
+# CE QUI L'A RENDU NÉCESSAIRE. La valorisation combinée (06b) produit des
+# écarts dont la distribution a une queue absurde : sur l'archive du dépôt,
+# médiane -38%, 99e centile +875%... et MAXIMUM +1 817 436 625%. Une valeur
+# théorique par action de plusieurs millions de dollars n'est pas une
+# sous-évaluation, c'est un multiple appliqué à un dénominateur proche de zéro.
+#
+# Le plafond de pondération (capped_weights) bornait le DIMENSIONNEMENT de ces
+# lignes, mais pas leur CLASSEMENT -- et le classement décide de qui entre.
+# Mesuré : en ne retenant que les 5 plus fortes convictions, l'écart médian des
+# lignes détenues passe de 233% à 813% et leur 90e centile à 102 654%. Le
+# « gain » qu'on croyait tirer d'une plus grande sélectivité venait donc de
+# titres choisis sur des nombres cassés.
+#
+# 500% (valeur théorique à six fois le cours) est volontairement LARGE : une
+# vraie décote de 300% existe sur une société en difficulté temporaire, et le
+# filtre ne doit écarter que ce qui n'est explicable par aucune thèse. Même
+# esprit que MULTIPLE_PLAUSIBLE_RANGE côté multiples. 0 ou None le désactive.
+BACKTEST_MAX_PLAUSIBLE_GAP_PCT = 500.0
+
+# Fenêtre de volatilité réalisée servant à la pondération par le risque des
+# stratégies ACTIONS (cf. BACKTEST_VOL_WEIGHT_EXPONENT). 252 séances, soit un
+# an : une fenêtre courte suivrait les à-coups de marché et ferait tourner le
+# portefeuille au rythme de la volatilité plutôt qu'à celui de la thèse, ce
+# qui est l'inverse du but. Distincte de OPTIONS_REALIZED_VOL_LOOKBACK_DAYS
+# (60 jours), qui sert à PRICER une option à 2 ans -- pas le même usage.
+BACKTEST_VOL_LOOKBACK_DAYS = 252
+
+# Exposant de la pondération par le risque : poids proportionnel à
+# `écart / volatilité^exposant`.
+#   0   -> pondération par la seule conviction (comportement d'origine)
+#   1   -> parité de risque : chaque ligne contribue autant à la variance
+#   0,5 -> compromis
+#
+# POURQUOI CET AXE EXISTE. Les poids ne portaient AUCUN terme de risque : deux
+# entreprises au même écart de valorisation recevaient le même capital, que
+# l'une bouge de 15% par an et l'autre de 60%. C'est le levier de Sharpe le
+# plus classique qui manquait, et le seul de toute l'étude à ne coûter AUCUN
+# degré de liberté supplémentaire quand il est fixé a priori à 0 ou 1 -- il
+# ne s'ajuste pas aux données, il applique un raisonnement.
+BACKTEST_VOL_WEIGHT_EXPONENT = 0.0
+
+# Filtre momentum des backtests ACTIONS : DÉSACTIVÉ.
+#
+# C'est le résultat le plus inattendu de la grille, et le mieux établi de toute
+# l'étude : il est UNANIME sur le plateau d'apprentissage des DEUX stratégies,
+# et c'est le seul changement qui améliore nettement les DEUX fenêtres à la
+# fois. À lui seul il vaut +0,081 de Sharpe hors échantillon côté DCF
+# (0,698 -> 0,779) et +0,100 côté neutre au secteur (0,630 -> 0,730).
+#
+# L'explication tient à ce que le filtre écarte. Un titre dont le cours a chuté
+# de plus de 10% sur un an est precisément celui dont l'écart de valorisation
+# vient de s'élargir -- c'est-à-dire la candidate la plus attrayante de la
+# thèse. Le garde-fou anti-value-trap supprimait donc une partie du signal en
+# même temps que le piège, et le moteur a déjà DEUX protections contre la value
+# trap qui, elles, ne coûtent pas de signal : la péremption du signal (un écart
+# qui ne se rafraîchit plus cesse d'être finançable) et le stop-loss à -15%.
+# None, pas 0.0 : 0.0 serait le filtre le plus strict, pas son absence.
+BACKTEST_STOCKS_MOMENTUM_MIN_PCT = None
+
+# Zone de NON-NÉGOCIATION du rebalancement, en POINTS DE NAV : le portefeuille
+# n'est repesé que les jours où il faudrait faire bouger au moins ce
+# pourcentage de sa valeur (cf. engine.BacktestEngine._drift_is_material, qui
+# détaille aussi pourquoi le seuil porte sur la dérive TOTALE et non ligne à
+# ligne).
+#
+# Les poids sont proportionnels à l'écart de valorisation RAPPORTÉ À LA SOMME
+# des écarts des candidates : un seul dépôt SEC change ce dénominateur, donc la
+# cible de TOUTES les lignes. Des dépôts tombent 2624 jours sur 2936 séances
+# entre 2015 et 2026 -- sans zone de non-négociation, le portefeuille est
+# repesé en entier 9 séances sur 10, chaque miette payant cost_bps à l'aller et
+# au retour. 0 la désactive (comportement d'avant l'ajout du réglage).
+#
+# 15 points de NAV retenus par la grille, et l'un des deux seuls changements
+# que l'étude ait établis. Le Sharpe d'apprentissage est plat sur 0, 5 et 15
+# (0,926 / 0,928 / 0,924 côté DCF) : la règle de départage retient donc la
+# valeur la moins coûteuse en rotation. Le test va dans le même sens
+# (0,779 / 0,786 / 0,795), ce qui est la seule chose qui permette de le
+# retenir sans se payer de mots.
+#
+# Ce n'est d'ailleurs pas un pari sur le marché : une zone de non-négociation
+# évite de payer pour des ajustements que la thèse n'a pas demandés, et rien
+# d'autre.
+BACKTEST_REBALANCE_BAND_PCT = 15.0
 # Capital simulé au départ des backtests (actions et options : voir
 # OPTIONS_INITIAL_CAPITAL, tenu à la même valeur -- c'est le même
 # portefeuille selon qu'on l'investit en actions ou en options).
 BACKTEST_INITIAL_CAPITAL = 1_000_000.0
 BACKTEST_COMMISSION_BPS = 5.0      # coût de transaction (aller simple), en points de base du notionnel
 BACKTEST_SLIPPAGE_BPS = 5.0        # glissement d'exécution estimé (aller simple), en points de base
+
+# ----------------------------------------------------------------------------
+# Tarification RÉELLE : commission minimum, et ce qu'elle rend inachetable
+# ----------------------------------------------------------------------------
+# CE QUE LE COÛT PROPORTIONNEL NE PEUT PAS DIRE. Les 10 bps ci-dessus ne
+# dépendent pas de la taille de l'ordre : un ordre de 7 $ y paie 0,7 centime,
+# ce qu'aucun courtier ne facture. C'est ce qui fait passer un portefeuille de
+# 1 000 $ pour viable dans le backtest -- mesuré, il l'est jusqu'à 1,8 centime
+# de frais fixe par ordre, et pas au-delà.
+#
+# LES TROIS RÉGLAGES SE TIENNENT, et valent 0 par défaut : à 0 le moteur se
+# comporte EXACTEMENT comme avant, et les chiffres de référence du README
+# restent ceux qu'ils sont. Ils s'activent par run (--min-commission-dollar,
+# --min-trade-pct-of-nav, --max-fee-pct-of-trade), comme --commission-bps :
+# une hypothèse de marché, pas une propriété de la thèse.
+#
+#   1. Commission MINIMUM par exécution, en dollars. Le coût d'un ordre devient
+#      max(notionnel x bps, ce minimum). 1,0 = 1 $ à l'achat et 1 $ à la vente,
+#      soit 2 $ l'aller-retour.
+BACKTEST_MIN_COMMISSION_DOLLAR = 1.0
+#
+#   2. Plancher de taille d'ordre RELATIF au NAV, en %. Un plancher absolu ne
+#      tient pas à l'échelle : MIN_TRADE_DOLLAR = 1 $ vaut 0,000036 % d'un NAV
+#      de 2,8 M$ et ne coupe rigoureusement rien. Mesuré sur la stratégie
+#      combinée, 0,05 % coupe 77 % des ordres pour 24 % du volume négocié --
+#      beaucoup d'ordres, peu d'argent : c'est la poussière.
+BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.05
+#
+#   3. Part MAXIMALE du montant d'un ordre que la commission minimum a le droit
+#      de représenter. C'est le critère de VIABILITÉ, et il découle du point 1 :
+#      avec 1 $ de commission minimum et 1 %, un ordre sous 100 $ n'est pas
+#      passé du tout. Sans lui, le moteur paierait 14 % de frais sur un ordre de
+#      7 $ et continuerait comme si de rien n'était.
+#
+#      NE S'APPLIQUE JAMAIS AUX LIQUIDATIONS. Stop-loss, take-profit, stop
+#      suiveur, perte de signal et symbole périmé visent une cible de ZÉRO :
+#      leur refuser l'exécution parce que la ligne est devenue trop petite
+#      l'emprisonnerait dans le portefeuille pour toujours. Un plancher est un
+#      filtre de coût sur ce qu'on CHOISIT de faire, pas sur ce qu'on doit
+#      solder (cf. engine._execute_pending_orders).
+BACKTEST_MAX_FEE_PCT_OF_TRADE = 1.0
+
+# ----------------------------------------------------------------------------
+# Pondération ANCRÉE : des cibles qui ne dépendent pas des autres candidates
+# ----------------------------------------------------------------------------
+# LE PROBLÈME QUE ÇA ATTAQUE. `base.capped_weights` calcule
+# `poids = conviction / SOMME(convictions)`. Un seul dépôt SEC change donc le
+# dénominateur, et avec lui la cible de TOUTES les lignes du portefeuille --
+# c'est la cause première des 93 % de ventes qui ne sont que du repesage. Ni la
+# zone de non-négociation ni la levée du coupe-circuit ne peuvent rien contre
+# ça : elles suppriment des ordres, elles ne réduisent pas l'AMPLITUDE de ce
+# que chaque dépôt déplace.
+#
+# LA VARIANTE. `poids_i = min(conviction_i / ancre, plafond)`, sans
+# renormalisation : la cible d'une ligne ne dépend plus que de sa propre
+# conviction. L'arrivée d'une candidate laisse les autres cibles strictement
+# inchangées, et le solde non alloué va en cash.
+#
+# L'ANCRE EST UNE ÉCHELLE, pas une cible d'allocation : c'est la conviction
+# qu'il faut pour peser un point de portefeuille. Trop grande, le portefeuille
+# dort en cash ; trop petite, la somme des poids dépasse 1 et le moteur
+# renormalise -- ce qui rétablit exactement le couplage qu'on voulait supprimer.
+# Sa valeur se CALIBRE sur l'exposition moyenne obtenue, pas sur une intuition.
+# None rend la pondération historique.
+BACKTEST_CONVICTION_ANCHOR = None
 
 # Un signal DCF (10-K annuel) n'est considéré comme une base valable pour une
 # NOUVELLE entrée que s'il a été publié il y a moins de ce nombre de jours ;
@@ -433,6 +716,61 @@ BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD = {"FY": 270, "TTM": 120}
 # filtre désactivé. "non_evalue" ne doit PAS y figurer : c'est la valeur prise
 # par toutes les périodes quand MISTRAL_API_KEY n'est pas définie.
 QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
+
+# ----------------------------------------------------------------------------
+# Matérialité d'un 8-K par CODE D'ITEM SEC, sans LLM
+# ----------------------------------------------------------------------------
+# POURQUOI CE REPLI EXISTE. 04c classe la matérialité d'un 8-K par appel à un
+# modèle, et journalise `non_evalue` quand MISTRAL_API_KEY est absente. Mesuré
+# sur l'archive du dépôt : 99 147 dépôts, `category` à `non_evalue` sur 100%
+# des lignes et `materiality` vide partout. Le filtre d'événements matériels --
+# l'une des deux protections anti-value-trap que le moteur documente -- ne
+# tournait donc pas du tout, en silence à un avertissement près.
+#
+# Or la SEC NORMALISE le motif de dépôt : chaque 8-K porte ses `item_codes`,
+# déjà collectés par 04c et déjà présents dans l'archive. La matérialité d'un
+# « Item 4.02 » (non-fiabilité des états financiers publiés) ne demande aucun
+# jugement de langage -- elle est dans la définition du code. Ce repli rend donc
+# le filtre opérant sans clé d'API, de façon DÉTERMINISTE et auditable, là où
+# la classification par modèle restait invérifiable d'un run à l'autre.
+#
+# Les codes retenus sont ceux qui invalident les FONDAMENTAUX sur lesquels le
+# signal repose, pas ceux qui font l'actualité :
+# Codes MATÉRIELS PAR DÉFINITION, et la catégorie qu'ils portent. Table unique,
+# consommée par 04c (qui lui ajoute la lecture du texte) ET par
+# backtest.data_loader (qui, relisant une archive déjà écrite, n'a que les
+# codes). Deux tables auraient fini par diverger en silence.
+MATERIAL_8K_ITEM_CATEGORIES = {
+    "1.03": "procedure_judiciaire",  # faillite ou mise sous séquestre
+    "2.01": "fusion_acquisition",    # acquisition ou cession d'actifs réalisée
+    "2.03": "autre_materiel",        # nouvelle obligation financière directe (levier)
+    "2.04": "autre_materiel",        # déchéance du terme d'une dette
+    "2.05": "autre_materiel",        # coûts de restructuration ou de cession
+    "2.06": "autre_materiel",        # dépréciation d'actifs significative
+    "3.01": "autre_materiel",        # avis de radiation / non-respect des règles de cotation
+    "4.01": "autre_materiel",        # changement de commissaire aux comptes
+    "4.02": "autre_materiel",        # NON-FIABILITÉ d'états financiers déjà publiés
+}
+MATERIAL_8K_ITEM_CODES = tuple(MATERIAL_8K_ITEM_CATEGORIES)
+
+# Codes que SEUL LE TEXTE peut trancher. 04c les résout en lisant le document ;
+# la relecture d'archive, elle, ne les compte PAS -- sans le texte, les
+# supposer matériels périmerait des signaux sur la foi d'un code qui ne dit
+# rien. Mieux vaut un filtre qui rate un événement qu'un filtre qui invente.
+AMBIGUOUS_8K_ITEM_CODES = (
+    "1.01",  # accord significatif : fusion, ou contrat de fourniture ?
+    "1.02",  # résiliation d'un accord : même ambiguïté
+    "5.02",  # départ d'un dirigeant, ou élection routinière d'un administrateur ?
+    "7.01",  # Regulation FD : fourre-tout de communication
+    "8.01",  # « autres événements » : fourre-tout, parfois décisif
+    "2.02",  # résultats trimestriels (21 455 dépôts) : révision de guidance, ou routine ?
+)
+# Délibérément absents des DEUX listes, chacun pour une raison précise :
+#   9.01 (43 373 dépôts, le plus fréquent) ne fait que déclarer des pièces
+#       jointes -- purement administratif ;
+#   5.07 (vote en assemblée) et 5.03 (statuts) sont de la routine annuelle.
+# `MATERIAL_8K_ITEM_CATEGORIES = {}` désactive le repli et rend au filtre son
+# comportement d'avant (inerte sans classification par modèle).
 
 # ----------------------------------------------------------------------------
 # Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)
@@ -681,10 +1019,34 @@ OPTIONS_REALIZED_VOL_LOOKBACK_DAYS = 60
 #
 # 1.0 supposerait que le cours atteint EXACTEMENT sa valeur théorique à
 # l'échéance -- hypothèse que rien n'étaye, et qui transformerait chaque écart
-# de valorisation en gain certain. 0.5 ne suppose que la moitié du chemin :
+# de valorisation en gain certain. 0.5 ne supposerait que la moitié du chemin :
 # c'est la même hypothèse implicite que valuation_gap_multiples_options, qui
 # place son strike à mi-chemin entre cours et valeur théorique, rendue ici
 # EXPLICITE et donc optimisable (voir 11c_optimize_convergence_fraction.py).
+#
+# LE DÉFAUT EST 0.8, ET CE N'EST PAS CET ARGUMENT QUI LE JUSTIFIE. 0.8 suppose
+# une thèse nettement plus forte : 80 % de l'écart en log refermé à l'échéance
+# (730 jours), soit au seuil d'entrée (ratio 1,20) une dérive de 7,3 %/an au
+# lieu de 4,6 %. La valeur est là depuis le premier commit, sans trace de son
+# origine (aucune grille 11c archivée), et ce commentaire comme le README
+# disaient encore 0.5. Mesuré le 2026-09-24 sur 2015-2026 (1 M$, 06b régénéré,
+# hiérarchie `tiers`) :
+#
+#   fraction  CAGR     Sharpe  Sortino  max DD    trades  exposition
+#   0.5       -4,0 %   -0,69   -1,16    -50,9 %   2 393   28,5 %
+#   0.8       -2,4 %   -0,63   -0,99    -42,9 %   2 451   22,9 %
+#
+# Les deux valeurs sont INDISCERNABLES : test apparié sur les rendements en
+# excès du sans-risque, +0,06 de Sharpe pour 0.8, IC à 95 % [-0,45 ; +0,49] ;
+# aucune des deux moitiés ne tranche (2015-2020 : -0,11 ; 2021-2026 : +0,33,
+# IC [-0,12 ; +0,83]). 0.8 perd moins en CAGR et en drawdown, mais en
+# investissant moins : à Sharpe égal, ce n'est pas un avantage de thèse. (Sur
+# l'ancien parquet `flat`, encore versionné : +0,25, IC [-0,04 ; +0,60] -- pas
+# établi non plus.) La valeur en production reste donc 0.8 : on ne la
+# remplace que par une variante établie meilleure -- la règle de
+# 16_optimize_strategie_actions.py --, et 0.5 ne l'est pas. Surtout, la
+# stratégie PERD aux deux valeurs, comme valuation_gap_multiples_options (CAGR
+# -4,0 %) : ce n'est pas la fraction qui la rend négative.
 OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT = 0.8
 
 # Grille de strikes candidats, en écarts-types du log-prix à l'échéance :
@@ -1311,6 +1673,45 @@ MULTIPLE_PLAUSIBLE_RANGE: dict[str, tuple] = {
 # ce réglage permet de faire sans toucher au code.
 SECTOR_MULTIPLE_AGGREGATOR = "harmonic"
 
+# Comment 06b établit le multiple de référence d'une ligne :
+#   "median"    -> agrégat des multiples de ses pairs (cf. l'agrégateur ci-dessus)
+#   "warranted" -> multiple MÉRITÉ, régression en coupe sur les fondamentaux
+#                  des pairs (marge, croissance, levier, ROIC, taille)
+#
+# CE QUE LA MESURE DIT. `15_test_multiple_merite.py` compare les deux HORS
+# ÉCHANTILLON sur les mêmes pairs point-in-time : erreur absolue médiane en log
+# de 0,5237 pour le sectoriel contre 0,3750 pour le mérité, soit 28,4% de
+# mieux, et l'avantage tient sur 62,3% des 17 682 observations. Le mérité
+# prédit donc nettement mieux le multiple observé.
+#
+# ET POURTANT LE DÉFAUT RESTE "median", PARCE QUE L'A/B L'A TRANCHÉ. Mieux
+# prédire un multiple OBSERVÉ n'est pas la même chose que mieux prédire un
+# RENDEMENT, et sur ce jeu de données les deux vont en sens CONTRAIRE. Backtest
+# de valuation_gap_combined sur 2015-2026, signal médiane contre signal mérité :
+#
+#     Sharpe plein échantillon   0,918  ->  0,787
+#     Sharpe hors échantillon    0,795  ->  0,616
+#     écart apparié              -0,134 (IC [-0,235, -0,040], p = 0,996)
+#     dont hors échantillon      -0,184 (IC [-0,345, -0,021], p = 0,990)
+#
+# Significativement PIRE, sur les deux fenêtres. L'explication tient en une
+# phrase, et elle est au coeur de l'idée de Bhojraj & Lee poussée jusqu'au
+# bout : le multiple mérité EXPLIQUE la décote par les fondamentaux, et ne
+# laisse comme signal que le résidu. Or toute la thèse d'une stratégie *value*
+# est qu'une partie de cette décote est une erreur de marché -- et il se trouve
+# que c'est la part EXPLIQUÉE qui prédisait les rendements. Retirer ce que les
+# fondamentaux justifient retire donc le signal avec l'explication.
+#
+# La régression reste un meilleur MODÈLE de multiple ; elle est un moins bon
+# SIGNAL. C'est exactement la distinction que 15_test_multiple_merite.py ne
+# pouvait pas trancher seul, et pourquoi il concluait par « l'étape suivante est
+# l'A/B du signal sur le backtest ».
+#
+# `--multiple-method warranted` produit toujours le signal alternatif, pour qui
+# voudrait rejouer cette comparaison ou l'étendre aux stratégies options (que
+# ces mesures n'ont pas évaluées).
+SECTOR_MULTIPLE_METHOD = "median"
+
 # ----------------------------------------------------------------------------
 # Combinaison des valeurs implicites des trois multiples
 # ----------------------------------------------------------------------------
@@ -1422,3 +1823,40 @@ def to_naive_day(values):
     if isinstance(series.dtype, pd.DatetimeTZDtype):
         series = series.dt.tz_convert("UTC").dt.tz_localize(None)
     return series.dt.normalize().astype("datetime64[us]")
+
+# ----------------------------------------------------------------------------
+# Impact de marché (modèle de capacité)
+# ----------------------------------------------------------------------------
+# Impact, en points de base, d'un ordre égal à 100% du volume quotidien moyen
+# du titre. L'impact réel d'un ordre suit la RACINE de la part de volume
+# consommée (forme empirique standard, Almgren et al.) : à 1% du volume, on en
+# paie le dixième.
+#
+# 0 PAR DÉFAUT, et c'est volontaire. À un million de dollars de capital simulé,
+# une ligne pèse quelques dizaines de milliers de dollars contre un volume
+# quotidien médian de 113 millions : l'impact est négligeable et l'activer ne
+# changerait rien aux résultats. Son intérêt est de répondre à une question que
+# le coût forfaitaire de 10 bps ne peut pas poser, puisqu'il ne dépend pas de
+# la taille : JUSQU'À QUEL ENCOURS cette stratégie tient-elle ? Voir
+# `09_backtest.py --impact-coefficient-bps 100 --initial-capital ...`.
+BACKTEST_IMPACT_COEFFICIENT_BPS = 0.0
+
+# Ciblage de VOLATILITÉ du portefeuille actions, en % annualisé. L'exposition
+# est réduite quand la volatilité réalisée récente dépasse la cible, et jamais
+# augmentée au-delà de 100% (le moteur n'est pas margé).
+#
+# Pourquoi cela peut améliorer un Sharpe sans rien prédire : la volatilité est
+# GROUPÉE -- une période agitée est suivie d'une période agitée -- et c'est
+# l'une des rares régularités robustes des marchés. Réduire l'exposition quand
+# ça secoue réduit la volatilité future plus sûrement que le rendement futur.
+# None désactive (comportement d'origine).
+#
+# ACTIVÉ À 12 %, sur décision de l'utilisateur, et il faut être clair sur ce
+# que cela achète : c'est un ARBITRAGE, pas un gain. Le ciblage ne prétend pas
+# améliorer le Sharpe -- mesuré, il le dégrade légèrement -- il réduit
+# nettement le drawdown maximal. Les chiffres des deux régimes sont dans le
+# README ; le choix de la tranquillité contre un peu de Sharpe est un choix
+# légitime, il n'est simplement pas celui que la seule optimisation du Sharpe
+# aurait retenu.
+BACKTEST_VOL_TARGET_PCT = 12.0
+BACKTEST_VOL_TARGET_LOOKBACK_DAYS = 60

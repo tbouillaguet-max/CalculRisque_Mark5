@@ -4,15 +4,17 @@ Récupération des chaînes d'options (ITM / ATM / OTM) via l'API IBKR
 s'écarte significativement de leur valeur théorique.
 
 Dernière étape du pipeline : 03 (cours) et 04 (10-K) alimentent 05/06
-(multiples) et 07 (DCF), qui calcule pour chaque entreprise l'écart en %
-entre cours de bourse et valeur théorique (Écart_DCF_vs_Cours_%). Ce script
-ne récupère les options que pour les entreprises dont cet écart dépasse
-config.VALUATION_GAP_THRESHOLD_PCT (±20% par défaut) : la récupération
-d'options via IBKR est lente et rate-limitée, inutile de la lancer sur les
-~500 entreprises de l'univers si seule une fraction montre une valorisation
-de marché significativement différente de sa valeur théorique.
-Voir filter_universe_by_valuation_gap() ; --skip-valuation-filter retrouve
-l'ancien comportement (options pour tout l'univers fourni).
+(multiples) et 07 (DCF), que 06b combine en une valeur théorique par
+entreprise -- celle que tradent les stratégies options. Ce script ne récupère
+les options que pour les entreprises dont cette valeur combinée s'écarte du
+cours d'un facteur config.VALUATION_GAP_THRESHOLD_PCT (1,20 par défaut) dans
+un sens ou dans l'autre : la récupération d'options via IBKR est lente et
+rate-limitée, inutile de la lancer sur les ~500 entreprises de l'univers si
+seule une fraction peut donner lieu à une position.
+Voir filter_universe_by_valuation_gap() -- qui lisait le DCF seul jusqu'au
+2026-09, et écartait ainsi toutes les banques, assurances et foncières ;
+--skip-valuation-filter retrouve l'ancien comportement (options pour tout
+l'univers fourni).
 
 Filtres appliqués sur les contrats eux-mêmes (inchangés) :
     - expiration à plus de 9 mois (aucun plafond en haut)
@@ -34,7 +36,8 @@ Corrections / changements par rapport à RecuperationOptionMark9 :
       config.OPTIONS_FILE.
     - Lit config.UNIVERSE_FILE par défaut (au lieu d'un chemin CSV STOXX 600 en dur).
     - NOUVEAU : passage en dernière étape du pipeline (était l'étape 04) et
-      filtre par écart de valorisation DCF (voir plus haut), au lieu de
+      filtre par écart de valorisation -- DCF à l'origine, valorisation
+      combinée (06b) depuis 2026-09 (voir plus haut) --, au lieu de
       récupérer les options pour tout l'univers à chaque run.
     - NOUVEAU : source Alpha Vantage (HISTORICAL_OPTIONS) en SUPPORT d'IBKR,
       voir section dédiée ci-dessous.
@@ -111,6 +114,7 @@ from scipy.stats import norm
 from ib_insync import IB, Stock, Option, Contract, util
 
 import config
+import ecriture_atomique
 import ib_connect
 
 IB_HOST = "127.0.0.1"
@@ -366,30 +370,75 @@ def load_universe(csv_path: Path, limit: Optional[int] = None) -> pd.DataFrame:
     return df
 
 
+def ecart_log_pct(gap_pct: pd.Series) -> pd.Series:
+    """Écart en LOG, 100 x ln(valeur théorique / cours), à partir de l'écart
+    simple (théorique - cours) / cours x 100 que publie 06b.
+
+    Une valeur théorique nulle ou négative n'a pas de logarithme : NaN, et la
+    ligne n'est retenue par aucun seuil -- c'est aussi ce que fait la stratégie
+    multiples, qui calcule le même logarithme."""
+    ratio = 1 + gap_pct / 100
+    return 100 * np.log(ratio.where(ratio > 0))
+
+
 def filter_universe_by_valuation_gap(universe: pd.DataFrame, threshold_pct: float) -> pd.DataFrame:
-    """Ne garde que les tickers dont l'écart entre cours de bourse et valeur
-    théorique (DCF, calculé par 07_calcul_dcf.py) dépasse threshold_pct en
-    valeur absolue. C'est le nouveau filtre d'entrée de ce script : voir le
-    docstring en tête de fichier pour le raisonnement."""
-    if not config.DCF_FILE.exists():
+    """Ne garde que les entreprises dont les stratégies options POURRAIENT
+    ouvrir une position -- et collecte donc leurs chaînes.
+
+    LA SOURCE : LA VALORISATION COMBINÉE (06b), PAS LE DCF (07). Ce filtre
+    lisait `resultats_dcf.xlsx`, alors que toutes les stratégies options
+    tradent `valorisation_combinee_historique.parquet`. Or une banque, un
+    assureur ou une foncière n'a pas de DCF : 111 entreprises valorisées par
+    06b en sont dépourvues (34 banques, 17 assureurs, 16 foncières), dont 109
+    dans l'univers de 08. Elles étaient écartées quel que soit leur écart --
+    leurs options ne pouvaient donc JAMAIS être collectées, et une position
+    ouverte dessus serait restée simulée par Black-Scholes pour toujours.
+    Constaté : le PUT COIN ouvert le 2026-07-31 par un backtest, APRÈS le
+    premier snapshot réel, a été simulé faute de chaîne -- COIN n'a pas de
+    DCF, et aucun snapshot ne l'a jamais contenue (des 109, seules BLK et
+    IVZ y figurent, dans les collectes de fin juillet). À l'inverse, 56
+    entreprises passaient le filtre sur leur DCF alors que leur écart COMBINÉ,
+    celui que les stratégies lisent, est sous le seuil : du temps IBKR pour
+    des chaînes qu'aucune stratégie n'ouvrirait.
+
+    LE SEUIL : EN LOG, SYMÉTRIQUE. `valuation_gap_multiples_options` entre à
+    |100 x ln(théorique/cours)| >= 100 x ln(1,20), soit un ratio >= 1,20 côté
+    call et <= 1/1,20 = 0,833 côté put. Un seuil de ±20 % en écart SIMPLE
+    coupe les puts à 0,80 : il manquait la bande 0,80-0,833, que la stratégie
+    trade (20 entreprises aujourd'hui). Le seuil en log donne exactement
+    l'union de ce que les stratégies peuvent ouvrir -- identique côté call,
+    un peu plus large côté put.
+
+    Mesuré sur les données du 2026-09 (06b régénéré, hiérarchie `tiers`), à
+    travers load_universe : 384 entreprises retenues contre 323 avec l'ancien
+    filtre (117 ajoutées, dont 85 sans DCF ; 56 retirées). La collecte IBKR
+    s'allonge d'autant.
+
+    L'écart retenu est celui du DERNIER dépôt de chaque entreprise, calculé au
+    cours de sa date de dépôt : c'est exactement le signal sur lequel une
+    stratégie décide d'entrer."""
+    if not config.VALORISATION_COMBINEE_FILE.exists():
         raise FileNotFoundError(
-            f"{config.DCF_FILE} introuvable. Lance d'abord 03_recuperation_cours.py, "
-            "04_recuperation_10k.py, 05_calcul_multiples.py et 07_calcul_dcf.py "
-            "(dans cet ordre), ou relance ce script avec --skip-valuation-filter "
-            "pour récupérer les options sur tout l'univers sans filtre."
+            f"{config.VALORISATION_COMBINEE_FILE} introuvable. Lance d'abord le calcul du "
+            "signal (05, 06, 07 puis 06b_calcul_valorisation_combinee.py), ou relance ce "
+            "script avec --skip-valuation-filter pour récupérer les options sur tout "
+            "l'univers sans filtre."
         )
 
-    dcf = pd.read_excel(config.DCF_FILE, sheet_name="DCF", engine="openpyxl")
-    ecart_col = "Écart_DCF_vs_Cours_%"
-    valorises = dcf.dropna(subset=[ecart_col])
-    flagged = valorises[valorises[ecart_col].abs() >= threshold_pct]
-    tickers_retenus = set(flagged["Ticker"].astype(str))
+    valorisation = pd.read_parquet(
+        config.VALORISATION_COMBINEE_FILE, columns=["symbol", "filed_date", "gap_pct"])
+    dernier = (valorisation.dropna(subset=["gap_pct"])
+               .sort_values("filed_date").groupby("symbol").tail(1))
+    seuil_log = 100 * math.log(1 + threshold_pct / 100)
+    flagged = dernier[ecart_log_pct(dernier["gap_pct"]).abs() >= seuil_log]
+    tickers_retenus = set(flagged["symbol"].astype(str))
 
     filtered = universe[universe["ib_symbol"].isin(tickers_retenus)].reset_index(drop=True)
     logger.info(
-        "Filtre de valorisation : %d/%d entreprises avec un écart cours/valeur théorique "
-        ">= %.0f%% (sur %d entreprises avec un DCF calculé, %d dans l'univers fourni).",
-        len(filtered), len(universe), threshold_pct, len(valorises), len(universe),
+        "Filtre de valorisation : %d/%d entreprises dont la valeur théorique COMBINÉE (06b) "
+        "s'écarte du cours d'un facteur >= %.2f dans un sens ou dans l'autre (sur %d "
+        "entreprises valorisées).",
+        len(filtered), len(universe), 1 + threshold_pct / 100, len(dernier),
     )
     return filtered
 
@@ -1056,7 +1105,7 @@ def save_progress(output_dir: Path, processed: set[str]) -> None:
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    ecriture_atomique.remplacer(tmp, path)
 
 
 def append_checkpoint(output_dir: Path, rows: list[dict]) -> None:

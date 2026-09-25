@@ -32,9 +32,11 @@ coût réel d'un aller-retour sans bookkeeping séparé.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 import config
@@ -85,6 +87,11 @@ class Position:
     # perte depuis l'ouverture de la THÈSE.
     stop_reference_price: float = 0.0
 
+    # Plus haut atteint depuis l'ouverture de la thèse, pour le stop SUIVEUR.
+    # Distinct de stop_reference_price (figé à l'entrée) et de entry_price
+    # (moyenné à chaque renfort) : trois références, trois usages.
+    peak_price: float = 0.0
+
 
 @dataclass
 class _PendingOrder:
@@ -106,13 +113,43 @@ class BacktestEngine:
         stop_loss_pct: float,
         take_profit_pct: float,
         signal_max_age_days: int = config.BACKTEST_SIGNAL_MAX_AGE_DAYS,
-        momentum_min_pct: Optional[float] = config.BACKTEST_MOMENTUM_MIN_PCT,
+        # BACKTEST_STOCKS_MOMENTUM_MIN_PCT et non BACKTEST_MOMENTUM_MIN_PCT :
+        # ce moteur est celui des ACTIONS, et la grille qui a désactivé le
+        # filtre n'a rien mesuré du côté options, dont le moteur garde son
+        # propre défaut (cf. config).
+        momentum_min_pct: Optional[float] = config.BACKTEST_STOCKS_MOMENTUM_MIN_PCT,
+        rebalance_band_pct: float = config.BACKTEST_REBALANCE_BAND_PCT,
+        vol_lookback_days: int = config.BACKTEST_VOL_LOOKBACK_DAYS,
+        max_plausible_gap_pct: float = config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT,
+        # Les trois sorties FACULTATIVES, toutes désactivées par défaut : le
+        # moteur se comporte exactement comme avant tant qu'aucune n'est
+        # demandée (cf. leurs méthodes respectives pour le raisonnement).
+        trailing_stop_pct: Optional[float] = config.BACKTEST_TRAILING_STOP_PCT,
+        max_holding_days: Optional[int] = config.BACKTEST_MAX_HOLDING_DAYS,
+        exit_gap_threshold_pct: Optional[float] = config.BACKTEST_EXIT_GAP_THRESHOLD_PCT,
+        impact_coefficient_bps: float = config.BACKTEST_IMPACT_COEFFICIENT_BPS,
+        # Tarification réelle : commission minimum en dollars, plancher de
+        # taille relatif au NAV, et part maximale de l'ordre que la commission
+        # minimum a le droit de représenter. À 0 -- le défaut -- le moteur se
+        # comporte exactement comme avant (cf. config pour le raisonnement).
+        min_commission_dollar: float = config.BACKTEST_MIN_COMMISSION_DOLLAR,
+        min_trade_pct_of_nav: float = config.BACKTEST_MIN_TRADE_PCT_OF_NAV,
+        max_fee_pct_of_trade: float = config.BACKTEST_MAX_FEE_PCT_OF_TRADE,
+        vol_target_pct: Optional[float] = config.BACKTEST_VOL_TARGET_PCT,
+        vol_target_lookback_days: int = config.BACKTEST_VOL_TARGET_LOOKBACK_DAYS,
         material_events_8k: Optional[pd.DataFrame] = None,
         start_date: Optional[pd.Timestamp] = None,
         end_date: Optional[pd.Timestamp] = None,
     ):
         self.prices = price_panel
-        self.last_valid_date = price_panel.last_valid_date
+        # DICT et non la Series de price_panel : `_handle_stale_symbols`
+        # interroge cette table pour CHAQUE position à CHAQUE séance, et un
+        # `Series.get(symbole)` reconstruit tout un chemin d'indexation pandas
+        # à chaque appel. Mesuré au profileur sur un run complet : 371 301
+        # appels pour 7,3 s, soit 17% du temps total, à ne lire qu'une date.
+        # Le dict rend exactement les mêmes valeurs (Timestamp ou NaT, None si
+        # absent), donc aucun changement de comportement.
+        self.last_valid_date = dict(price_panel.last_valid_date)
         # Les événements sont triés par date de publication une fois pour
         # toutes, puis consommés au fil de la boucle (cf. _events_up_to) : les
         # rechercher par masque booléen sur la table complète à chacun des
@@ -139,6 +176,18 @@ class BacktestEngine:
         self.take_profit_pct = take_profit_pct
         self.signal_max_age_days = signal_max_age_days
         self.momentum_min_pct = momentum_min_pct
+        self.rebalance_band_pct = rebalance_band_pct or 0.0
+        self.vol_lookback_days = vol_lookback_days or 0
+        self.max_plausible_gap_pct = max_plausible_gap_pct or 0.0
+        self.trailing_stop_pct = trailing_stop_pct
+        self.max_holding_days = max_holding_days
+        self.exit_gap_threshold_pct = exit_gap_threshold_pct
+        self.impact_coefficient_bps = impact_coefficient_bps or 0.0
+        self.min_commission_dollar = min_commission_dollar or 0.0
+        self.min_trade_pct_of_nav = min_trade_pct_of_nav or 0.0
+        self.max_fee_pct_of_trade = max_fee_pct_of_trade or 0.0
+        self.vol_target_pct = vol_target_pct
+        self.vol_target_lookback_days = vol_target_lookback_days
         self.material_events = data_loader.MaterialEventResolver(material_events_8k)
 
         self.cash = initial_capital
@@ -158,12 +207,22 @@ class BacktestEngine:
         # jamais sur perte de signal", le portefeuille dériverait vers un
         # buy-and-hold de positions périmées sans que rien ne le signale.
         self.buy_orders_count = 0
+        # Friction réellement payée, toutes exécutions confondues : commission,
+        # glissement, impact de marché et commission minimum.
+        self.total_friction_dollar = 0.0
+        self.executions_count = 0
         self.truncated_orders_count = 0
         # Le sous-investissement en DOLLARS, seule mesure économiquement
         # lisible : un ordre "tronqué" de 0,1% et un ordre non exécuté du tout
         # comptent pareil dans truncated_orders_count, pas ici.
         self.demanded_dollar = 0.0
         self.unfilled_dollar = 0.0
+        # Jours où un repesage était possible, et ceux que la zone de
+        # non-négociation a laissés passer (cf. _drift_is_material) : la mesure
+        # de ce que le réglage fait réellement, à lire avec
+        # annualized_turnover_pct.
+        self.rebalance_days_count = 0
+        self.rebalance_skipped_days = 0
 
         calendar = price_panel.close.index
         if start_date is not None:
@@ -222,6 +281,10 @@ class BacktestEngine:
         if not self.pending_orders:
             return
 
+        # Le plancher relatif se lit sur le NAV du jour, pas sur le capital
+        # initial : c'est ce qui le fait tenir à l'échelle quand le
+        # portefeuille a été multiplié par huit.
+        nav = self._current_nav(today)
         still_pending: dict[str, _PendingOrder] = {}
         sells: list[tuple[str, float, float, str]] = []
         buys: list[tuple[str, float, float, str]] = []
@@ -249,7 +312,15 @@ class BacktestEngine:
 
             pos = self.positions.get(symbol)
             delta_dollar = order.target_dollar - (pos.shares if pos else 0.0) * price
-            if abs(delta_dollar) < MIN_TRADE_DOLLAR:
+            # UNE LIQUIDATION PASSE TOUJOURS. Stop-loss, take-profit, stop
+            # suiveur, perte de signal et symbole périmé visent une cible de
+            # zéro : leur opposer un plancher de taille emprisonnerait dans le
+            # portefeuille toute ligne devenue plus petite que lui, sans
+            # échappatoire -- le stop-loss cesserait de fonctionner sur
+            # exactement les positions qui en ont le plus besoin, celles qui
+            # se sont effondrées.
+            minimum = MIN_TRADE_DOLLAR if order.target_dollar <= 0 else self._montant_minimal(nav)
+            if abs(delta_dollar) < minimum:
                 continue
             side = buys if delta_dollar > 0 else sells
             side.append((symbol, delta_dollar / price, price, order.reason))
@@ -260,9 +331,12 @@ class BacktestEngine:
         # (_rebalance raisonne en NAV, pas en cash).
         for symbol, shares_delta, price, reason in sells:
             self._execute_trade(symbol, shares_delta, price, today, reason)
-        self._execute_buys(buys, today)
+        self._execute_buys(buys, today, self._montant_minimal(nav))
 
-    def _execute_buys(self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp) -> None:
+    def _execute_buys(
+        self, buys: list[tuple[str, float, float, str]], today: pd.Timestamp,
+        minimum: float = MIN_TRADE_DOLLAR,
+    ) -> None:
         """Achats du jour, tous servis dans la MÊME proportion quand le cash
         ne suffit pas.
 
@@ -278,10 +352,25 @@ class BacktestEngine:
         if not buys:
             return
 
-        cost_rate = self.cost_bps / 10_000
+        # Frais du LOT, ordre par ordre : avec une commission minimum, le coût
+        # n'est plus proportionnel au total, et provisionner `notional x bps`
+        # sous-estimerait le cash nécessaire sur un lot de petits ordres --
+        # exactement le régime où la commission minimum mord.
         notional = sum(shares * price for _, shares, price, _ in buys)
-        demanded = notional * (1 + cost_rate)
+        frais = sum(
+            shares * price * self._taux_de_cout(symbol, shares * price, today, avec_impact=False)
+            for symbol, shares, price, _ in buys
+        )
+        demanded = notional + frais
         self.buy_orders_count += len(buys)
+
+        # Compté AVANT toute sortie anticipée : la version précédente
+        # incrémentait `unfilled_dollar` puis sortait sur `cash <= 0` sans
+        # jamais ajouter ce lot au dénominateur. Le ratio ratait donc
+        # exactement les journées de pénurie TOTALE -- les pires -- et
+        # `unfilled_dollar_pct` en ressortait surestimé, d'autant plus que la
+        # pénurie était grave.
+        self.demanded_dollar += demanded
 
         scale = 1.0
         if demanded > self.cash:
@@ -297,21 +386,101 @@ class BacktestEngine:
             # avec. Le compter comme une troncature faisait afficher "100% des
             # ordres tronqués" à un moteur qui fonctionnait, et surtout
             # noyait les vraies pénuries de cash dans ce bruit.
-            if manque > notional * cost_rate + MIN_TRADE_DOLLAR:
+            if manque > frais + MIN_TRADE_DOLLAR:
                 self.truncated_orders_count += len(buys)
             self.unfilled_dollar += manque
             if self.cash <= 0:
                 return
             scale = self.cash / demanded
-        self.demanded_dollar += demanded
 
         for symbol, shares_delta, price, reason in buys:
-            if shares_delta * price * scale < MIN_TRADE_DOLLAR:
+            # Un ordre réduit par le manque de cash sous le seuil de viabilité
+            # cesse de l'être : le plancher s'applique à ce qui est RÉELLEMENT
+            # exécuté, pas à ce qui était demandé.
+            if shares_delta * price * scale < minimum:
                 continue
             self._execute_trade(symbol, shares_delta * scale, price, today, reason)
 
+    def _impact_bps(self, symbol: str, montant: float, today: pd.Timestamp) -> float:
+        """Impact de marché, en points de base, pour un ordre de `montant`
+        dollars sur ce symbole.
+
+        MODÈLE EN RACINE DE LA PARTICIPATION, la forme empirique standard
+        (Almgren et al.) : l'impact croît comme la racine de la part du volume
+        quotidien qu'on consomme. `impact_coefficient_bps` est l'impact d'un
+        ordre égal à 100% du volume quotidien moyen ; un ordre à 1% de ce
+        volume en paie donc le dixième.
+
+        POURQUOI CE N'EST PAS UN DÉFAUT. À un million de dollars de capital
+        simulé, une ligne pèse quelques dizaines de milliers de dollars contre
+        un volume quotidien médian de 113 millions : l'impact est
+        rigoureusement négligeable, et l'activer ne changerait rien. Son
+        intérêt est ailleurs -- il répond à « jusqu'à quel ENCOURS cette
+        stratégie tient », une question que le coût forfaitaire de 10 bps ne
+        peut pas poser, puisqu'il ne dépend pas de la taille."""
+        if not self.impact_coefficient_bps or montant <= 0:
+            return 0.0
+        volume = self.prices.dollar_volume_at(symbol, today)
+        if not volume:
+            return 0.0
+        return self.impact_coefficient_bps * math.sqrt(montant / volume)
+
+    def _taux_de_cout(
+        self, symbol: str, notionnel: float, today: pd.Timestamp, avec_impact: bool = True,
+    ) -> float:
+        """Coût d'une exécution, rendu comme un TAUX pour rester compatible
+        avec le décalage de prix qui sert de modèle d'exécution.
+
+        Le coût est proportionnel (commission + glissement + impact), SAUF
+        quand une commission minimum en dollars est demandée : elle s'y
+        substitue dès que l'ordre est trop petit pour l'atteindre. Rendre un
+        taux plutôt qu'un montant garde le reste du moteur inchangé -- le prix
+        effectif reste `prix x (1 ± taux)` -- tout en rendant le coût
+        NON LINÉAIRE en la taille, ce qui est le point : c'est cette
+        non-linéarité que le forfait de 10 bps ne pouvait pas exprimer, et qui
+        décide de la viabilité d'un petit portefeuille.
+
+        `avec_impact=False` sert au PROVISIONNEMENT du cash dans
+        `_execute_buys`, et la distinction n'est pas cosmétique. L'impact de
+        marché est un effet de PRIX -- on déplace le marché en passant l'ordre
+        --, pas des frais qu'il faudrait mettre de côté d'avance. Le
+        provisionner reviendrait à rétrécir l'ordre jusqu'à ce qu'il tienne
+        dans le cash IMPACT COMPRIS, donc à ne jamais payer l'impact plutôt
+        qu'à le subir : mesuré, un portefeuille d'un milliard sur un marché
+        étroit finissait alors avec exactement la performance d'un
+        portefeuille d'un million, et toute l'étude de capacité s'effondrait.
+        """
+        taux = self.cost_bps / 10_000
+        if avec_impact:
+            taux += self._impact_bps(symbol, notionnel, today) / 10_000
+        if self.min_commission_dollar > 0 and notionnel > 0:
+            taux = max(taux, self.min_commission_dollar / notionnel)
+        return taux
+
+    def _montant_minimal(self, nav: float) -> float:
+        """Montant en dessous duquel un ordre n'est PAS passé : le plus
+        contraignant des trois planchers.
+
+        1. `MIN_TRADE_DOLLAR`, le garde-fou anti-poussière historique ;
+        2. un plancher RELATIF au NAV -- le seul qui tienne à l'échelle, un
+           dollar ne voulant pas dire la même chose sur 10 000 $ et sur 8 M$ ;
+        3. le seuil de VIABILITÉ déduit de la commission minimum : si l'on
+           refuse qu'un ordre paie plus de x % de frais, un ordre sous
+           `commission_minimum / x` n'a pas de raison d'exister.
+
+        NE S'APPLIQUE PAS AUX LIQUIDATIONS : voir `_execute_pending_orders`.
+        Un plancher filtre ce qu'on choisit de faire, jamais ce qu'on doit
+        solder -- sinon une ligne devenue minuscule serait emprisonnée dans le
+        portefeuille, stop-loss compris."""
+        minimum = MIN_TRADE_DOLLAR
+        if self.min_trade_pct_of_nav > 0 and nav > 0:
+            minimum = max(minimum, nav * self.min_trade_pct_of_nav / 100.0)
+        if self.min_commission_dollar > 0 and self.max_fee_pct_of_trade > 0:
+            minimum = max(minimum, self.min_commission_dollar / (self.max_fee_pct_of_trade / 100.0))
+        return minimum
+
     def _execute_trade(self, symbol: str, shares_delta: float, price: float, today: pd.Timestamp, reason: str) -> None:
-        cost_rate = self.cost_bps / 10_000
+        cost_rate = self._taux_de_cout(symbol, abs(shares_delta) * price, today)
         pos = self.positions.get(symbol)
 
         if shares_delta > 0:  # achat (nouvelle position ou renforcement)
@@ -329,6 +498,11 @@ class BacktestEngine:
                 if cost < MIN_TRADE_DOLLAR:
                     return
             self.cash -= cost
+            # Comptabilisé APRÈS le redimensionnement au cash, sur ce qui part
+            # vraiment : la friction d'un ordre rogné est celle de l'ordre
+            # rogné, pas celle de l'ordre demandé.
+            self.total_friction_dollar += shares_delta * price * cost_rate
+            self.executions_count += 1
             if pos is None:
                 self.positions[symbol] = Position(
                     symbol, shares_delta, effective_price, today,
@@ -349,6 +523,8 @@ class BacktestEngine:
         effective_price = price * (1 - cost_rate)
         proceeds = sold_shares * effective_price
         self.cash += proceeds
+        self.total_friction_dollar += sold_shares * price * cost_rate
+        self.executions_count += 1
         pnl = (effective_price - pos.entry_price) * sold_shares
         self.trades.append({
             "symbol": symbol, "entry_date": pos.entry_date, "exit_date": today,
@@ -372,14 +548,81 @@ class BacktestEngine:
             reference = pos.stop_reference_price or pos.entry_price
             if price is None or not reference:
                 continue
+            # Plus haut atteint depuis l'ouverture de la thèse : sert au stop
+            # SUIVEUR, et se met à jour même quand aucune règle ne se déclenche.
+            pos.peak_price = max(pos.peak_price or price, price)
+
             move_pct = (price - reference) / reference * 100
+            raison = None
             if move_pct <= self.stop_loss_pct:
-                self._queue_order(symbol, 0.0, "stop_loss", today)
-                triggered.add(symbol)
+                raison = "stop_loss"
             elif move_pct >= self.take_profit_pct:
-                self._queue_order(symbol, 0.0, "take_profit", today)
+                raison = "take_profit"
+            elif self._trailing_stop_touche(pos, price):
+                raison = "trailing_stop"
+            elif self._detention_trop_longue(pos, today):
+                raison = "max_holding"
+            elif self._these_refermee(symbol, today):
+                raison = "signal_lost"
+
+            if raison:
+                self._queue_order(symbol, 0.0, raison, today)
                 triggered.add(symbol)
         return triggered
+
+    def _trailing_stop_touche(self, pos: Position, price: float) -> bool:
+        """Stop SUIVEUR : recul depuis le plus haut atteint DEPUIS L'ENTRÉE, et
+        non depuis le prix d'entrée.
+
+        Le stop fixe mesure la perte par rapport à l'ouverture de la thèse : une
+        ligne montée de 60% puis redescendue de 55% n'a jamais approché son stop
+        alors qu'elle a rendu presque tout son gain. Le stop suiveur protège le
+        chemin parcouru ; en contrepartie il sort d'un titre volatil qui n'a rien
+        fait de mal, ce qui est exactement le reproche fait au stop serré sur une
+        stratégie *value*. D'où un réglage désactivé par défaut, pas une règle."""
+        if not self.trailing_stop_pct or not pos.peak_price:
+            return False
+        return (price - pos.peak_price) / pos.peak_price * 100 <= self.trailing_stop_pct
+
+    def _detention_trop_longue(self, pos: Position, today: pd.Timestamp) -> bool:
+        """Durée de détention maximale. Une thèse de convergence qui ne s'est
+        pas réalisée en N ans n'est plus une thèse : c'est une position gelée
+        que rien ne ferme, puisque seuls les stops le peuvent. Équivalent
+        actions de OPTIONS_MIN_HOLDING_DAYS côté options, pris par l'autre
+        bout."""
+        if not self.max_holding_days:
+            return False
+        return (today - pos.entry_date).days >= self.max_holding_days
+
+    def _these_refermee(self, symbol: str, today: pd.Timestamp) -> bool:
+        """Sortie sur PERTE DE SIGNAL : l'écart de valorisation qui justifiait
+        la position s'est refermé sous le seuil de sortie.
+
+        DÉSACTIVÉ PAR DÉFAUT, et ce n'est pas une prudence de façade. La règle
+        des positions gelées -- une ligne n'est JAMAIS vendue parce que son
+        écart s'est refermé, seuls un stop-loss ou une prise de gain la
+        ferment -- est un choix explicite de l'utilisateur, documenté comme tel
+        dans le README et dans la docstring du module. Ce réglage rend ce choix
+        MESURABLE sans le renverser : à None, le moteur se comporte exactement
+        comme avant.
+
+        Le seuil est en points d'écart, comme celui d'entrée : à 0, on sort dès
+        que la valeur théorique repasse sous le cours."""
+        if self.exit_gap_threshold_pct is None:
+            return False
+        signal = self.known_signals.get(symbol)
+        if signal is None:
+            return False
+        gap = signal.get("gap_pct")
+        if gap is None or gap != gap:
+            return False
+        # Un signal PÉRIMÉ ne dit plus rien : il ne doit pas déclencher une
+        # sortie au motif que sa dernière valeur connue était basse. La
+        # péremption gèle la ligne, elle ne la vend pas (cf. _signal_is_actionable).
+        max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
+        if (today - signal["published_date"]).days > max_age:
+            return False
+        return gap < self.exit_gap_threshold_pct
 
     def _handle_stale_symbols(self, today: pd.Timestamp) -> set[str]:
         """Ferme IMMÉDIATEMENT (au dernier cours connu, pas via
@@ -522,6 +765,23 @@ class BacktestEngine:
             )
 
         return {
+            # CE QUE LA STRATÉGIE A RÉELLEMENT PAYÉ, en dollars et en nombre.
+            # Le moteur facturait sa friction sans jamais la totaliser, si bien
+            # qu'on ne pouvait pas répondre à la question la plus naturelle :
+            # « moins de transactions, est-ce moins de frais ? ». La réponse
+            # n'est pas évidente, et c'est pour ça qu'il faut la mesurer -- la
+            # friction suit les DOLLARS NÉGOCIÉS, pas le nombre d'ordres, et
+            # supprimer beaucoup de petits ordres peut n'économiser presque
+            # rien. Le moteur options tient ce compte depuis toujours
+            # (total_commission / total_slippage) ; celui-ci ne le tenait pas.
+            "total_friction_dollar": float(self.total_friction_dollar),
+            "total_friction_pct_of_initial": float(
+                self.total_friction_dollar / self.initial_capital * 100
+            ) if self.initial_capital else None,
+            "executions_count": int(self.executions_count),
+            "avg_friction_per_execution_dollar": float(
+                self.total_friction_dollar / self.executions_count
+            ) if self.executions_count else None,
             "buy_orders_count": self.buy_orders_count,
             "truncated_orders_count": self.truncated_orders_count,
             "truncated_orders_pct": float(truncated_pct),
@@ -531,6 +791,16 @@ class BacktestEngine:
             # pèsent identiquement dans le premier, pas dans le second.
             "unfilled_dollar_pct": float(unfilled_pct),
             "avg_cash_pct": float(avg_cash_pct) if avg_cash_pct is not None else None,
+            # Ce que la bande de non-négociation a réellement filtré. À lire
+            # avec annualized_turnover_pct : c'est le même phénomène vu des
+            # deux bouts, la part des redimensionnements évités d'un côté, ce
+            # qu'ils coûtaient de l'autre.
+            "rebalance_band_pct": float(self.rebalance_band_pct),
+            "rebalance_days_count": int(self.rebalance_days_count),
+            "rebalance_skipped_days_pct": float(
+                self.rebalance_skipped_days / self.rebalance_days_count * 100
+                if self.rebalance_days_count else 0.0
+            ),
             **self._signal_coverage_diagnostics(),
         }
 
@@ -605,6 +875,17 @@ class BacktestEngine:
         stop-loss/take-profit uniquement."""
         if symbol not in self.universe.asof(today):
             return False
+        # Un écart absurde n'est pas une conviction, c'est une erreur de
+        # valorisation (cf. config.BACKTEST_MAX_PLAUSIBLE_GAP_PCT : l'archive
+        # en contient jusqu'à +1 817 436 625%). Écarté ICI, au niveau du
+        # moteur, et non dans chaque stratégie : le classement des candidates
+        # se fait sur cette grandeur, donc une seule stratégie qui oublierait
+        # le filtre se retrouverait à choisir ses plus fortes convictions
+        # parmi des nombres cassés.
+        if self.max_plausible_gap_pct:
+            gap = signal.get("gap_pct")
+            if gap is not None and gap == gap and abs(gap) > self.max_plausible_gap_pct:
+                return False
         max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
         if (today - signal["published_date"]).days > max_age:
             return False
@@ -621,6 +902,21 @@ class BacktestEngine:
         ])
         if eligible_signals.empty:
             return
+
+        # VOLATILITÉ POINT-IN-TIME, ajoutée par le moteur et non par la
+        # stratégie : c'est le moteur qui détient le panel de cours, et la
+        # séparation des rôles veut que la stratégie ne voie que des signaux
+        # (cf. docstring du module strategies). Une colonne de plus qu'une
+        # stratégie est libre d'ignorer -- les trois existantes le faisaient
+        # avant que la pondération par le risque n'existe.
+        #
+        # `realized_vol_at` lit un panel précalculé en une passe vectorisée et
+        # mis en cache : le coût par ligne est un accès tableau, pas un calcul.
+        if self.vol_lookback_days:
+            eligible_signals = eligible_signals.assign(realized_vol=[
+                self.prices.realized_vol_at(symbol, today, self.vol_lookback_days)
+                for symbol in eligible_signals["symbol"]
+            ])
 
         target_weights = self.strategy.generate_target_weights(eligible_signals, set(self.positions))
         target_weights = {s: w for s, w in target_weights.items() if s not in exclude and w > 0}
@@ -656,8 +952,162 @@ class BacktestEngine:
         if total_weight > 1:
             target_weights = {s: w / total_weight for s, w in target_weights.items()}
 
-        for symbol, weight in target_weights.items():
-            self._queue_order(symbol, weight * active_budget, "rebalance", today)
+        # Ciblage de volatilité : un facteur commun à toutes les cibles, donc
+        # sans effet sur leurs poids RELATIFS -- il module l'exposition, pas la
+        # sélection (cf. _echelle_ciblage_volatilite). À 1, rien ne change.
+        echelle = self._echelle_ciblage_volatilite()
+        targets = {
+            symbol: weight * active_budget * echelle
+            for symbol, weight in target_weights.items()
+        }
+
+        self.rebalance_days_count += 1
+        if not self._drift_is_material(targets, today, nav_now):
+            self.rebalance_skipped_days += 1
+            return
+
+        for symbol, target_dollar in targets.items():
+            self._queue_order(symbol, target_dollar, "rebalance", today)
+
+    def _echelle_ciblage_volatilite(self) -> float:
+        """Facteur appliqué à TOUTES les cibles pour viser une volatilité de
+        portefeuille constante.
+
+        POURQUOI ÇA PEUT MARCHER SANS RIEN PRÉDIRE. La volatilité est
+        GROUPÉE : une période agitée est suivie d'une période agitée, et c'est
+        l'une des rares régularités robustes des marchés. Réduire l'exposition
+        quand la volatilité récente est haute réduit donc la volatilité FUTURE
+        plus sûrement qu'elle ne réduit le rendement futur -- ce qui est
+        exactement la définition d'un gain de Sharpe. Aucune prévision de
+        rendement n'y intervient.
+
+        BORNÉ À 1 : le portefeuille peut se désinvestir quand ça secoue, jamais
+        s'endetter quand c'est calme. Le moteur n'est pas margé (cf.
+        _execute_buys), et un ciblage qui lèverait du levier changerait la
+        nature du produit au lieu d'en lisser le risque.
+
+        La volatilité réalisée du PORTEFEUILLE est celle de sa courbe de NAV,
+        pas la moyenne de celles de ses lignes : c'est la seule qui tienne
+        compte de la diversification, et elle est déjà disponible sans calcul
+        supplémentaire. Elle est lue sur les DERNIÈRES séances enregistrées,
+        donc sur le passé du jour simulé -- la méthode ne prend volontairement
+        pas de date : elle ne peut lire que ce qui est déjà écrit, ce qui rend
+        un look-ahead impossible par construction plutôt que par vigilance."""
+        if not self.vol_target_pct:
+            return 1.0
+        fenetre = self.equity_curve_rows[-self.vol_target_lookback_days:]
+        if len(fenetre) < 30:
+            return 1.0  # historique trop court : on ne module rien
+        nav = np.array([row["nav"] for row in fenetre], dtype=float)
+        rendements = np.diff(nav) / nav[:-1]
+        realisee = float(rendements.std()) * math.sqrt(252) * 100
+        if not realisee > 0:
+            return 1.0
+        return min(1.0, self.vol_target_pct / realisee)
+
+    def _drift_is_material(self, targets: dict[str, float], today: pd.Timestamp, nav: float) -> bool:
+        """Le portefeuille s'est-il assez éloigné de sa cible pour qu'il vaille
+        la peine de le repeser ? Zone de non-négociation, mesurée sur la
+        DÉRIVE TOTALE en % du NAV.
+
+        POURQUOI CE RÉGLAGE EXISTE. `_rebalance` est appelé dès qu'un signal
+        est publié, et les poids sont proportionnels à l'écart de valorisation
+        RAPPORTÉ À LA SOMME des écarts des candidates (cf.
+        base.capped_weights). Un seul 10-Q déposé change donc ce dénominateur,
+        et avec lui la cible de TOUTES les lignes du portefeuille -- pas
+        seulement celle de l'entreprise qui a publié. Mesuré sur 2015-2026 :
+        des dépôts tombent 2624 jours sur 2936, soit un repesage intégral 9
+        séances sur 10, pour 722% de rotation annualisée et 62836 exécutions
+        au service de 1934 thèses seulement. Chacune paie `cost_bps` à l'aller
+        comme au retour, pour un ajustement de poids que la thèse n'a pas
+        demandé.
+
+        POURQUOI LA DÉRIVE TOTALE, ET NON UNE BANDE PAR LIGNE. Une bande
+        appliquée ligne à ligne -- ne toucher une position que si SA cible
+        s'écarte de plus de x% de SA valeur -- a été essayée et mesurée
+        d'abord : elle divise bien les exécutions par 15, mais elle filtre
+        aussi les ALLÈGEMENTS, qui sont exactement ce qui finance les achats du
+        même jour (cf. `_execute_pending_orders`, les ventes passent avant les
+        achats précisément pour cela). Le portefeuille se retrouve alors sans
+        cash pour ses entrées neuves : mesuré, 52% du montant d'achat demandé
+        devenait infinançable, contre 5% sans bande. Le filtre doit donc porter
+        sur la DÉCISION DE REPESER, pas sur les lignes une à une : ou bien on
+        rebalance le portefeuille en entier -- et les ventes financent les
+        achats comme avant --, ou bien on n'y touche pas du tout.
+
+        Le seuil se lit donc en POINTS DE NAV : à 5, on ne repèse que les jours
+        où il faudrait faire bouger au moins 5% du portefeuille. Une entrée
+        neuve compte sa cible entière dans la dérive, si bien qu'un signal
+        vraiment neuf déclenche lui-même le repesage au lieu d'être retardé ;
+        et une journée sautée ne remet rien à zéro, la dérive continuant de
+        s'accumuler jusqu'à franchir le seuil.
+
+        Sans effet sur les sorties par stop-loss/take-profit, qui ne passent
+        pas par ici (cf. `_check_stop_loss_take_profit`), ni sur la règle des
+        positions gelées. 0 le désactive et rend au moteur son comportement
+        d'avant l'ajout du réglage.
+
+        Côté options, le même bruit est traité par
+        `OPTIONS_REBALANCE_LOG_GAP_THRESHOLD`, qui filtre sur le mouvement du
+        SIGNAL depuis le dernier trade. Ici c'est la cible qui bouge sans que
+        le signal de la ligne ait changé : le filtre doit donc porter sur la
+        cible, pas sur le signal."""
+        if self.rebalance_band_pct <= 0 or nav <= 0:
+            return True
+
+        # Déclaré par la STRATÉGIE, comme `signal_source` : une stratégie dont
+        # les cibles ne bougent pas quand une candidate apparaît n'a aucune
+        # raison de repeser tout le portefeuille pour l'acheter. `getattr` avec
+        # True par défaut : les trois stratégies actions existantes, et toute
+        # classe de test qui n'hérite pas de Strategy, gardent EXACTEMENT le
+        # comportement d'avant.
+        force_sur_entree = getattr(self.strategy, "entree_neuve_force_repesage", True)
+
+        # AMORÇAGE, et seulement quand le coupe-circuit est levé. Sans position
+        # en portefeuille, la dérive ne peut plus s'accumuler : une candidate
+        # dont la cible reste sous le seuil ne serait alors JAMAIS achetée, et
+        # la zone cesserait d'être un filtre de coût pour devenir un filtre de
+        # signal. C'est le défaut que le coupe-circuit corrigeait ; le lever
+        # exige de le corriger autrement.
+        if not force_sur_entree and not self.positions:
+            return True
+
+        drift = 0.0
+        for symbol, target_dollar in targets.items():
+            pos = self.positions.get(symbol)
+            if pos is None:
+                # UNE ENTRÉE NEUVE N'EST JAMAIS UN AJUSTEMENT DE CONFORT, et la
+                # zone ne gouverne que le RE-DIMENSIONNEMENT. Compter sa cible
+                # dans la dérive et s'arrêter là avait un défaut que seul un
+                # portefeuille à candidate unique révèle : avec un plafond par
+                # ligne à 10% du NAV et une zone à 15 points, une candidate
+                # SEULE pèse 10 points de dérive, donc reste sous le seuil --
+                # et comme rien d'autre ne bouge, elle n'est JAMAIS achetée. La
+                # zone cessait d'être un filtre de coût pour devenir un filtre
+                # de signal, ce qu'elle n'a jamais eu vocation à être.
+                #
+                # En portefeuille fourni le cas ne se voit pas (la dérive
+                # agrégée franchit le seuil de toute façon) : c'est précisément
+                # ce qui en faisait un défaut latent, visible seulement dans les
+                # régimes à signal rare.
+                # Le seuil de VIABILITÉ, pas le garde-fou anti-poussière : une
+                # candidate que la commission minimum rend inachetable n'a
+                # aucune raison de déclencher un repesage pour être achetée --
+                # elle ne le serait pas.
+                if target_dollar >= self._montant_minimal(nav):
+                    if force_sur_entree:
+                        return True
+                    # Coupe-circuit levé : l'entrée neuve reste un ÉCART -- une
+                    # position absente est bien une déviation à la cible -- mais
+                    # elle ne décide plus à elle seule. Une grosse candidate
+                    # franchit encore le seuil toute seule ; une petite attend
+                    # que la dérive s'accumule, ce qui est le comportement
+                    # demandé.
+                    drift += target_dollar
+                continue
+            current = pos.shares * self._mark_price(pos, today)
+            drift += abs(target_dollar - current)
+        return drift / nav * 100 >= self.rebalance_band_pct
 
     # ------------------------------------------------------------------ #
     # Comptabilité quotidienne

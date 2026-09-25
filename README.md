@@ -220,11 +220,56 @@ python run_pipeline_daily.py --resume         # reprend un run interrompu
 ```
 
 Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
-`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `06b` → `07` → `07b` → `08`.
-`03b` et `05/06/06b/07` sont **requises** (sans elles le signal du jour est
+`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `07` → `06b` → `07b` → `08`.
+`03b` et `05/06/07/06b` sont **requises** (sans elles le signal du jour est
 absent ou incohérent avec les cours) ; `04/04b/04c/07b/08` sont des
 enrichissements dont l'échec est journalisé sans arrêter le run, qui se
 termine alors en statut `partial`.
+
+**Sans `SEC_CONTACT_EMAIL`, le run le dit.** Les étapes qui interrogent la
+SEC (`04`, `04b`, `04c`, `07b`, marquées `needs_sec`) sont sautées d'emblée
+quand la variable manque : c'est une erreur de configuration, qu'aucun
+réessai ne corrige (six minutes perdues ainsi au run du 2026-09-05). Le run
+termine alors en `partial` **avec un avertissement** qui nomme ce qui n'a pas
+été rafraîchi : « Signal recalculé SANS dépôts SEC frais -- non rafraîchis :
+comptes annuels (10-K), comptes trimestriels (10-Q)… ». Il est écrit dans
+`report.json` (clé `avertissements`), répété sur la dernière ligne du journal
+(« Signal du jour : … ») et affiché en tête de la page 🩺 État du pipeline du
+tableau de bord. Avant, rien ne distinguait ce run d'un run complet : le
+tableau de fraîcheur, fondé sur la date de modification des fichiers,
+montrait le signal « à jour » alors qu'il venait d'être recalculé sur les
+comptes de la veille. Même avertissement quand une étape SEC échoue pour une
+autre raison ; aucun avec `--prices-only`, qui écarte la SEC par choix. En
+trimestriel, `04b` est requise : sans la variable, le run s'arrête avant de
+commencer, au lieu de recalculer tout le reste sur des comptes qu'il était
+chargé de rafraîchir. Couvert par `tests/test_prerequis_sec.py`.
+
+**`07` avant `06b`, et pas l'inverse.** `06b` lit `dcf_historique.parquet`,
+qu'écrit `07`, pour son repli DCF (les lignes dont le secteur a trop peu de
+pairs). Les deux orchestrateurs lançaient `06b` d'abord : en quotidien, ce
+repli valorisait donc les comptes du run précédent. En replay
+(`--as-of-date`), c'était pire : l'espace de travail part sans DCF, `06b`
+sortait sur « Fichier manquant »… avec le code 0, et le replay se déclarait
+réussi sans produire **aucune** valorisation combinée. Deux défauts, donc, et
+le second cachait le premier : neuf `main()` (dans `02`, `04c`, `05`, `06`,
+`06b` et `07`) journalisaient une erreur puis sortaient par un `return` nu —
+code 0, que l'orchestrateur, qui ne juge une étape qu'à son code de sortie,
+prenait pour un succès. Ils sortent désormais en erreur.
+`tests/test_ordre_et_codes_de_sortie.py` déduit les dépendances **du code**
+(qui écrit, qui lit quel `config.*_FILE`) et vérifie l'ordre des trois listes
+d'étapes, plutôt que de les recopier dans une liste qui vieillirait.
+
+**Écritures atomiques et Windows.** Les fichiers de reprise
+(`progress_qualitative.json` de `07b`, fichiers de progression de `04`,
+`04b`, `04c` et `08`, états de suivi de `03`, `04` et `04b`) et le
+`report.json` des orchestrateurs s'écrivent dans un `.tmp` qui remplace
+ensuite la cible par `os.replace`. Sous Windows, ce remplacement échoue en
+`PermissionError` tant qu'un autre processus tient la cible ouverte —
+antivirus, indexeur, synchronisation OneDrive d'un dossier Bureau, éditeur :
+c'est ce qui a fait échouer `07b` le 2026-09-05. `ecriture_atomique.remplacer`
+réessaie ce seul cas, avec un délai croissant (≈ 3 s au total), et relève
+l'erreur si le verrou persiste. `tests/test_ecriture_atomique.py` refuse
+tout nouveau `tmp.replace(...)` qui contournerait le module.
 
 **Mode dégradé plutôt que saut.** Si IB Gateway ne répond pas, `03b` est
 relancée avec `--skip-ibkr` (source Stooq) au lieu d'être sautée : sauter la
@@ -393,6 +438,57 @@ reste disponible et journalise ce qu'il doit abandonner.
 Si le test conclut **non**, il n'y a rien à brancher — et c'est une réponse,
 pas un échec.
 
+## L'extraction SEC ne se paie qu'une fois
+
+Les quatre scripts qui interrogent la SEC (`04`, `04b`, `04c`, `07b`) sont
+tous **reprenables** : ce qui a été récupéré est écrit au fil de l'eau, une
+interruption ne fait perdre que les quelques tickers en cours, et un second run
+n'appelle pas la SEC pour ce qui est déjà là.
+
+```bash
+python 04_recuperation_10k.py --tickers data/universe/sp500_universe_full.csv
+# interrompu ? relance la même commande avec --resume
+python 04_recuperation_10k.py --tickers data/universe/sp500_universe_full.csv --resume
+```
+
+**Deux mécanismes distincts, et il faut les distinguer :**
+
+| | Ce qu'il protège | Fichier |
+|---|---|---|
+| **Reprise** (`--resume`) | Un run **interrompu** : on repart des tickers non traités | `progress_*.json` + `checkpoint_*.jsonl` |
+| **Throttle** (`--refresh-days`, défaut 30) | Un run **terminé** : on ne réinterroge pas ce qui est récent | `fetch_state_*.json` |
+
+Le premier couvre le Ctrl+C et la coupure réseau ; le second évite de repayer
+un run complet le lendemain. `--force-refresh` ignore le throttle,
+`--resume` ignore ce qui est déjà traité dans le run en cours.
+
+**Ce qui déclenche quand même un nouvel appel**, et c'est voulu :
+
+- un ticker en **échec** n'est jamais marqué « à jour » — un échec réseau doit
+  être réessayé au prochain run complet, pas ignoré pendant 30 jours ;
+- un ticker dont l'état dit « déjà interrogé » mais dont le parquet ne contient
+  rien est réinterrogé — sans quoi une ligne manquante le resterait pour
+  toujours ;
+- au-delà de `--refresh-days`, pour récupérer les dépôts de l'année écoulée.
+
+Le fichier de progression est écrit **atomiquement** (temporaire puis
+`replace`) et sauvegardé dans un `finally` : un Ctrl+C sauvegarde l'état réel,
+pas un point de contrôle périodique dépassé. Les lignes récupérées vont dans un
+JSONL *append-only*, relisible même après une interruption brutale — là où un
+parquet réécrit en bloc ne l'est pas.
+
+`04c` ajoute un troisième niveau qui lui est propre : un **cache par dépôt**
+(`cache_8k_mistral.jsonl`), qui évite de retélécharger ET de reclassifier un
+8-K déjà vu, même entre deux runs complets.
+
+> **Note historique.** `04` était le seul des quatre sans reprise : il
+> accumulait tout en mémoire et n'écrivait qu'à la fin, si bien qu'une
+> interruption perdait l'intégralité du run — et le suivant repartait de zéro,
+> l'état de suivi n'ayant jamais été sauvegardé. C'était aussi le plus long
+> (~500 entreprises sur l'univers complet, à quelques requêtes par seconde) :
+> le seul run qu'on ne pouvait pas se permettre de perdre était le seul qu'on
+> perdait. Couvert depuis par `tests/test_reprise_10k.py`.
+
 ## Configuration requise
 
 ```bash
@@ -405,7 +501,11 @@ export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfi
 User-Agent identifiant un contact réel, et un User-Agent générique se fait
 bloquer (403/429). Les scripts qui interrogent la SEC échouent au démarrage
 avec un message explicite si elle est absente, plutôt que de dégrader
-silencieusement.
+silencieusement. Les orchestrateurs la vérifient **avant** de lancer ces
+étapes et signalent un signal recalculé sans dépôts frais (voir « Mise à
+jour quotidienne »). La variable doit être visible du processus qui lance le
+run : une tâche planifiée Windows ou un cron ne lisent pas le profil du shell
+interactif.
 
 ### Le LLM : Gemini ou Mistral
 
@@ -454,7 +554,7 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
     07b_validation_qualitative.py -> verdict LLM de cohérence qualitative
                                       (texte du 10-K/10-Q à sa date de dépôt)
                                       vs l'écart de valorisation quantitatif
-    run_pipeline_quarterly.py     -> orchestre 04b→04c→05→06→06b→07→07b→08 en
+    run_pipeline_quarterly.py     -> orchestre 04b→04c→05→06→07→06b→07b→08 en
                                       conditions réelles (mode live), ou
                                       reconstitue une valorisation point-in-time
                                       passée sans aucun appel réseau
@@ -472,8 +572,8 @@ avant si 04b n'a jamais tourné.
 ```bash
 python 04b_recuperation_10q.py
 python 04c_recuperation_8k.py
-python 05_calcul_multiples.py && python 06_calcul_multiples_moyens.py && python 06b_calcul_valorisation_combinee.py
-python 07_calcul_dcf.py
+python 05_calcul_multiples.py && python 06_calcul_multiples_moyens.py
+python 07_calcul_dcf.py && python 06b_calcul_valorisation_combinee.py   # 07 d'abord : 06b lit son DCF
 python 07b_validation_qualitative.py
 # ou, en une commande :
 python run_pipeline_quarterly.py --skip-options   # sans 08 (pas besoin d'IB Gateway)
@@ -664,6 +764,1084 @@ l'autre — écart au cours pour `valuation_gap_dcf` (20 %), écart à la média
 secteur pour celle-ci (10 %). Ne pas le préciser laisse chaque stratégie
 appliquer le sien.
 
+### Optimisation des réglages actions (`16_optimize_strategie_actions.py`)
+
+```bash
+make optimize-actions                                    # DCF, 108 combinaisons, ~12 min sur 4 cœurs
+make optimize-actions STRATEGY_ACTIONS=valuation_gap_combined   # 432 : l'axe de hiérarchie s'ajoute
+make optimize-actions STRATEGY_ACTIONS=valuation_gap_sector_neutral
+python 16_optimize_strategie_actions.py --report-only data/backtest/<csv>   # relire sans relancer
+python 16_optimize_strategie_actions.py --multiple-hierarchy-grid flat tiers    # hierarchies au choix
+python 16_optimize_strategie_actions.py --max-holding-grid -1 120 180 270   # rebalayer l'horizon
+python 16_optimize_strategie_actions.py --stop-loss-grid -15 -25 -40 \
+    --max-weight-grid 10 20                              # rebalayer les deux axes retirés
+```
+
+Grid-search sur **cinq axes à la fois** — take-profit, seuil d'entrée, filtre
+momentum, zone de non-négociation, et **hiérarchie des multiples**. Les quatre
+optimiseurs options font varier un paramètre par run, ce qui suffit quand les
+réglages sont séparables ; ici ils ne le sont pas (le seuil d'entrée déplace le
+nombre de lignes donc l'effet de la bande, la prise de gain déplace la rotation
+donc la friction), et une descente axe par axe trouverait un optimum de
+coordonnée, pas un optimum.
+
+Quatre de ces axes sont des réglages d'**exécution** : ils disent *comment on
+négocie*. Deux axes de **signal** ont été ajoutés depuis — ils disent *ce qu'on
+croit*, pas comment on l'exécute :
+
+| Axe de signal | Ce qu'il décide | Statut |
+|---|---|---|
+| `max_holding_days` | combien de temps on croit à la thèse | mesuré, **négatif**, réduit à la production |
+| `multiple_hierarchy` | lequel des trois multiples tranche | **balayé par défaut** |
+
+Le classement porte sur la **seule fenêtre d'apprentissage** (2015-2021), avec
+un plancher de rendement contre le SPY sur cette même fenêtre — maximiser un
+ratio autorise sinon à l'améliorer en désinvestissant. `test_sharpe_ratio`
+(2022-2026) est affiché à côté sans jamais entrer dans la sélection.
+
+#### L'horizon de convergence, et pourquoi ses bornes ne sont pas rondes
+
+Le moteur ne ferme une position que sur stop-loss, prise de gain, stop suiveur,
+perte de signal ou repesage. Une thèse de convergence qui ne se réalise **jamais**
+n'est donc fermée par rien : elle occupe du capital indéfiniment.
+`BACKTEST_MAX_HOLDING_DAYS` est la règle qui y met un terme — implémentée de
+longue date, mais désactivée et jamais balayée.
+
+Les points de la grille viennent d'une mesure, pas d'un choix rond. Sur les
+**13 141 sorties** de la configuration de référence :
+
+| Durée de détention | Rendement moyen | **Annualisé** |
+|---|---|---|
+| < 30 j | +2,2 % | **+79 %/an** |
+| 30–60 j | +4,8 % | +47 %/an |
+| 60–90 j | +5,8 % | +32 %/an |
+| 90–180 j | +5,6 % | +17 %/an |
+| 180–270 j | +6,6 % | +11 %/an |
+| 270–365 j | +7,1 % | +8,4 %/an |
+| 365–545 j | +7,3 % | +6,3 %/an |
+| 545–730 j | +7,0 % | **+4,0 %/an** |
+| > 730 j | +9,4 % | +4,2 %/an |
+
+Le rendement **absolu** est quasi plat pendant que la durée est multipliée par
+60 : le gain s'accumule dans les premières semaines puis **s'arrête**. C'est la
+signature d'un horizon de convergence.
+
+**Le contrôle de biais compte plus que le tableau.** Une position qui converge
+vite sort vite *par construction* — la prise de gain tronque les positions
+rapides —, donc son rendement annualisé est mécaniquement élevé. Restreinte aux
+seules sorties `rebalance` (80,5 % du total, et les moins liées au rendement de
+la ligne), la décroissance est **plus raide encore** : +132 %/an sous 30 jours
+contre +3,9 %/an au-delà de 545. Elle n'est donc pas un artefact.
+
+Un biais résiduel subsiste, et il joue dans le bon sens : une position encore
+vivante à 600 jours est une qui n'a pas été stoppée, ce qui **flatte** les
+tranches longues. La décroissance mesurée est donc un minorant.
+
+Bornes retenues : **90, 180, 365 jours, et aucun horizon** (la valeur en
+production). Elles couvrent la partie raide et la partie plate. Repères de
+distribution : médiane 77 j, p90 280 j, p95 366 j ; en capital-jours, 45 % sous
+180 j et 80 % sous 365 j.
+
+**Ce tableau ne conclut rien à lui seul** — il est conditionné à la façon dont
+chaque position s'est terminée. Seul le backtest complet, qui rejoue tout
+l'historique sous la contrainte, répond. C'est à ça que sert l'axe.
+
+#### Ce que l'horizon a donné : le plus gros axe de la grille, et il dit non
+
+L'axe est **de loin le plus discriminant** que cette grille ait jamais porté :
+
+| Axe | η² | Étendue des moyennes |
+|---|---|---|
+| **`max_holding_days`** | **57,3 %** | **0,094** |
+| `take_profit_pct` | 18,5 % | 0,045 |
+| `momentum_min_pct` | 8,5 % | 0,029 |
+| `entry_threshold_pct` | 1,7 % | 0,013 |
+| `rebalance_band_pct` | 0,6 % | 0,008 |
+
+La prémisse du levier 4 était donc juste : **un axe de signal bouge plus que
+n'importe quel axe d'exécution** — deux fois plus que la prise de gain, qui
+dominait la grille jusque-là.
+
+Et il bouge dans le mauvais sens. Les autres axes fixés sur la production,
+écart apparié contre « aucun horizon » :
+
+| Horizon | Sharpe | Rotation | Positions fermées | Écart apparié | IC 95 % |
+|---|---|---|---|---|---|
+| aucun *(production)* | 0,930 | 760 % | 2 628 | — | — |
+| 365 j | 0,932 | 781 % | 2 694 | **+0,002** | [−0,011, +0,016] |
+| 180 j | 0,906 | 885 % | 3 080 | −0,025 | [−0,073, +0,019] |
+| 90 j | 0,857 | **1 177 %** | **4 226** | **−0,073** | [−0,133, **−0,008**] |
+
+**Le mécanisme est lisible dans la colonne rotation.** Forcer une sortie ne
+supprime pas la thèse : elle est toujours là le lendemain, et le moteur la
+rachète. Un horizon de 90 jours multiplie les fermetures par 1,6 et la rotation
+par 1,55 — on paie la friction deux fois pour se retrouver dans la même
+position. À 365 jours, l'horizon ne touche que 155 sorties sur 13 409 : il est
+gratuit parce qu'il ne fait rien.
+
+**La leçon, et elle vaut au-delà de cet axe.** Le tableau de décroissance était
+une observation **conditionnelle** — les positions qui ont vécu longtemps ont
+moins gagné par an. L'intervention est **causale** — les couper court
+rapporte-t-il davantage ? Les deux ne se déduisent pas l'une de l'autre, et ici
+elles se contredisent : la décroissance mesure *quelles positions survivent*,
+pas *ce que durer coûte*. C'est exactement le piège que le backtest complet
+sert à détecter, et la raison pour laquelle le tableau de décroissance ne
+pouvait pas conclure seul.
+
+**Rien n'est adopté.** `BACKTEST_MAX_HOLDING_DAYS` reste à `None`. La seule
+combinaison établie meilleure avec un horizon (seuil d'entrée 30 %, bande 15,
+horizon 365) vaut **+0,023** — contre **+0,022** pour la même sans horizon,
+avec un intervalle *plus serré*. L'horizon n'y apporte rien : le gain est celui
+du seuil d'entrée, déjà connu. Et le prix de l'axe est réel : le plancher de
+bruit du Sharpe déflaté passe de 0,983 à **1,004** (1 858 essais cumulés),
+pendant que le meilleur Sharpe plein échantillon reste à 0,925.
+
+**L'axe est ensuite réduit à sa valeur de production**, comme `stop_loss_pct` et
+`max_weight_pct` avant lui, et pour la même raison : une réponse connue et
+négative ne vaut pas un facteur quatre sur la grille, d'autant qu'élargir relève
+le plancher de bruit. Il reste balayable via `--max-holding-grid`.
+
+#### La hiérarchie des multiples, et ce qu'elle a révélé en chemin
+
+Trois multiples donnent trois valeurs théoriques pour la même action, et elles
+divergent : sur les **13 240 lignes** où P/E et EV/EBITDA coexistent, l'écart
+médian entre les deux vaut **19,5 points de cours** (45,9 au troisième
+quartile). Le choix de celui qui tranche est un réglage de **signal**, et
+jusqu'ici il n'avait jamais été mesuré — `MULTIPLE_COMBINATION` était fixé sur
+un argument de littérature (Liu, Nissim & Thomas 2002), pas sur ces données.
+
+| Hiérarchie | Qui tranche | Le pari |
+|---|---|---|
+| `flat` | la médiane des trois | aucun — EV/Sales, le moins fiable, départage dès qu'il tombe au milieu |
+| `tiers` | P/E et EV/EBITDA à égalité, moyennés | les deux multiples de résultats font jeu égal |
+| `pe_first` | P/E seul, EV/EBITDA en repli | le résultat net est la mesure la mieux arbitrée |
+| `ebitda_first` | EV/EBITDA seul, P/E en repli | l'EBITDA compare mieux des pairs aux dettes différentes |
+
+**La couverture est invariante** (87,06 % pour les quatre) : l'axe déplace la
+valeur, jamais le nombre de lignes valorisées. C'est ce qui en fait un axe
+propre — on ne mesure pas un effet de couverture déguisé en effet de multiple.
+
+`06b` stocke déjà les trois prix implicites, donc la combinaison se **rejoue au
+chargement** sans régénérer le parquet. La mécanique vit dans
+`hierarchie_multiples.py`, que `06b` et `backtest.data_loader` appellent tous
+les deux : deux implémentations finiraient par diverger, et l'écart ne se
+verrait que dans les chiffres.
+
+##### La hiérarchie n'avait jamais tourné, et c'était un bug de trois mots
+
+En vérifiant que la recombinaison reproduisait bien le fichier de production,
+elle ne l'a reproduit que sous `flat` — **exactement, à 0,000e+00 sur les 27 674
+lignes** — alors que `config.MULTIPLE_COMBINATION` vaut `tiers`.
+
+La première explication était un fichier périmé. Elle était fausse : **rejouer
+`06b` reproduisait `flat` à l'identique**. La cause est dans le code, et elle
+tient en trois noms de colonnes :
+
+```python
+implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
+# -> colonnes : "ev_ebitda_median", "ev_sales_median", "pe_median"
+# MULTIPLE_RELIABILITY_TIERS est indexée sur : "EV/EBITDA", "EV/Sales", "P/E"
+```
+
+Le classement par rang faisait `tiers.get(colonne, rang_de_repli)`. Aucune des
+trois colonnes n'étant dans la table, **les trois tombaient dans le même rang de
+repli** — et la médiane d'un rang qui contient les trois multiples est
+exactement la médiane à plat. `MULTIPLE_COMBINATION = "tiers"` **n'a donc jamais
+rien fait**, depuis son introduction.
+
+Ce qui l'a rendu invisible : aucune erreur, aucun avertissement, un résultat
+parfaitement plausible. C'est le même motif que la leçon n° 2 ci-dessous — une
+protection documentée qui ne tournait pas — et il ne s'est vu que parce que
+l'instrumentation exigeait de reproduire le fichier au bit près.
+
+**Deux corrections, pas une.** Nommer les colonnes comme les tables de config
+répare le cas présent ; refuser une colonne inconnue au lieu de la replier
+empêche la classe entière de se reproduire :
+
+```python
+inconnues = [c for c in implied.columns if c not in table]
+if inconnues:
+    raise ValueError(...)   # un repli silencieux n'est plus possible
+```
+
+##### À faire après un `git pull` : régénérer le signal
+
+Le correctif change **ce que `06b` produit**, pas seulement son code. Le parquet
+versionné porte encore l'ancien signal — une seule commande suffit :
+
+```bash
+python 06b_calcul_valorisation_combinee.py     # ~2 min
+```
+
+`tests/test_hierarchie_multiples.py::test_le_parquet_porte_bien_ce_que_la_config_annonce`
+échoue tant que ce n'est pas fait, et dit quoi lancer. La régénération est
+déterministe : elle reproduit exactement le fichier mesuré ci-dessous.
+
+##### Ce que la correction change dans les chiffres
+
+`06b` rejoué, le fichier de production porte désormais `tiers`. La
+régénération est **exactement** la recombinaison `tiers` (0,000e+00 sur les
+trois colonnes dérivées), et rien d'autre n'a bougé — prix implicites, DCF,
+cours et `n_peers` sont identiques au bit près. Le changement est donc
+strictement celui de la hiérarchie, sur **18 008 lignes** (écart de gap médian
+9,9 points).
+
+| Configuration de production | Avant (`flat`) | Après (`tiers`) | |
+|---|---|---|---|
+| Sharpe plein échantillon | 0,930 | **0,931** | +0,001 |
+| Sharpe **hors échantillon** | 0,817 | **0,846** | **+0,029** |
+| Sharpe apprentissage | 1,003 | 0,988 | −0,015 |
+| Drawdown maximal | −26,62 % | **−25,06 %** | **+1,56 pt** |
+| CAGR | 15,20 % | 15,18 % | −0,01 pt |
+| Rotation annualisée | 760 % | 757 % | −3 pts |
+
+**L'écart apparié reste +0,002 (IC [−0,074, +0,078]) : non établi.** Ce qui
+change est donc réel mais minuscule sur le Sharpe, et un peu plus net sur le
+drawdown. Le gain hors échantillon (+0,029) est du bon côté, et la perte en
+apprentissage (−0,015) est ce qu'on attend d'un réglage qui n'a pas été choisi
+sur cette fenêtre.
+
+**Les chiffres `combinee` publiés dans ce README ont été recalculés sur ce
+signal.** Ceux des versions antérieures portaient sur `flat`.
+
+Le fichier alimente aussi **toute la partie options** (`10_backtest_options.py`
+et les quatre optimiseurs `11*`), dont les chiffres changent donc également.
+Mesuré sur `valuation_gap_multiples_options` :
+
+| | Avant (`flat`) | Après (`tiers`) |
+|---|---|---|
+| Sharpe | −0,695 | −0,638 |
+| CAGR | −4,42 % | −4,03 % |
+| Drawdown maximal | −55,57 % | −56,03 % |
+
+La stratégie reste **franchement perdante** dans les deux cas — la correction ne
+change pas cette conclusion-là. Les quatre optimiseurs options, eux, n'ont pas
+été rejoués : leurs réglages retenus ont été choisis sur `flat`, et les
+rebalayer est un chantier en soi.
+
+##### Ce que l'axe a donné : rien d'établi, et un ordre qui s'inverse
+
+L'axe explique **6,9 %** de la variance (étendue des moyennes 0,019) — loin de
+`take_profit_pct` (51,1 %), au niveau du seuil d'entrée. Les autres axes fixés
+sur la production :
+
+*(mesure faite contre `flat`, la hiérarchie qui tournait alors)*
+
+| Hiérarchie | Sharpe test | Écart apparié | IC 95 % |
+|---|---|---|---|
+| `flat` *(référence d'alors)* | 0,817 | — | — |
+| **`tiers`** *(production depuis)* | **0,846** | +0,002 | [−0,074, +0,078] |
+| `pe_first` | 0,836 | +0,002 | [−0,088, +0,090] |
+| `ebitda_first` | 0,782 | −0,012 | [−0,091, +0,066] |
+
+**Aucune n'est distinguable de ce qui tourne.** Les intervalles sont d'ailleurs
+deux fois plus larges que ceux des axes d'exécution (±0,08 contre ±0,014 pour
+l'horizon) : la hiérarchie change le signal sur 13 000 à 18 000 lignes, donc les
+courbes de NAV se décorrèlent (0,988 → 0,982) et le test apparié y perd
+mécaniquement de la précision. C'est le prix d'un axe qui touche au signal.
+
+**L'ordre s'inverse entre les deux fenêtres**, et c'est le plus parlant :
+
+| Hiérarchie | Rang en apprentissage | Rang hors échantillon |
+|---|---|---|
+| `ebitda_first` | **1er** | **4e** |
+| `pe_first` | 2e | 1er |
+| `flat` | 3e | 3e |
+| `tiers` | 4e | **2e** |
+
+Une inversion quasi complète est la signature du bruit, pas d'un effet. À
+retenir tout de même : **hors échantillon**, l'ordre obtenu
+(`pe_first` > `tiers` > `flat` > `ebitda_first`) est celui que prédit Liu,
+Nissim & Thomas — les multiples de résultats devant, P/E en tête. C'est la
+fenêtre qui n'a rien choisi qui le dit, ce qui rend l'indication intéressante ;
+elle reste non établie, et l'ordre inverse en apprentissage interdit d'en faire
+plus qu'une note.
+
+**Ce n'est pas la mesure qui a fait changer la production, c'est le bug.**
+`tiers` n'est pas établi meilleur que `flat` — il ne l'aurait pas emporté sur
+ces chiffres. Ce qui a tranché est qu'un réglage documenté, justifié et
+configuré ne s'appliquait pas : le réparer fait tourner ce que la configuration
+dit depuis toujours, et la mesure dit que le prix de cette mise en cohérence est
+nul à l'incertitude près. Si la préférence était de garder le comportement
+historique, la correction à faire serait `MULTIPLE_COMBINATION = "flat"` — pas
+de laisser le code contredire la config.
+
+**Un avertissement sur la sélection, au passage.** Le plateau atteint 94
+combinaisons et le départage par rotation y a retenu `ebitda_first` avec prise
+de gain désactivée : rotation 535 % contre 760 %, mais **−0,048 de Sharpe hors
+échantillon** (apparié −0,033, IC [−0,134, +0,071]). Le départage ne regarde pas
+la fenêtre de test — c'est voulu, elle ne vaut que tant qu'elle n'a rien choisi
+— mais un plateau qui grossit lui donne plus d'occasions de mal tomber. Le
+plancher de bruit, lui, est monté à **1,021** (2 290 essais) pour un meilleur
+Sharpe plein échantillon de 0,900.
+
+#### Deux axes retirés du défaut, et comment on l'a su
+
+La décomposition de variance des Sharpe de la grille (η² par axe) mesure ce
+que chaque axe explique. Deux d'entre eux n'expliquent rien :
+
+| Axe | η² | Étendue des moyennes |
+|---|---|---|
+| `take_profit_pct` | 63,9 % | 0,052 |
+| `momentum_min_pct` | 15,1 % | 0,022 |
+| `entry_threshold_pct` | 7,2 % | 0,015 |
+| `rebalance_band_pct` | 4,7 % | 0,014 |
+| **`stop_loss_pct`** | **0,6 %** | **0,005** |
+| **`max_weight_pct`** | **0,1 %** | **0,001** |
+
+Les deux derniers multipliaient la grille par **huit** (4 × 2) pour 0,7 % de
+l'information. Au défaut, chacun est réduit à sa valeur de production — ce qui
+garde la configuration en place **dans** la grille, condition du test apparié
+ci-dessous. La grille passe de 864 à **108** combinaisons, et le plancher de
+bruit du Sharpe déflaté baisse d'autant, puisqu'il croît avec le nombre
+d'essais. Les deux axes restent balayables à la demande : c'est le défaut qui
+change, pas la capacité.
+
+#### Ce que la grille a changé, et ce qu'elle a refusé de changer
+
+| Réglage | Avant | Après | Pourquoi |
+|---|---|---|---|
+| `BACKTEST_STOCKS_MOMENTUM_MIN_PCT` | −10 % | **désactivé** | Unanime sur le plateau des **deux** stratégies, et gagne sur les **deux** fenêtres |
+| `BACKTEST_REBALANCE_BAND_PCT` | (n'existait pas) | **15** points de NAV | Apprentissage plat, rotation en baisse, test confirme |
+| `BACKTEST_STOP_LOSS_PCT` | −15 % | −15 % | La grille confirme la valeur en place |
+| `BACKTEST_TAKE_PROFIT_PCT` | +30 % | +30 % | Unanime sur le plateau ; l'élargir gagne en test mais **perd** en apprentissage |
+| `BACKTEST_MAX_WEIGHT_PER_POSITION_PCT` | 20 % | 20 % | Gain massif en apprentissage, **inversé** hors échantillon |
+| `BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT` | 10 | 10 | Axe **plat** : rien à optimiser |
+
+Résultat, sur `--start-date 2015-01-01` :
+
+| | `valuation_gap_dcf` | | `valuation_gap_sector_neutral` | |
+|---|---|---|---|---|
+| | avant | après | avant | après |
+| **Sharpe hors échantillon** (2022-2026) | 0,698 | **0,795** | 0,630 | **0,742** |
+| Sharpe apprentissage (2015-2021) | 0,837 | 0,924 | 0,831 | 0,907 |
+| Sharpe plein échantillon | 0,782 | 0,872 | 0,751 | 0,838 |
+| CAGR | 15,56 % | 18,05 % | 14,28 % | 16,55 % |
+| Alpha vs SPY | +3,57 % | +6,07 % | +2,30 % | +4,56 % |
+| Information ratio | 0,40 | 0,63 | 0,25 | 0,49 |
+
+Le gain résiste au durcissement des hypothèses de coût, sans se creuser
+(DCF, plein échantillon) : 0,78 → 0,87 à **10 bps par aller simple** (soit
+20 bps l'aller-retour, l'hypothèse retenue), 0,70 → 0,79 à 30 bps (60 bps
+l'aller-retour), 0,63 → 0,71 à 50 bps (100 bps l'aller-retour).
+
+#### Le filtre momentum coûtait plus qu'il ne protégeait
+
+C'est le résultat le plus inattendu, et le mieux établi. Un titre dont le cours
+a chuté de plus de 10 % sur un an est **précisément celui dont l'écart de
+valorisation vient de s'élargir** — la candidate la plus attrayante de la
+thèse. Le garde-fou anti-*value trap* supprimait donc du signal en même temps
+que du piège, alors que le moteur a déjà deux protections qui, elles, ne
+coûtent pas de signal : la péremption du signal et le stop-loss.
+
+À lui seul, le désactiver vaut **+0,081** de Sharpe hors échantillon côté DCF
+et **+0,100** côté neutre au secteur.
+
+#### Le classement ne départage rien, et il faut le dire
+
+L'erreur-type d'un Sharpe estimé sur sept ans vaut **0,47** (Lo, 2002). Sur les
+432 combinaisons de la grille, **les 432 sont à moins d'une erreur-type du
+maximum**. Retenir le premier du classement, c'est retenir le tirage le plus
+chanceux d'un ensemble statistiquement homogène.
+
+Trois conséquences dans l'outil :
+
+- le meilleur point est, parmi les combinaisons indiscernables à
+  `--plateau-tolerance` près, celle qui **négocie le moins**. Le départage ne
+  regarde pas la fenêtre de test — ce serait la consommer — mais la rotation,
+  qui n'est pas une mesure de performance mais d'**exposition à une
+  hypothèse** : tout le backtest suppose 10 bps par aller simple ;
+- le rapport dit ce que la grille **établit** (un axe sur lequel tout le
+  plateau s'accorde) par opposition à ce qu'elle **classe**. Sur les cinq axes
+  balayés, **aucun n'est unanime** depuis l'ajout des axes de signal — le plateau
+  est passé de 23 à 94 combinaisons, et la prise de gain, jusque-là unanime, ne
+  l'est plus. Un axe réduit à un point est affiché **non balayé**, jamais
+  « unanime » : il l'est par construction, et le lire comme un résultat serait
+  une erreur ;
+- chaque combinaison est **comparée à la configuration en production** par
+  bootstrap apparié (`--paired-bootstrap`, 2 000 par défaut). C'est ce qui rend
+  la grille capable de conclure — détail ci-dessous.
+
+#### Ce que le test apparié départage, et que le classement ne départageait pas
+
+L'erreur-type marginale ci-dessus vaut pour deux stratégies **indépendantes**.
+Les 432 combinaisons sont des variantes du **même** backtest : leurs courbes de
+NAV sont corrélées à **0,984**. Leur écart est apparié, et sa dispersion est
+bien plus faible que celle de chacun de ses termes.
+
+| | demi-largeur de l'intervalle |
+|---|---|
+| Erreur-type marginale (Sharpe 0,93 sur 11,6 ans) | 0,353 |
+| Intervalle **apparié** (médiane des 432) | **0,097** |
+
+Soit **quatre fois plus précis**, et la grille passe de « rien n'est
+distinguable » à un résultat :
+
+| | combinaisons |
+|---|---|
+| Établies **meilleures** que la production (IC au-dessus de 0) | **0** |
+| Établies **pires** (IC au-dessous de 0) | 41 |
+| Indistinguables | 391 |
+
+Les deux demi-largeurs portent sur la **même fenêtre**, et c'est indispensable :
+l'intervalle apparié est mesuré sur la courbe entière, et le comparer à
+l'erreur-type de la seule fenêtre d'apprentissage gonflerait le rapport de
+√(11,6/7) — 25 % de précision annoncée qui n'existerait pas.
+
+**Aucune combinaison n'est établie meilleure que ce qui tourne.** C'est un
+résultat, pas une absence de résultat : 432 points balayés, et pas un seul dont
+l'intervalle exclue zéro. Ce que la grille établit, elle l'établit **contre** —
+41 combinaisons sont mesurément pires.
+
+##### Le seul gain que la grille avait établi n'a pas survécu à la correction
+
+Sur le signal `flat`, le seuil d'entrée à 30 % au lieu de 20 était établi
+meilleur : **+0,022** (IC [+0,009, +0,037]), gain retrouvé sur les deux
+fenêtres. Il avait résisté à deux élargissements de grille.
+
+Sur le signal `tiers`, le même réglage vaut **+0,006** (IC [−0,011, +0,023]) :
+l'intervalle recouvre zéro, le résultat disparaît.
+
+| Seuil d'entrée | Sharpe test | Écart apparié | IC 95 % |
+|---|---|---|---|
+| 15 % | 0,844 | +0,000 | [−0,011, +0,009] |
+| **20 %** *(production)* | 0,846 | — | — |
+| 30 % | 0,850 | +0,006 | [−0,011, +0,023] |
+
+**C'est la deuxième fois dans ce dépôt qu'un résultat « établi » ne survit pas à
+un changement de conditions** — après le −0,063 qui s'était inversé sur une
+fenêtre décalée de vingt mois. La leçon est la même : un intervalle qui exclut
+zéro dit que l'écart est réel *sur ces données-là*, pas qu'il est robuste au
+changement de ce qui les produit. Corriger le signal a changé 18 008 lignes ;
+un gain de +0,022 n'y a pas résisté.
+
+**Lire l'intervalle, pas la p-value.** L'intervalle est ce qui établit ou non un
+résultat ; la p-value du bootstrap plancherise à 1/N (0,0005 pour 2 000
+rééchantillonnages) et ne peut donc pas se comparer à un seuil de Bonferroni du
+même ordre (0,05/432 = 0,00012). C'est ce que dit `paired_sharpe_difference` :
+un bootstrap par blocs est légèrement libéral, une p-value juste sous 0,05 ne
+vaut pas une preuve, un intervalle franchement à droite de zéro, oui.
+
+**Et rien n'est adopté.** Le Sharpe plein échantillon du meilleur point vaut
+0,900 pour un **plancher de bruit de 1,034** à 2 722 essais cumulés : au niveau
+du programme entier, il reste sous le seuil à partir duquel un résultat se
+distingue de la sélection elle-même. Le réglage en place ne
+bouge pas. Le plancher a d'ailleurs **monté** de 0,983 à 1,004, 1,021 puis 1,034 au
+fil des élargissements : chaque essai supplémentaire relève la barre, et c'est
+le prix à payer pour tout axe ajouté.
+
+**Ce test ne sélectionne pas, et ne doit pas.** Il est mesuré sur la courbe
+entière, fenêtre de test comprise ; l'y faire entrer consommerait la seule
+fenêtre qui n'a rien choisi. Il se lit **après**, au même titre que
+`test_sharpe_ratio`. La sélection reste le Sharpe d'apprentissage départagé par
+la rotation.
+
+#### Changer de métrique : l'information ratio (`--rank-metric`)
+
+Le Sharpe d'une stratégie actions long-only est dominé par le facteur **marché**,
+que toutes les combinaisons d'une grille portent ensemble : il les bruite toutes
+sans en séparer aucune. L'**information ratio** est le Sharpe de l'écart *actif*
+(stratégie moins indice) — le facteur commun disparaît.
+
+```bash
+python 16_optimize_strategie_actions.py --rank-metric information_ratio
+```
+
+Le classement, le test apparié, la colonne de test et l'erreur-type affichée
+suivent tous la métrique choisie : classer sur l'IR en jugeant sur le Sharpe
+reviendrait à choisir selon un critère et à conclure selon un autre.
+
+**Mesuré, à grille identique** (432 combinaisons, même signal) :
+
+| | Sharpe | Information ratio |
+|---|---|---|
+| Étendue de la grille | 0,138 | 0,280 |
+| Demi-largeur appariée | 0,097 | 0,152 |
+| **Étendue / demi-largeur** | **1,43** | **1,84** |
+| Établies **pires** que la production | 41 | **68** |
+| Établies **meilleures** | 0 | 0 |
+
+**Le gain est réel mais modeste : ×1,29**, pas le ×1,9 annoncé au départ. Cette
+première estimation se mesurait contre l'erreur-type *marginale* — la base
+d'avant le test apparié. Sur cette base-là, l'IR vaut bien ×2,4 (0,94 contre
+0,39). Mais l'appariement retire déjà un facteur commun, et **les deux gains ne
+se multiplient pas**.
+
+Le classement, lui, ne bouge presque pas : corrélation de rang **+0,904** entre
+les deux, et **la même combinaison en tête**. Ce que l'IR améliore est la
+*résolution* — quelles combinaisons sont établies différentes —, pas l'ordre.
+
+##### Un piège d'échelle, qui a failli me faire conclure l'inverse
+
+Les demi-largeurs de deux métriques **ne se comparent pas**. Dans un régime
+dominé par le marché, l'IR d'une stratégie vaut plusieurs fois son Sharpe, et
+son intervalle est plus large dans la même proportion — ici 0,152 contre 0,097.
+Lus bruts, ces deux nombres disent que l'IR sépare *moins* bien. C'est faux :
+seul le rapport sans dimension (étendue / demi-largeur) se compare, et il donne
+l'inverse. Un test verrouille ce piège.
+
+**Le mécanisme du gain résiduel n'est pas établi.** L'hypothèse naturelle — que
+l'appariement n'annule le marché que si les variantes le portent à l'identique,
+et que leurs bêtas diffèrent (0,66 à 0,70 sur la grille) — ne s'est pas
+reproduite proprement en simulation. Les tests qui prétendaient l'isoler ont été
+retirés plutôt qu'ajustés jusqu'à passer : ce qui est vérifié est la mécanique
+du calcul, pas l'explication.
+
+**Le Sharpe reste le défaut.** Basculer changerait rétroactivement le sens de
+tous les réglages retenus jusqu'ici, pour un gain de résolution qui ne désigne
+aucun gagnant nouveau — la grille classée sur l'IR établit elle aussi **zéro**
+combinaison meilleure que la production.
+
+**La comparaison se fait contre la production, pas entre combinaisons.** La
+question qui décide d'un changement n'est pas « laquelle de ces 108 gagne ? »
+mais « laquelle bat ce qui tourne déjà ? ». C'est aussi pourquoi retirer un axe
+de la grille ne peut jamais en retirer la valeur de production : sans elle dans
+la grille, il n'y a plus rien à comparer, et l'outil le signale au lieu de
+produire un classement muet.
+
+#### Deux gains d'apprentissage écartés, et pourquoi
+
+Le plafond par ligne à 10 % et une prise de gain élargie **gagnent en
+apprentissage et perdent en test**. C'est la signature du sur-ajustement, et
+c'est exactement ce que la fenêtre de validation sert à intercepter : ils ne
+sont pas retenus.
+
+Le cas de la prise de gain mérite d'être noté, parce qu'il n'a pas l'air d'un
+accident : de 30 % à 100 %, le Sharpe de test monte régulièrement (DCF 0,744 →
+0,785 → 0,810 ; sectorielle 0,726 → 0,762 → 0,801) pendant que celui
+d'apprentissage descend, et la rotation est divisée par deux. C'est trop
+monotone et trop reproductible d'une stratégie à l'autre pour être du bruit.
+Mais le retenir reviendrait à **choisir sur la fenêtre de test**, qui ne vaut
+que tant qu'elle n'a rien choisi : elle serait consommée, et il ne resterait
+plus rien pour juger. Le sujet mérite son étude propre, avec une fenêtre de
+validation neuve.
+
+#### Ce que la zone de non-négociation corrige
+
+Les poids sont proportionnels à l'écart de valorisation **rapporté à la somme**
+des écarts des candidates : un seul dépôt SEC change ce dénominateur, donc la
+cible de **toutes** les lignes. Des dépôts tombent 2624 jours sur 2936 séances
+entre 2015 et 2026 — le portefeuille était repesé en entier 9 séances sur 10,
+pour 722 % de rotation annualisée et 62 836 exécutions au service de 1 934
+thèses seulement.
+
+Le seuil porte sur la **dérive totale** et non ligne à ligne, et ce point a
+demandé une mesure. Une bande par ligne divise bien les exécutions par 15, mais
+elle filtre du même coup les **allègements**, qui sont exactement ce qui
+finance les achats du même jour : 52 % du montant d'achat demandé devenait
+infinançable, contre 5 % sans bande. Ou bien on repèse tout le portefeuille —
+et les ventes financent les achats —, ou bien on n'y touche pas.
+
+Une **entrée neuve** n'est jamais filtrée, et ce n'est pas un détail : avec un
+plafond par ligne à 10 % et une zone à 15 points, une candidate seule pèse 10
+points de dérive, reste sous le seuil, et n'est donc jamais achetée — jamais,
+pas « plus tard ». En portefeuille fourni le cas est invisible, ce qui en
+faisait un défaut latent ; il est couvert par un test à candidate unique
+(`tests/test_reglages_sharpe_actions.py`).
+
+### Second programme : ce que dix-huit pistes ont donné
+
+La première étude n'avait balayé que des réglages. Celle-ci a repris le
+problème par la mesure, la qualité du signal, la construction de portefeuille,
+les sorties, les coûts et le risque — dix-huit pistes. **Quatre changements
+seulement en sont sortis**, et trois découvertes valent plus que les gains.
+
+#### Les découvertes
+
+**1. Un faux positif spectaculaire, et ce qui l'a démasqué.** Plafonner le
+nombre de candidates faisait monter le Sharpe de façon *monotone sur les deux
+fenêtres* (0,908 → 1,192), avec un test apparié significatif jusque hors
+échantillon. Tout indiquait un vrai effet. La volatilité annualisée a tranché :
+**18,7 % que le portefeuille tienne 115 lignes ou 12** — impossible pour une
+vraie concentration. En réalité le réglage ne concentrait rien (poids maximal
+13,4 % contre 13,8 %) ; il changeait *qui* entrait, en gardant les plus fortes
+convictions. Or la distribution des écarts monte jusqu'à **+1 817 436 625 %** :
+plus on restreignait aux « meilleures » convictions, plus le portefeuille était
+piloté par des valorisations cassées (90ᵉ centile des lignes détenues : 2 331 %
+en illimité, **102 654 %** à cinq lignes).
+
+`BACKTEST_MAX_PLAUSIBLE_GAP_PCT` (500 %) les écarte au niveau du moteur. Le
+plafond de pondération bornait leur *dimensionnement*, pas leur *classement* —
+et c'est le classement qui décide qui entre. Après le filtre, l'effet disparaît
+(p = 0,42) et le Sharpe de référence tombe de 0,908 à 0,867. **Un filtre honnête
+baisse le chiffre affiché.**
+
+**2. Deux protections documentées ne tournaient pas.** `04c` télécharge le
+texte de chaque 8-K puis le *jette* faute de clé d'API : 99 147 dépôts, 100 %
+en `non_evalue`. Le filtre d'événements matériels ne s'appliquait à rien. Il
+est maintenant classé **à partir du document**, sans modèle de langage — codes
+d'item SEC que le déposant déclare, plus des formulations cherchées dans le
+corps du texte là où le code seul est ambigu (un Item 5.02 couvre aussi bien la
+démission d'un PDG que l'élection routinière d'un administrateur).
+
+**3. Le classement d'une grille ne départage rien.** L'erreur-type d'un Sharpe
+sur sept ans vaut 0,47 ; les 432 combinaisons de la grille y tiennent toutes.
+`metrics.paired_sharpe_difference` compare donc chaque combinaison à la
+configuration **en production** par bootstrap **apparié** — leurs courbes sont
+corrélées à 0,98, et les juger à l'aune de l'erreur-type marginale revient à
+déclarer « non significatif » absolument tout. Branché sur la grille, le test
+fait passer celle-ci de « rien n'est distinguable » à **41 combinaisons sur 432
+établies PIRES** que ce qui tourne — et aucune établie meilleure.
+
+**4. Une décroissance conditionnelle n'est pas un effet causal.** Le rendement
+annualisé des positions décroît de +79 %/an sous 30 jours à +4 %/an au-delà de
+545, et la décroissance survit à tous les contrôles de biais. Elle ne dit
+pourtant **pas** que les couper court rapporte : forcer une sortie ne supprime
+pas la thèse, le moteur la rachète, et on paie la friction deux fois. Mesuré,
+un horizon de 90 jours coûte −0,073 de Sharpe pour +55 % de rotation. La
+décroissance mesure *quelles positions survivent*, pas *ce que durer coûte*.
+
+#### Ce qui a été retenu
+
+| Changement | Effet mesuré |
+|---|---|
+| **Signal sur la valorisation combinée** (`valuation_gap_combined`) | Couverture de l'univers **77 % → 94 %** |
+| **Filtre de plausibilité** des écarts (500 %) | Sharpe 0,908 → 0,867 — *il retire de la performance fictive* |
+| **Filtre 8-K** rendu opérant (5 646 événements) | Sharpe −0,015 : c'est le prix d'une protection |
+| **Stop suiveur** à −20 % | Test **+0,120** (IC [+0,025, +0,198], p = 0,008) |
+
+Le signal combiné n'a **pas** été retenu pour son Sharpe (+0,05, p = 0,25, non
+significatif) mais pour sa couverture : un DCF n'existe pas pour une entreprise
+à flux négatifs ni pour un métier de bilan, un multiple sectoriel si. Choisir
+parmi 77 % de l'indice en étant jugé contre 100 % surestime l'alpha ; à 94 %,
+l'alpha de +6,96 % est plus **solide** que celui de +5,58 %, indépendamment de
+leur écart.
+
+#### Ce qui a été réfuté, dont deux de mes propres recommandations
+
+| Piste | Attendu | Mesuré |
+|---|---|---|
+| Pondération par le risque (`gap/σ`) | « la meilleure idée non testée » | **0,877** (k=0,5), **0,846** (k=1) contre 0,908 |
+| Pondération par rang | robustesse aux extrêmes | **0,798** contre 0,867, IC [−0,115, −0,026] |
+| Prise de gain élargie | piste la plus prometteuse | **−0,037** à 60 %, **−0,072** à 100 % |
+| Allonger l'historique à 2012 | +26 % d'observations | couverture 73 % → 67,6 % : **de la puissance payée en biais** |
+| Seuil d'entrée, âge du signal | — | axes **plats**, rien à optimiser |
+
+Sur une stratégie *value*, là où l'écart est le plus large est aussi là où la
+volatilité est la plus forte : diviser par elle retire le signal en même temps
+que le risque. Et la prise de gain élargie ne tenait qu'au signal DCF et aux
+valorisations cassées — une fois les deux corrigés, elle est négative.
+
+#### Deux résultats qui attendent une décision
+
+**La sortie sur perte de signal est activée** (`BACKTEST_EXIT_GAP_THRESHOLD_PCT
+= 0`), sur décision de l'utilisateur : elle renverse la **règle des positions
+gelées**, qui était un choix explicite et non un défaut technique. Elle a donc
+été implémentée, mesurée, puis laissée désactivée jusqu'à ce que la décision
+soit prise. Voir « Le résultat final » plus bas pour ses chiffres, dont un
+drawdown qui se dégrade.
+
+#### Le multiple mérité : mieux prédire, moins bien investir
+
+Le seul résultat de tout le programme où deux mesures rigoureuses se
+contredisent — et il mérite qu'on s'y arrête.
+
+`15_test_multiple_merite.py` est catégorique : la régression sur les
+fondamentaux prédit le multiple observé **28,4 % mieux** que la médiane
+sectorielle, hors échantillon, et gagne sur 62,3 % des 17 682 observations.
+Branchée dans `06b`, elle change 73,2 % des lignes. Puis l'A/B du backtest :
+
+| | signal médiane | signal mérité |
+|---|---|---|
+| Sharpe plein échantillon | **0,918** | 0,787 |
+| Sharpe hors échantillon | **0,795** | 0,616 |
+
+Écart apparié **−0,134** (IC [−0,235, −0,040], p = 0,996), dont **−0,184** hors
+échantillon (p = 0,990). Significativement **pire**, sur les deux fenêtres.
+
+L'explication est au cœur de l'idée de Bhojraj & Lee poussée jusqu'au bout : le
+multiple mérité **explique** la décote par les fondamentaux et ne laisse comme
+signal que le résidu. Or toute la thèse d'une stratégie *value* est qu'une
+partie de cette décote est une erreur de marché — et il se trouve que c'est la
+part **expliquée** qui prédisait les rendements. Retirer ce que les
+fondamentaux justifient retire le signal avec l'explication.
+
+**La régression est un meilleur modèle de multiple ; elle est un moins bon
+signal.** C'est précisément ce que le test hors backtest ne pouvait pas
+trancher seul — d'où sa conclusion « l'étape suivante est l'A/B ». Le défaut
+reste `median` ; `--multiple-method warranted` produit toujours le signal
+alternatif.
+
+#### Capacité : jusqu'à quel encours
+
+Le coût forfaitaire de 10 bps ne dépend pas de la taille de l'ordre, donc ne
+peut pas poser la question. `--impact-coefficient-bps 100` ajoute un impact en
+racine de la part de volume consommée :
+
+| Encours | 1 M$ | 100 M$ | 1 Md$ | 5 Md$ | 20 Md$ |
+|---|---|---|---|---|---|
+| CAGR | 17,7 % | 16,9 % | 14,6 % | 11,2 % | 6,2 % |
+| Sharpe | 0,914 | 0,875 | 0,762 | 0,583 | 0,319 |
+
+**La stratégie cesse de battre l'indice (11,99 %) vers 2 à 3 milliards de
+dollars.**
+
+#### Le résultat final
+
+Configuration complète, `--start-date 2015-01-01`, sortie sur perte de signal
+comprise :
+
+| | Sharpe | apprentissage | **test** | **max drawdown** | CAGR | Calmar | alpha |
+|---|---|---|---|---|---|---|---|
+| **Départ du programme** | 0,782 | 0,837 | 0,698 | **−32,49 %** | 15,56 % | 0,479 | +3,57 % |
+| `valuation_gap_dcf` | 0,935 | 1,063 | 0,737 | −32,76 % | 18,45 % | 0,563 | +6,47 % |
+| `valuation_gap_sector_neutral` | 0,906 | 1,039 | 0,701 | −32,30 % | 17,69 % | 0,548 | +5,70 % |
+| **`valuation_gap_combined`** | **0,977** | 1,017 | **0,910** | **−36,10 %** | **19,48 %** | 0,540 | **+7,49 %** |
+
+Apport marginal de la seule sortie sur perte de signal, contre la
+configuration complète (stop suiveur compris) : **+0,055** en plein échantillon
+(IC [+0,006, +0,109], p = 0,013) et **+0,105** hors échantillon
+(IC [+0,015, +0,197], p = 0,012) sur la stratégie combinée. Non significatif
+sur les deux autres (p = 0,20 et 0,15), même si la direction y est la même.
+
+Ce chiffre est plus bas que le +0,162 mesuré d'abord, et la différence n'est
+pas du bruit : la première mesure comparait à une configuration **sans stop
+suiveur**. Les deux sorties se recouvrent, donc l'apport marginal de celle-ci
+une fois l'autre en place est plus faible. C'est l'apport marginal qui compte,
+puisque c'est celui qu'on obtient en l'activant.
+
+**Le drawdown se dégrade** : −34,4 % → −36,1 % sur la combinée. Le Calmar
+s'améliore malgré tout (0,516 → 0,540) parce que le CAGR monte davantage, mais
+ce réglage achète du Sharpe, pas de la tranquillité.
+
+**Hypothèses de toutes les lignes ci-dessus** : 10 bps par aller simple
+(commission 5 + glissement 5, appliqués symétriquement à l'achat et à la vente,
+soit 20 bps l'aller-retour), impact de marché désactivé, **ciblage de
+volatilité désactivé**. C'est le régime dans lequel toute l'optimisation a été
+conduite, puisque son critère était le Sharpe. La section suivante mesure
+l'autre régime, qui est désormais celui par défaut.
+
+#### Le ciblage de volatilité à 12 %, activé
+
+`BACKTEST_VOL_TARGET_PCT = 12.0`. L'exposition est réduite quand la volatilité
+réalisée des 60 dernières séances dépasse 12 % annualisés, jamais augmentée
+au-delà de 100 % (le moteur n'est pas margé). **C'est un arbitrage assumé, pas
+un gain** — ce n'est pas le réglage que l'optimisation du Sharpe aurait retenu.
+
+| | Sharpe | appr. | **test** | **max DD** | CAGR | vol | Calmar | alpha | β | exposition |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `valuation_gap_dcf` | 0,935 | 1,063 | 0,737 | −32,76 % | 18,45 % | 17,50 % | 0,563 | +6,47 % | 0,89 | 98,2 % |
+| `…` **+ cible 12 %** | 0,850 | 1,016 | 0,615 | **−24,41 %** | 14,01 % | 14,11 % | 0,574 | +2,02 % | 0,69 | 88,1 % |
+| `valuation_gap_sector_neutral` | 0,906 | 1,039 | 0,701 | −32,30 % | 17,69 % | 17,30 % | 0,548 | +5,70 % | 0,88 | 98,0 % |
+| `…` **+ cible 12 %** | 0,832 | 0,997 | 0,597 | **−24,14 %** | 13,65 % | 14,03 % | 0,566 | +1,66 % | 0,69 | 88,2 % |
+| **`valuation_gap_combined`** | **0,977** | 1,017 | **0,910** | −36,10 % | 19,48 % | 17,65 % | 0,540 | +7,49 % | 0,89 | 98,3 % |
+| **`…` + cible 12 %** | 0,931 | 0,988 | 0,846 | **−25,06 %** | 15,18 % | 13,96 % | 0,606 | +3,20 % | 0,68 | 88,4 % |
+
+La ligne `valuation_gap_combined` **+ cible 12 %** est la configuration en
+production, remesurée sur le signal `tiers` (cf. « la hiérarchie n'avait jamais
+tourné » plus haut) ; la ligne sans cible n'a pas été remesurée et porte encore
+sur `flat`. Les deux autres stratégies lisent le DCF seul : la correction ne les
+touche pas.
+
+Ce que le tableau dit, dans l'ordre d'importance :
+
+- **Le drawdown baisse de 8 à 10 points**, sur les trois stratégies. C'est
+  l'effet recherché, et il est net : −36,1 % → −26,5 % sur la combinée.
+- **Le Sharpe baisse un peu**, jamais de façon significative. Écart apparié :
+  −0,014 (combinée, p = 0,62), −0,046 (neutre au secteur, p = 0,81), −0,056
+  (DCF, p = 0,85). Les trois intervalles de confiance contiennent zéro — la
+  dégradation est réelle en direction, indiscernable du bruit en amplitude.
+- **Le Calmar s'améliore** partout (0,540 → 0,573 sur la combinée) : le
+  drawdown recule plus vite que le rendement.
+- **Le CAGR et l'alpha reculent nettement** : 19,48 % → 15,22 % et +7,49 % →
+  +3,23 % sur la combinée. Le garde-fou fixé au départ — battre le CAGR du SPY
+  (11,99 %) — tient toujours sur les trois, mais la marge se réduit beaucoup.
+
+**Le contrôle qui compte**, parce que le réglage baisse l'exposition moyenne de
+98 % à 88 % : est-ce autre chose que « détenir moins » ? On compare donc à un
+désinvestissement **constant** calibré sur la même volatilité réalisée
+(k ≈ 0,79 en actions, le reste au taux sans risque).
+
+| combinée | brut | cible 12 % | statique de même volatilité |
+|---|---|---|---|
+| max drawdown | −36,10 % | **−26,54 %** | −29,51 % |
+| Sharpe | 0,872 | 0,799 | 0,872 |
+
+*(Sharpe recalculés ici à formule identique pour que les trois colonnes soient
+comparables ; ils diffèrent donc de ceux du tableau ci-dessus.)*
+
+Le ciblage **fait mieux que détenir moins** sur le drawdown — 3 points
+d'avance — et **moins bien sur le Sharpe**, qu'un désinvestissement constant
+laisse mathématiquement intact. Le mécanisme apporte donc quelque chose de
+réel, mais modeste, et il le fait payer.
+
+**Le drawdown maximal est le Covid dans les deux régimes** (février-mars 2020),
+et c'est là que le ciblage agit le plus. Sur le marché baissier de 2022, plus
+lent, il ne gagne que 2 à 3 points : −17,96 % → −15,20 % sur la combinée. Un
+ciblage de volatilité protège d'un choc qui dure assez pour être vu, pas d'une
+baisse régulière.
+
+Pour revenir au régime optimisé sur le Sharpe, sans toucher à la
+configuration : `09_backtest.py --vol-target-pct 0`.
+
+#### `valuation_gap_combined_ancre` : 72 % de transactions en moins
+
+**Le constat de départ.** La stratégie combinée passe 39 044 ventes pour
+2 568 thèses : **93,4 % des ventes sont des allègements de rebalancement**, pas
+des décisions. La zone de non-négociation était censée les filtrer. Le
+balayage montre qu'elle ne le fait pas :
+
+| bande | Sharpe | ventes | dont rebalancement |
+|---|---|---|---|
+| 0 (désactivée) | 0,970 | 63 886 | 61 318 |
+| 15 (retenue) | 0,977 | 39 044 | 36 476 |
+| 30 / 50 / 100 / aucune | 0,978 | 39 022 | 36 454 |
+
+Élargir la bande de 15 à l'infini change **22 ventes sur 39 044**. Ce n'est pas
+un réglage, c'est un plancher.
+
+**La cause.** `engine._drift_is_material` contenait un coupe-circuit : toute
+candidate encore absente du portefeuille dont la cible dépasse le trade minimum
+renvoyait `True`, donc forçait le repesage intégral quelle que soit la bande.
+Comme des dépôts SEC amènent des candidates neuves 2 624 séances sur 2 936, la
+bande n'était consultée que les jours sans nouveauté.
+
+**Le changement, réservé à cette stratégie.** `Strategy` déclare désormais
+`entree_neuve_force_repesage`, sur le modèle de `signal_source` — une propriété
+de la thèse, pas une option d'exécution. Les trois stratégies existantes la
+laissent à `True` et sont **bit-identiques** (test de non-régression de bout en
+bout). `valuation_gap_combined_ancre` la met à `False` : une candidate neuve
+compte alors dans la dérive comme n'importe quel écart, mais ne décide plus
+seule. Le défaut latent que le coupe-circuit corrigeait — une candidate seule
+jamais achetée — est repris par un amorçage sur portefeuille vide.
+
+| | combinée | **ancrée** |
+|---|---|---|
+| Exécutions | 77 774 | **21 689** (−72 %) |
+| Ventes de rebalancement | 36 476 | **8 376** (−77 %) |
+| Séances sans repesage | 44,7 % | **85,7 %** |
+| Rotation annualisée | 892 % | 733 % |
+| Sharpe plein échantillon | 0,977 | 0,954 |
+| Sharpe apprentissage | 1,017 | 0,965 |
+| **Sharpe hors échantillon** | 0,910 | **0,935** |
+| Max drawdown | −36,10 % | −35,54 % |
+| CAGR | 19,48 % | 18,44 % |
+| Achats infinançables | 2,23 % | **0,79 %** |
+
+**Ce que ça établit, et ce que ça n'établit pas.** Les transactions baissent de
+72 % pour un écart de Sharpe apparié de −0,019 en plein échantillon
+(IC [−0,068, +0,037], p = 0,74) : **indiscernable de zéro**. La direction est
+intéressante — le Sharpe d'apprentissage baisse (1,017 → 0,965) pendant que
+celui de test monte (0,910 → 0,935, p = 0,20), signature d'un mécanisme qui
+sur-ajustait — mais rien de tout cela n'est significatif, et il ne faut pas le
+présenter autrement.
+
+La crainte qui avait fait rejeter la bande par ligne — affamer les achats — ne
+se matérialise pas : la part de montant d'achat infinançable **baisse**, de
+2,23 % à 0,79 %, parce que le portefeuille cesse de dépenser son cash en
+allers-retours.
+
+**Ce qui reste à faire.** La cause première est la renormalisation de
+`base.capped_weights` (`poids = conviction / somme`), qui fait qu'un seul dépôt
+déplace réellement les 82 cibles. Lever le coupe-circuit ne supprime que les
+repesages dont la dérive agrégée reste sous le seuil. Une pondération qui ne se
+renormalise pas est l'étape suivante.
+
+#### Tarification réelle : commission minimum et planchers de taille
+
+Le coût du moteur était purement proportionnel. Un ordre de 7 $ y payait
+0,7 centime, ce qu'aucun courtier ne facture — et c'est ce qui faisait passer
+un portefeuille de 1 000 $ pour viable. Trois réglages, **tous à 0 par défaut**
+(le moteur se comporte exactement comme avant, et les chiffres de référence
+ci-dessus restent ceux qu'ils sont), activables par run comme `--commission-bps` :
+
+| réglage | rôle |
+|---|---|
+| `--min-commission-dollar 1` | coût d'un ordre = `max(notionnel × 10 bps, 1 $)`, soit 1 $ à l'aller et 1 $ au retour |
+| `--min-trade-pct-of-nav 0.05` | plancher de taille relatif au NAV — le plancher absolu de 1 $ vaut 0,000036 % d'un NAV de 2,8 M$ et ne coupe rien |
+| `--max-fee-pct-of-trade 1` | critère de **viabilité** : la commission minimum ne doit pas dépasser 1 % de l'ordre, donc rien sous 100 $ n'est passé |
+
+**Jamais sur les liquidations.** Stop-loss, take-profit, stop suiveur, perte de
+signal et symbole périmé visent une cible de zéro : leur opposer un plancher
+emprisonnerait toute ligne devenue plus petite que lui — le stop-loss cesserait
+de fonctionner sur exactement les positions qui en ont le plus besoin, celles
+qui se sont effondrées. Testé explicitement.
+
+| run | Sharpe | test | max DD | CAGR | exécutions | ordre moyen | lignes | NAV finale |
+|---|---|---|---|---|---|---|---|---|
+| ancrée 10 k$ · proportionnel | 0,960 | 0,935 | −35,54 % | 18,56 % | 20 748 | 108 $ | 78,2 | 72 925 $ |
+| **ancrée 10 k$ · tarif réel** | 0,840 | 0,685 | −33,23 % | 15,71 % | 5 879 | 288 $ | 63,8 | 54 913 $ |
+| **combinée 10 k$ · tarif réel** | **0,906** | **0,798** | −35,17 % | 17,36 % | 7 261 | 271 $ | 68,4 | **64 765 $** |
+| ancrée 1 M$ · proportionnel | 0,954 | 0,935 | −35,54 % | 18,44 % | 21 689 | 10 218 $ | 78,2 | 7 209 567 $ |
+| **ancrée 1 M$ · tarif réel** | **0,981** | 0,891 | −34,34 % | 18,94 % | 14 023 | 16 734 $ | 78,7 | **7 572 498 $** |
+
+**À 1 M$, la tarification réaliste AMÉLIORE le résultat** : Sharpe 0,954 →
+0,981, CAGR 18,44 % → 18,94 %, drawdown −35,54 % → −34,34 %, et 35 % d'ordres
+en moins. Le plancher relatif coupe la poussière, qui ne rapportait rien ; la
+commission de 1 $ est négligeable sur un ordre moyen de 16 734 $. L'écart
+apparié est +0,027 (IC [−0,016, +0,070], p = 0,095) : la direction est bonne,
+la significativité n'y est pas.
+
+**À 10 000 $, elle coûte cher, et ce coût est significatif** : −0,115 de Sharpe
+(IC [−0,190, −0,047], p = 1,00). Le portefeuille se concentre — 78 lignes à
+64 — parce que les petites cibles ne sont plus achetables. La stratégie bat
+encore largement le SPY (54 913 $ contre 37 492 $, alpha +3,72 %), mais elle
+n'est plus la même.
+
+**Sur 2015-2026, l'ancrage ressortait perdant à 10 000 $** : −0,063 de Sharpe
+contre la combinée, IC [−0,115, −0,013], p = 0,994. **Ce résultat ne survit pas
+au changement de fenêtre**, et il faut le dire avant de le citer.
+
+#### Le même test sur 10 ans glissants, et pourquoi il faut se méfier
+
+Fenêtre 2016-09-06 → 2026-09-04 (2 514 séances), tarification réelle des deux
+côtés, seule la stratégie change :
+
+| | Sharpe | Sortino | Calmar | max DD | CAGR | alpha | exécutions | ordre moyen | NAV finale |
+|---|---|---|---|---|---|---|---|---|---|
+| **ancrée · 10 000 $** | 0,972 | 1,406 | 0,562 | −33,35 % | 18,75 % | +5,34 % | 5 153 | 296 $ | 55 696 $ |
+| combinée · 10 000 $ | 0,948 | 1,367 | 0,544 | −34,32 % | 18,67 % | +5,26 % | 5 716 | 264 $ | 55 336 $ |
+| **ancrée · 1 M$** | 1,017 | 1,472 | 0,594 | **−34,36 %** | 20,41 % | +7,00 % | **12 348** | 15 304 $ | 6 398 866 $ |
+| combinée · 1 M$ | 1,017 | 1,473 | 0,584 | −36,06 % | **21,05 %** | +7,64 % | 22 388 | 9 701 $ | **6 745 200 $** |
+
+*SPY sur la même fenêtre : CAGR 13,41 % — 10 000 $ → 35 164 $, 1 M$ → 3 516 368 $.*
+
+**Le signe s'inverse.** À 10 000 $, l'écart apparié passe de **−0,063
+(p = 0,994)** sur 2015-2026 à **+0,028 (p = 0,12)** sur 2016-2026. Mêmes
+stratégies, même tarification : vingt mois de données en moins suffisent à
+retourner la conclusion. Ce n'était donc pas un effet de l'ancrage, c'était un
+effet de 2015-2016.
+
+**Ce que les deux fenêtres disent en commun, et qui tient** : l'ancrage
+supprime 10 à 45 % des exécutions sans effet mesurable sur le Sharpe, dans un
+sens ou dans l'autre (à 1 M$ sur 10 ans : 1,017 contre 1,017). C'est le seul
+énoncé que les données soutiennent.
+
+#### Pourquoi moins de transactions ne fait pas monter le NAV
+
+La question est la bonne, et la réponse tient en une phrase : **la friction
+suit les DOLLARS négociés, pas le nombre d'ordres.** Le moteur totalise
+désormais ce qu'il facture (`total_friction_dollar`, `executions_count`), ce
+qu'il ne faisait pas — le moteur options le fait depuis toujours.
+
+| 1 M$, sur 10 ans | combinée | ancrée | écart |
+|---|---|---|---|
+| Exécutions | 22 388 | 12 348 | **−45 %** |
+| Dollars négociés | 220,4 M$ | 189,3 M$ | **−14 %** |
+| **Friction payée** | 226 141 $ | 194 453 $ | **−31 688 $** |
+| Coût moyen par ordre | 10,10 $ | 15,75 $ | +56 % |
+| NAV finale | 6 745 200 $ | 6 398 866 $ | −346 334 $ |
+
+Supprimer 45 % des ordres n'économise que 14 % des dollars, parce que **les
+ordres supprimés sont les petits**. Le coût moyen par exécution monte donc de
+10,10 $ à 15,75 $ : ce qui reste est plus gros.
+
+La décomposition de l'écart de NAV est sans appel :
+
+    −346 334 $  =  +31 688 $ (frais économisés)  −378 022 $ (effet de SÉLECTION)
+
+**L'effet de sélection pèse douze fois l'économie de frais.** Différer les
+entrées fait rater des positions, et ce manque à gagner écrase de très loin ce
+que la friction fait gagner. À 10 000 $ le rapport s'inverse — l'économie de
+frais (555 $) dépasse le coût de sélection (195 $), parce que la commission
+minimum de 1 $ y représente 5,6 % du capital sur dix ans contre 3,2 % à 1 M$ —
+mais les deux montants y sont dérisoires devant un NAV de 55 000 $.
+
+Autrement dit : **réduire le nombre de transactions est un gain opérationnel,
+pas un gain de performance.** Il compte pour le passage à l'exécution réelle
+(carnet d'ordres, temps de gestion, risque opérationnel), pas pour le rendement
+du backtest.
+
+#### La configuration de référence sous tarification réaliste
+
+Les chiffres de référence du tableau plus haut datent du coût purement
+proportionnel. Voici la même configuration — 2015-2026, 1 M$, cible de
+volatilité 12 % — mesurée avec la commission minimum de 1 $, le plancher de
+0,05 % du NAV et le seuil de viabilité à 1 % :
+
+| | Sharpe | appr. | test | Sortino | Calmar | max DD | CAGR | alpha | exécutions | NAV finale |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Combinée · proportionnel | 0,932 | 1,006 | 0,817 | 1,315 | 0,573 | −26,54 % | 15,22 % | +3,23 % | 77 756 | 5 223 958 $ |
+| **Combinée · tarif réel** | **0,930** | 1,003 | 0,817 | 1,313 | 0,571 | −26,62 % | 15,20 % | +3,21 % | **25 402** | 5 213 554 $ |
+| DCF · proportionnel | 0,850 | 1,016 | 0,615 | 1,195 | 0,574 | −24,41 % | 14,01 % | +2,02 % | 75 818 | 4 620 481 $ |
+| **DCF · tarif réel** | **0,851** | 1,017 | 0,617 | 1,197 | 0,573 | −24,48 % | 14,04 % | +2,05 % | **25 703** | 4 633 040 $ |
+| Neutre secteur · proportionnel | 0,832 | 0,997 | 0,597 | 1,170 | 0,566 | −24,14 % | 13,65 % | +1,66 % | 71 816 | 4 453 596 $ |
+| **Neutre secteur · tarif réel** | **0,832** | 0,996 | 0,598 | 1,170 | 0,565 | −24,19 % | 13,66 % | +1,67 % | **32 278** | 4 454 855 $ |
+
+**Les chiffres de référence survivent intacts.** Écart apparié de −0,002
+(combinée, p = 0,79), +0,002 (DCF), −0,000 (neutre au secteur) : indiscernable
+de zéro sur les trois, avec des intervalles de confiance larges de cinq
+millièmes. Les valeurs finales bougent de moins de 0,3 %.
+
+**Pour deux tiers d'exécutions en moins.** Et c'est là que le mécanisme se
+voit :
+
+| | exécutions | friction payée | économie |
+|---|---|---|---|
+| Combinée | 77 756 → 25 402 (**−67 %**) | 212 516 $ → 197 441 $ (**−7 %**) | 15 075 $, soit 1,5 % du capital |
+| DCF | 75 818 → 25 703 (−66 %) | 206 735 $ → 197 605 $ (−4 %) | 9 130 $ |
+| Neutre secteur | 71 816 → 32 278 (−55 %) | 220 149 $ → 210 014 $ (−5 %) | 10 135 $ |
+
+**−67 % d'ordres pour −7 % de frais** : la démonstration arithmétique de ce qui
+précède. Les ordres supprimés étaient de la poussière, et la preuve qu'ils
+n'étaient que ça, c'est que les retirer ne déplace pas le Sharpe d'un
+millième — ni dans un sens ni dans l'autre.
+
+**La tarification réaliste est donc ACTIVÉE PAR DÉFAUT** depuis cette mesure :
+`BACKTEST_MIN_COMMISSION_DOLLAR = 1.0`, `BACKTEST_MIN_TRADE_PCT_OF_NAV = 0.05`,
+`BACKTEST_MAX_FEE_PCT_OF_TRADE = 1.0`. Les trois restent réglables par run
+(`--min-commission-dollar 0 …` rend le comportement purement proportionnel, qui
+a produit les chiffres historiques du dépôt).
+
+#### La pondération ancrée : mesurée, et écartée
+
+Le dernier levier identifié, et le seul qui attaquait la racine. Plutôt que de
+supprimer des ordres, il réduit l'**amplitude** de ce que chaque dépôt déplace :
+`poids_i = min(conviction_i / ancre, plafond)`, sans renormalisation, au lieu de
+`conviction_i / SOMME(convictions)`. L'arrivée d'une candidate laisse alors les
+autres cibles strictement inchangées et le solde va en cash.
+
+L'ancre est une ÉCHELLE, pas une cible d'allocation, et elle se calibre sur
+l'exposition obtenue — trop petite, la somme des poids dépasse 1, le moteur
+renormalise, et le couplage revient sans qu'on s'en aperçoive :
+
+| ancre | exposition | Sharpe | CAGR | max DD | exécutions |
+|---|---|---|---|---|---|
+| 1 000 | 86,4 % | 0,802 | 13,01 % | — | 14 928 |
+| 4 000 | 86,4 % | 0,857 | 13,90 % | −28,12 % | 14 962 |
+| **8 000** | 79,5 % | **0,863** | 13,21 % | −25,55 % | 12 558 |
+| 12 000 | 58,9 % | 0,775 | 9,85 % | −20,73 % | 8 763 |
+| 16 000 | 45,0 % | 0,631 | 7,05 % | −17,39 % | 7 243 |
+| 40 000 | 15,1 % | 0,104 | 2,41 % | −6,20 % | 3 603 |
+
+En dessous de 8 000 l'ancre ne mord pas : l'exposition reste plate à 86 %, la
+somme dépasse 1 et le moteur renormalise. Au-delà, le portefeuille part en cash
+et le rendement s'effondre. L'optimum est à 8 000, et il ne suffit pas :
+
+| | Sharpe | appr. | test | max DD | CAGR | exécutions | friction |
+|---|---|---|---|---|---|---|---|
+| **Combinée (référence)** | **0,930** | 1,003 | **0,817** | −26,62 % | **15,20 %** | 25 402 | 197 441 $ |
+| Ancrée, pondération historique | 0,875 | 0,977 | 0,722 | −26,03 % | 14,08 % | 14 181 | 163 666 $ |
+| Ancrée + ancre 8 000 | 0,863 | 0,951 | 0,742 | −25,55 % | 13,21 % | **12 558** | **137 976 $** |
+
+Écarts appariés contre la référence : −0,051 (ancrage seul, p = 0,95), −0,054
+(ancre 8 000, p = 0,86), −0,071 (ancre 4 000, p = 0,93). **Aucun n'est
+significatif — les trois intervalles contiennent zéro — mais les trois vont
+dans le même sens, et le Sharpe hors échantillon baisse aussi** (0,817 → 0,742).
+Ce n'est donc pas une histoire de sur-ajustement : la pondération ancrée retire
+du signal.
+
+`BACKTEST_CONVICTION_ANCHOR` reste donc à `None`. Le mécanisme est implémenté,
+calibré et testé ; il n'est pas retenu, comme la pondération par le risque et le
+multiple mérité avant lui.
+
+**Ce que tout ce fil aura établi** : les trois leviers successifs — zone de
+non-négociation élargie, levée du coupe-circuit, pondération ancrée — réduisent
+les transactions de 45 à 70 % sans jamais améliorer le Sharpe. La friction
+n'était pas ce qui limitait cette stratégie.
+
+L'ancrage, lui, ne suit pas : sous la même tarification et avec la cible de
+volatilité, `valuation_gap_combined_ancre` rend 0,875 de Sharpe contre 0,930
+(Δ = −0,051, IC [−0,108, +0,010], p = 0,95) pour 14 181 exécutions au lieu de
+25 402. À la limite de la significativité, et du mauvais côté.
+
+#### Ce qui reste bloqué
+
+`04c` et `07b` ont besoin d'un accès à EDGAR pour reconstruire leurs fichiers à
+partir des documents. Le filtre 8-K fonctionne en attendant sur l'archive déjà
+écrite, par les seuls codes d'item — il n'y retient que ceux qui sont matériels
+**par définition**, un code ambigu sans son texte ne disant rien.
+
 ### Ajouter une nouvelle stratégie
 
 Créer un fichier dans `backtest/strategies/`, y définir une classe héritant
@@ -697,7 +1875,7 @@ le delta pour une exposition $ cible ("hedge par les greeks").
 
 ```bash
 python 05_calcul_multiples.py
-python 07_calcul_dcf.py
+python 07_calcul_dcf.py                         # avant 06b : son repli DCF
 python 06b_calcul_valorisation_combinee.py
 python 10_backtest_options.py --strategy valuation_gap_options --start-date 2015-01-01
 ```
@@ -720,6 +1898,26 @@ Hypothèses du moteur (`backtest/options_engine.py`) :
       reconstitue directement un VRAI historique d'options déjà expirées
       (impossible via IBKR seul, qui ne résout plus les contrats expirés),
       sans attendre l'accumulation de runs futurs.
+      `08` ne collecte que les entreprises dont l'écart de la valorisation
+      COMBINÉE (`06b`, celle que tradent les stratégies options) franchit
+      le seuil d'entrée de `valuation_gap_multiples_options`, en log et
+      symétrique : ratio théorique/cours ≥ 1,20 ou ≤ 1/1,20. Il filtrait
+      auparavant sur l'écart du DCF (`07`) : les 109 entreprises de son
+      univers sans DCF (banques, assureurs, foncières) n'étaient jamais
+      collectées quel que soit leur écart — 2 seulement figurent dans
+      l'historique de snapshots, et seulement dans les collectes de fin
+      juillet —, 56 l'étaient sans signal combiné, et la
+      bande de ratio 0,80-0,833 était tradée en put sans être collectée
+      (384 entreprises retenues désormais, contre 323). Ce correctif vaut
+      pour la collecte À VENIR : les backtests restent presque entièrement
+      simulés parce que l'historique de snapshots réels ne couvre que
+      cinq semaines (2026-07-29 → 2026-09-05) et que le moteur ne regarde
+      qu'en arrière — sur trois runs 2015-2026, toutes les positions
+      sauf une ou deux s'ouvrent avant le premier snapshot (2 732 sur
+      2 734 pour `valuation_gap_multiples_options`). Les rares positions
+      ouvertes après ont été simulées faute de chaîne : un PUT COIN, que
+      l'ancien filtre écartait faute de DCF, et un PUT IP, qui a pourtant
+      un DCF — le filtre n'explique donc pas tout.
       Du snapshot, le moteur retient le strike, l'échéance et **l'IV** — pas
       la prime : celle-ci a été cotée à un autre spot que celui d'exécution,
       et la reprendre telle quelle faisait apparaître un saut de P&L au
@@ -951,12 +2149,34 @@ Approximation assumée — le moteur ne sait pas redemander une optimisation en
 cours de route, et la reconduction relative reste bien plus proche du choix
 initial que le retour au mi-chemin.
 
-**Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,5).
+**Fraction de convergence** (`OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT`, 0,8).
 `fraction = 1` supposerait que le cours atteint exactement sa valeur théorique
-à l'échéance — hypothèse que rien n'étaye. Le défaut de 0,5 reprend l'hypothèse
-**déjà implicite** dans `valuation_gap_multiples_options` (dont le strike à
-mi-chemin suppose exactement la moitié du chemin), mais la rend explicite, donc
-optimisable.
+à l'échéance — hypothèse que rien n'étaye. 0,5 reprendrait l'hypothèse **déjà
+implicite** dans `valuation_gap_multiples_options` (dont le strike à mi-chemin
+suppose exactement la moitié du chemin), rendue explicite, donc optimisable.
+
+Le défaut est pourtant 0,8, et ce README disait 0,5 : la valeur est là depuis
+le premier commit, sans trace de son origine (aucune grille `11c` archivée).
+0,8 suppose une thèse nettement plus forte — au seuil d'entrée (ratio 1,20),
+une dérive de 7,3 %/an sur l'échéance de 730 jours, contre 4,6 %/an à 0,5.
+Mesuré le 2026-09-24 sur 2015-2026 (1 M$, `06b` régénéré en `tiers`) :
+
+| Fraction | CAGR | Sharpe | Sortino | Max DD | Trades | Exposition |
+|---|---|---|---|---|---|---|
+| 0,5 | −4,0 % | −0,69 | −1,16 | −50,9 % | 2 393 | 28,5 % |
+| 0,8 | −2,4 % | −0,63 | −0,99 | −42,9 % | 2 451 | 22,9 % |
+
+Les deux valeurs sont **indiscernables** : le test apparié sur les rendements
+en excès donne +0,06 de Sharpe pour 0,8, intervalle à 95 % [−0,45 ; +0,49], et
+aucune des deux moitiés ne tranche (2015-2020 : −0,11 ; 2021-2026 : +0,33,
+intervalle [−0,12 ; +0,83]). 0,8 perd moins en CAGR et en drawdown, mais en
+investissant moins : à Sharpe égal, ce n'est pas un avantage de thèse. Sur
+l'ancien parquet `flat`, encore versionné, l'écart était de +0,25
+[−0,04 ; +0,60] — pas établi non plus. La production reste donc à 0,8 : on ne
+la remplace que par une variante établie meilleure, et 0,5 ne l'est pas.
+Surtout, **la stratégie perd aux deux valeurs**, comme
+`valuation_gap_multiples_options` sur la même période (CAGR −4,0 %, Sharpe
+−0,64) : ce n'est pas la fraction qui la rend négative.
 
 **Volatilité de sélection** : l'implicite réellement cotée si un snapshot est
 disponible, la volatilité réalisée sinon, et en dernier recours

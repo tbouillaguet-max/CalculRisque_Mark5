@@ -105,6 +105,13 @@ def _moteur_actions(n: int = 60) -> BacktestEngine:
         initial_capital=1_000_000.0, cost_bps=10.0,
         stop_loss_pct=-95.0, take_profit_pct=1000.0,
         momentum_min_pct=None,
+        # Zone de non-négociation désactivée EXPLICITEMENT : ces tests portent
+        # sur la troncature des achats et le décompte des ordres, c'est-à-dire
+        # sur ce qui se passe QUAND le portefeuille est repesé. Avec le défaut
+        # (15 points de NAV), la plupart des repesages du scénario sont sautés
+        # et le phénomène mesuré ne se produit plus -- le test passerait pour
+        # une raison qui n'a rien à voir avec ce qu'il vérifie.
+        rebalance_band_pct=0.0,
     )
 
 
@@ -114,13 +121,30 @@ def test_les_diagnostics_sont_produits():
     diagnostics = engine.execution_diagnostics()
 
     assert set(diagnostics) == {
+        # Friction RÉELLEMENT payée, en dollars et par exécution. Le moteur la
+        # facturait sans jamais la totaliser : on ne pouvait pas répondre à
+        # « moins d'ordres, est-ce moins de frais ? », dont la réponse est non
+        # -- la friction suit les dollars négociés, pas le nombre d'ordres.
+        "total_friction_dollar", "total_friction_pct_of_initial",
+        "executions_count", "avg_friction_per_execution_dollar",
         "buy_orders_count", "truncated_orders_count", "truncated_orders_pct",
         "unfilled_dollar_pct", "avg_cash_pct",
+        # Zone de non-négociation du rebalancement : son réglage et ce qu'il a
+        # filtré (cf. engine._drift_is_material). Les trois clés sont produites
+        # même quand la zone est désactivée -- une colonne qui apparaît et
+        # disparaît selon le réglage rendrait les metrics.json incomparables
+        # d'un run à l'autre.
+        "rebalance_band_pct", "rebalance_days_count", "rebalance_skipped_days_pct",
         "signal_coverage_avg_ratio", "signal_coverage_min_ratio", "signal_coverage_min_year",
     }
     assert diagnostics["buy_orders_count"] > 0
     assert 0.0 <= diagnostics["avg_cash_pct"] <= 100.0
     assert diagnostics["truncated_orders_count"] <= diagnostics["buy_orders_count"]
+    assert diagnostics["executions_count"] > 0
+    assert diagnostics["total_friction_dollar"] > 0
+    assert diagnostics["avg_friction_per_execution_dollar"] == pytest.approx(
+        diagnostics["total_friction_dollar"] / diagnostics["executions_count"]
+    )
 
 
 def test_les_ordres_tronques_sont_comptes():

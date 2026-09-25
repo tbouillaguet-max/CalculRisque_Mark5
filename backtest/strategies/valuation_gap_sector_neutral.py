@@ -50,7 +50,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import Strategy, capped_weights, inflation_adjusted_gap, register_strategy
+from backtest.strategies.base import Strategy, construire_poids, inflation_adjusted_gap, register_strategy
 
 # En dessous de ce nombre de pairs, une médiane sectorielle ne mesure plus une
 # norme mais un ou deux titres. Le secteur retombe alors sur la médiane de
@@ -80,17 +80,33 @@ class ValuationGapSectorNeutralStrategy(Strategy):
         entry_threshold_pct: float = config.BACKTEST_SECTOR_NEUTRAL_ENTRY_THRESHOLD_PCT,
         min_absolute_gap_pct: float = config.BACKTEST_SECTOR_NEUTRAL_MIN_ABSOLUTE_GAP_PCT,
         max_weight_per_sector_pct: float = config.BACKTEST_MAX_WEIGHT_PER_SECTOR_PCT,
+        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
+        vol_weight_exponent: float = config.BACKTEST_VOL_WEIGHT_EXPONENT,
+        max_positions: int = 0,
+        rank_weighting: bool = False,
         **kwargs,
     ):
         super().__init__(
             entry_threshold_pct=entry_threshold_pct,
             min_absolute_gap_pct=min_absolute_gap_pct,
             max_weight_per_sector_pct=max_weight_per_sector_pct,
+            max_weight_pct=max_weight_pct,
+            vol_weight_exponent=vol_weight_exponent,
+            max_positions=max_positions,
+            rank_weighting=rank_weighting,
             **kwargs,
         )
+        self.vol_weight_exponent = vol_weight_exponent
+        self.max_positions = max_positions
+        self.rank_weighting = bool(rank_weighting)
         self.entry_threshold_pct = entry_threshold_pct
         self.min_absolute_gap_pct = min_absolute_gap_pct
         self.max_weight_per_sector_pct = max_weight_per_sector_pct
+        # Plafond PAR POSITION, à distinguer de max_weight_per_sector_pct qui
+        # borne le CUMUL d'un secteur. Exposé pour la même raison que dans
+        # valuation_gap : c'est un réglage de diversification, donc de Sharpe,
+        # et le laisser dans config seul le rendait non balayable.
+        self.max_weight_pct = max_weight_pct
 
     # ------------------------------------------------------------------ #
     def _sector_baseline(self, signals: pd.DataFrame) -> pd.Series:
@@ -144,32 +160,11 @@ class ValuationGapSectorNeutralStrategy(Strategy):
         if (conviction <= 0).any():
             conviction = conviction - conviction.min() + 1e-9
 
-        weights = capped_weights(conviction)
-        weights = self._cap_per_sector(weights, candidates["sector"])
-        return dict(zip(candidates["symbol"], weights))
-
-    # ------------------------------------------------------------------ #
-    def _cap_per_sector(self, weights: pd.Series, sectors: pd.Series) -> pd.Series:
-        """Plafond de poids CUMULÉ par secteur.
-
-        Le plafond par position (`capped_weights`) ne borne rien au niveau du
-        secteur : vingt technos à 4% chacune font 80% du portefeuille sur un
-        seul secteur sans qu'aucune ligne ne dépasse son plafond individuel.
-        Neutraliser le secteur dans le SCORE sans le borner dans l'ALLOCATION
-        laisserait donc revenir par l'allocation ce qu'on vient d'écarter du
-        score -- un secteur peut être massivement représenté un jour donné.
-
-        L'excédent d'un secteur plafonné n'est PAS redistribué : la somme des
-        poids descend, et l'engine laisse le reste en cash (il ne force jamais
-        la somme à 1, cf. base.capped_weights). Redistribuer reviendrait à
-        concentrer davantage sur les secteurs restants -- l'inverse du but."""
-        cap = self.max_weight_per_sector_pct
-        if not cap or cap <= 0:
-            return weights
-
-        cap = cap / 100
-        secteur = sectors.where(sectors.notna(), "_inconnu")
-        total_par_secteur = weights.groupby(secteur.values).transform("sum")
-        # Facteur de réduction par secteur, 1 quand le plafond ne mord pas.
-        facteur = (cap / total_par_secteur).clip(upper=1.0)
-        return weights * facteur
+        return construire_poids(
+            candidates, conviction,
+            max_weight_pct=self.max_weight_pct,
+            max_positions=self.max_positions,
+            max_weight_per_sector_pct=self.max_weight_per_sector_pct,
+            vol_weight_exponent=self.vol_weight_exponent,
+            rank_weighting=self.rank_weighting,
+        )

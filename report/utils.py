@@ -406,6 +406,25 @@ def load_pipeline_runs() -> list[dict]:
     return reports
 
 
+def avertissements_du_dernier_run(runs: list[dict]) -> tuple[Optional[str], list[str]]:
+    """(run_id, avertissements) du run le plus récent, ou (None, []).
+
+    POURQUOI CE N'EST PAS DANS LA TABLE DE FRAÎCHEUR. Celle-ci juge un fichier
+    à sa date de modification. Or 06b réécrit le signal à chaque run : il est
+    donc toujours « à jour » -- y compris le matin où 04/04b n'ont pas tourné
+    et où il valorise des comptes d'une semaine. Seul l'orchestrateur sait
+    quelles ENTRÉES ont été rafraîchies ; il l'écrit dans `avertissements`, et
+    c'est cette liste qu'il faut montrer au-dessus de la table, pas un âge de
+    fichier de plus.
+
+    Seul le DERNIER run compte : un avertissement d'hier est caduc dès qu'un
+    run plus récent a rafraîchi les dépôts."""
+    if not runs:
+        return None, []
+    dernier = runs[0]
+    return dernier.get("run_id"), list(dernier.get("avertissements") or [])
+
+
 def read_step_log(run_id: str, script: str, max_lines: int = 400) -> str:
     """Fin du log d'une étape (les erreurs sont en fin de fichier)."""
     path = config.DIR_PIPELINE_RUNS / run_id / f"{script}.log"

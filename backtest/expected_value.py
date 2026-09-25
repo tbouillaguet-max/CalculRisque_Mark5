@@ -820,10 +820,11 @@ def convergence_drift(spot: float, target_value: float, t_years: float, fraction
 
     `fraction = 1` suppose que le cours atteint exactement la valeur théorique
     à l'échéance -- hypothèse que rien n'étaye et qui transformerait chaque
-    écart de valorisation en gain certain. `fraction = 0.5` (le défaut de la
-    stratégie appelante) ne suppose que la moitié du chemin, ce qui reste une
-    hypothèse mais une hypothèse mesurée, et rend le paramètre optimisable au
-    lieu de le laisser implicite.
+    écart de valorisation en gain certain. `fraction = 0.5` ne supposerait que
+    la moitié du chemin ; le défaut de la stratégie appelante est 0.8
+    (config.OPTIONS_EV_CONVERGENCE_FRACTION_DEFAULT, qui dit pourquoi). Dans
+    les deux cas, le paramètre est explicite et optimisable au lieu de rester
+    implicite.
 
     None si les entrées ne permettent pas de dérive définie (cours ou valeur
     non strictement positifs, maturité nulle)."""

@@ -53,6 +53,7 @@ from typing import Optional
 import pandas as pd
 
 import config
+import ecriture_atomique
 import sec_filings_text as sft
 
 logger = logging.getLogger("validation_qualitative")
@@ -203,7 +204,7 @@ def save_progress(output_dir: Path, processed: set) -> None:
     path = _progress_path(output_dir)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps({"processed": sorted(processed), "updated_at": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    ecriture_atomique.remplacer(tmp, path)
 
 
 def append_checkpoint(output_dir: Path, row: dict) -> None:

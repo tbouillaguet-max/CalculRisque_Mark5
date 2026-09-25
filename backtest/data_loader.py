@@ -23,6 +23,7 @@ consommés par backtest/engine.py :
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from typing import Optional
 
@@ -30,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 import config
+import hierarchie_multiples
 
 logger = logging.getLogger("backtest.data_loader")
 
@@ -75,10 +77,16 @@ class PricePanel:
     telles quelles pour les usages non unitaires (calendrier, colonnes).
     """
 
-    def __init__(self, close: pd.DataFrame, open_: pd.DataFrame, last_valid_date: pd.Series):
+    def __init__(
+        self, close: pd.DataFrame, open_: pd.DataFrame, last_valid_date: pd.Series,
+        dollar_volume: Optional[pd.DataFrame] = None,
+    ):
         self.close = close
         self.open = open_
         self.last_valid_date = last_valid_date
+        self._dollar_volume_values = (
+            dollar_volume.to_numpy(dtype=float) if dollar_volume is not None else None
+        )
 
         self._close_values = close.to_numpy(dtype=float)
         self._open_values = open_.to_numpy(dtype=float)
@@ -109,6 +117,20 @@ class PricePanel:
             return None
         value = self._open_values[row, col]
         return None if value != value else float(value)
+
+    def dollar_volume_at(self, symbol: str, date: pd.Timestamp) -> Optional[float]:
+        """Volume quotidien moyen en dollars (60 séances) du symbole à `date`.
+        None si la colonne volume est absente des cours, ou si l'historique est
+        trop court : l'appelant renonce alors au modèle d'impact pour cette
+        ligne plutôt que d'inventer une liquidité."""
+        if self._dollar_volume_values is None:
+            return None
+        row = self._row_of_date.get(date)
+        col = self._close_col.get(symbol)
+        if row is None or col is None:
+            return None
+        value = self._dollar_volume_values[row, col]
+        return None if value != value or value <= 0 else float(value)
 
     def close_history(self, symbol: str, date: pd.Timestamp) -> np.ndarray:
         """Clôtures du symbole jusqu'à `date` INCLUSE (jamais au-delà : c'est
@@ -204,7 +226,22 @@ def build_price_panel(daily_prices: pd.DataFrame) -> PricePanel:
     last_valid_date = close_raw.apply(lambda col: col.last_valid_index())
 
     close_ffill = close_raw.ffill(limit=FORWARD_FILL_MAX_DAYS)
-    return PricePanel(close_ffill, open_raw, last_valid_date)
+
+    # VOLUME EN DOLLARS, moyenné sur 60 séances, pour le modèle d'impact de
+    # marché (cf. engine.impact_coefficient_bps). En dollars et non en titres :
+    # un volume de 10 millions d'actions ne dit rien tant qu'on ignore si
+    # l'action vaut 3 $ ou 300 $, et c'est bien un montant qu'on cherche à
+    # exécuter. Absent quand 03b n'a pas collecté la colonne (caches anciens) :
+    # le modèle d'impact se désactive alors de lui-même plutôt que d'échouer.
+    dollar_volume = None
+    if "volume" in daily_prices.columns:
+        volume_raw = daily_prices.assign(
+            dollar_volume=daily_prices["volume"] * daily_prices["close"]
+        ).pivot(index="date", columns="symbol", values="dollar_volume").sort_index()
+        dollar_volume = volume_raw.rolling(60, min_periods=5).mean().reindex(
+            columns=close_ffill.columns)
+
+    return PricePanel(close_ffill, open_raw, last_valid_date, dollar_volume)
 
 
 def _fill_missing_filed_dates(df: pd.DataFrame, path) -> pd.DataFrame:
@@ -302,6 +339,63 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     return renamed[cols]
 
 
+def build_combined_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataFrame:
+    """Même schéma que `build_signal_events`, mais alimenté par la
+    VALORISATION COMBINÉE de 06b au lieu du DCF seul.
+
+    POURQUOI CE CONSTRUCTEUR EXISTE. Les deux moteurs ne lisaient pas le même
+    signal, et rien ne le disait : `09_backtest.py` (actions) charge
+    `dcf_historique.parquet`, `10_backtest_options.py` charge
+    `valorisation_combinee_historique.parquet` -- multiples sectoriels par
+    année EN PRIORITÉ, DCF seulement en repli quand le secteur a trop peu de
+    pairs. Or c'est le second que le projet décrit comme le meilleur estimateur
+    (cross-sectionnel, point-in-time, agrégé par moyenne harmonique et par
+    hiérarchie de fiabilité). Le côté actions s'en privait, sans qu'aucune
+    décision ne l'ait jamais tranché.
+
+    `valuation_dcf_per_share` reçoit ici la valeur THÉORIQUE COMBINÉE, et non
+    le DCF : le nom est celui qu'attendent l'engine et les stratégies, la
+    grandeur est celle de 06b. Renommer la colonne partout aurait cassé la
+    compatibilité des runs archivés pour un gain cosmétique."""
+    to_rename = {"filed_date": "published_date", "close": "close_at_filing"}
+    if "fiscal_year" not in valorisation_combinee.columns:
+        to_rename["year"] = "fiscal_year"
+    renamed = valorisation_combinee.rename(columns=to_rename)
+    renamed = renamed.assign(
+        valuation_dcf_per_share=renamed["valuation_theoretical_per_share"])
+    cols = ["symbol", "published_date", "fiscal_year", "sector", "close_at_filing",
+            "valuation_dcf_per_share", "gap_pct"]
+    for facultative in ("period_type", "source"):
+        if facultative in renamed.columns:
+            cols.append(facultative)
+    return renamed[cols].dropna(subset=["gap_pct", "published_date"])
+
+
+def build_strategy_signal_events(signal_source: str, hierarchie=None) -> pd.DataFrame:
+    """Événements de signal correspondant à la source déclarée par une
+    stratégie (cf. `Strategy.signal_source`). Point d'entrée unique, pour que
+    ni 09_backtest.py ni l'optimiseur n'aient à connaître les tables.
+
+    `hierarchie` ne concerne que la source "combinee" : le DCF n'a pas de
+    multiples à hiérarchiser. La demander sur "dcf" est une erreur d'appelant,
+    pas un cas à ignorer en silence -- on croirait mesurer un axe qui ne
+    s'applique pas."""
+    if signal_source == "combinee":
+        return build_combined_signal_events(
+            load_valorisation_combinee_history(hierarchie=hierarchie))
+    if signal_source == "dcf":
+        if hierarchie is not None:
+            raise ValueError(
+                "Une hiérarchie de multiples n'a pas de sens sur la source 'dcf' : "
+                "ce signal ne combine aucun multiple."
+            )
+        return build_signal_events(load_dcf_history())
+    raise ValueError(
+        f"Source de signal inconnue : {signal_source!r}. Attendu 'dcf' ou 'combinee' "
+        "(cf. backtest.strategies.base.Strategy.signal_source)."
+    )
+
+
 class MaterialEventResolver:
     """Dates de dépôt des 8-K jugés MATÉRIELS par 04c_recuperation_8k.py,
     indexées par symbole pour une interrogation en O(log n) par jour simulé.
@@ -332,24 +426,87 @@ class MaterialEventResolver:
         return bool(hi > lo)  # bool natif, pas un numpy.bool_
 
 
+_ITEM_CODE_RE = re.compile(r"(\d+\.\d+)")
+
+
+def _material_by_item_code(df: pd.DataFrame, codes: tuple) -> pd.Series:
+    """Matérialité déduite des CODES D'ITEM SEC, sans appel à un modèle.
+
+    La SEC normalise le motif de dépôt d'un 8-K : le caractère matériel d'un
+    « Item 4.02 » (non-fiabilité d'états financiers déjà publiés) tient à la
+    définition du code, pas à la lecture du communiqué. Voir
+    config.MATERIAL_8K_ITEM_CODES pour les codes retenus et, surtout, pour ceux
+    qui en sont délibérément absents.
+
+    L'extraction passe par une expression régulière sur le NUMÉRO et non par
+    une égalité de chaîne : l'archive contient « Item 9.01 », « Item  9.01 » et
+    « Item\\n9.01 » comme trois valeurs distinctes, et une comparaison littérale
+    n'en verrait qu'une."""
+    voulus = {str(c).strip() for c in codes}
+    if not voulus:
+        return pd.Series(False, index=df.index)
+
+    def materiel(valeur) -> bool:
+        if valeur is None:
+            return False
+        items = valeur if isinstance(valeur, (list, tuple, np.ndarray)) else [valeur]
+        for item in items:
+            trouve = _ITEM_CODE_RE.search(str(item))
+            if trouve and trouve.group(1) in voulus:
+                return True
+        return False
+
+    return df["item_codes"].map(materiel)
+
+
 def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
-    """8-K jugés matériels (04c). None si 04c n'a jamais tourné, ou si aucune
-    ligne n'est marquée matérielle -- notamment quand MISTRAL_API_KEY n'est pas
-    définie : 04c écrit alors materiality=None partout (aucune classification),
-    et le filtre reste sans effet plutôt que d'écarter tous les signaux."""
+    """8-K matériels. Deux sources, dans cet ordre :
+
+    1. la classification de 04c (`materiality`), quand elle a tourné avec une
+       clé d'API ;
+    2. à défaut, les CODES D'ITEM SEC (config.MATERIAL_8K_ITEM_CODES).
+
+    Le repli 2 existe parce que le cas 1 échouait en silence : sans
+    MISTRAL_API_KEY, 04c écrit `non_evalue` partout et `materiality` reste
+    vide. Mesuré sur l'archive du dépôt, c'était 100% des 99 147 dépôts -- le
+    filtre d'événements matériels, l'une des deux protections anti-value-trap
+    du moteur, ne s'appliquait à rien. Un avertissement le disait, mais un
+    avertissement n'est pas une protection.
+
+    None si 04c n'a jamais tourné, ou si aucune des deux voies ne désigne le
+    moindre événement : le filtre reste alors sans effet plutôt que d'écarter
+    tous les signaux."""
     path = path or config.MATERIAL_EVENTS_8K_FILE
     if not path.exists():
         return None
     df = pd.read_parquet(path)
-    if "materiality" not in df.columns or "filed_date" not in df.columns:
+    if "filed_date" not in df.columns:
         return None
-    df = df[df["materiality"].fillna(False).astype(bool)].copy()
+
+    source = "classification 04c"
+    retenus = (
+        df["materiality"].fillna(False).astype(bool)
+        if "materiality" in df.columns
+        else pd.Series(False, index=df.index)
+    )
+    if not retenus.any() and "item_codes" in df.columns:
+        codes = getattr(config, "MATERIAL_8K_ITEM_CODES", ())
+        retenus = _material_by_item_code(df, codes)
+        source = f"codes d'item SEC {tuple(codes)}"
+
+    df = df[retenus].copy()
     if df.empty:
         logger.info(
-            "%s ne contient aucun 8-K classé matériel (MISTRAL_API_KEY non définie lors du "
-            "run de 04c ?) : le filtre d'événements matériels reste sans effet.", path,
+            "%s ne désigne aucun 8-K matériel, ni par la classification de 04c "
+            "(MISTRAL_API_KEY non définie lors du run ?) ni par les codes d'item : "
+            "le filtre d'événements matériels reste sans effet.", path,
         )
         return None
+
+    logger.info(
+        "Filtre d'événements matériels actif sur %d dépôts 8-K (source : %s).",
+        len(df), source,
+    )
     df["filed_date"] = config.to_naive_day(df["filed_date"])
     return df.dropna(subset=["symbol", "filed_date"])
 
@@ -362,10 +519,18 @@ def signal_max_age_for(signal: dict, default: int) -> int:
     return by_period.get(signal.get("period_type"), default)
 
 
-def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
+def load_valorisation_combinee_history(path=None, hierarchie=None) -> pd.DataFrame:
     """Signal de la stratégie OPTIONS (multiples sectoriels par année en
     priorité, DCF en repli -- voir 06b_calcul_valorisation_combinee.py),
-    distinct de load_dcf_history (stratégie actions, DCF seul)."""
+    distinct de load_dcf_history (stratégie actions, DCF seul).
+
+    `hierarchie` rejoue la combinaison des multiples sous une autre hiérarchie
+    de fiabilité (cf. hierarchie_multiples), à partir des prix implicites que
+    06b stocke déjà. None garde ce que porte le parquet.
+
+    LA RECOMBINAISON PASSE AVANT LE FILTRE QUALITATIF ET LE dropna, comme dans
+    06b : `gap_pct` est recalculé, donc le filtrer avant reviendrait à écarter
+    des lignes sur un écart qui n'est plus celui du signal."""
     path = path or config.VALORISATION_COMBINEE_FILE
     if not path.exists():
         raise FileNotFoundError(
@@ -373,6 +538,8 @@ def load_valorisation_combinee_history(path=None) -> pd.DataFrame:
             "(après 05_calcul_multiples.py et 07_calcul_dcf.py)."
         )
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    if hierarchie is not None:
+        df = hierarchie_multiples.recombiner(df, hierarchie)
     df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 

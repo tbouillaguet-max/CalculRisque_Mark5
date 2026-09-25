@@ -7,6 +7,8 @@ puis l'importer ci-dessous."""
 
 from backtest.strategies.base import STRATEGY_REGISTRY, Strategy, register_strategy
 from backtest.strategies.valuation_gap import ValuationGapDCFStrategy
+from backtest.strategies.valuation_gap_combined import ValuationGapCombinedStrategy
+from backtest.strategies.valuation_gap_combined_ancre import ValuationGapCombinedAncreeStrategy
 from backtest.strategies.valuation_gap_sector_neutral import ValuationGapSectorNeutralStrategy
 from backtest.strategies.options_base import OPTIONS_STRATEGY_REGISTRY, OptionsStrategy, register_options_strategy
 from backtest.strategies.valuation_gap_options import ValuationGapOptionsStrategy
@@ -15,6 +17,7 @@ from backtest.strategies.valuation_gap_expected_value_options import ValuationGa
 
 __all__ = [
     "STRATEGY_REGISTRY", "Strategy", "register_strategy", "ValuationGapDCFStrategy",
+    "ValuationGapCombinedStrategy", "ValuationGapCombinedAncreeStrategy",
     "ValuationGapSectorNeutralStrategy",
     "OPTIONS_STRATEGY_REGISTRY", "OptionsStrategy", "register_options_strategy",
     "ValuationGapOptionsStrategy", "ValuationGapMultiplesOptionsStrategy",

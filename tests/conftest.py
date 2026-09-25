@@ -1,13 +1,29 @@
-"""Rend la racine du dépôt importable depuis les tests.
+"""Rend la racine du dépôt importable depuis les tests, et protège `data/`.
 
 Les scripts numérotés (04_recuperation_10k.py...) ne sont pas des identifiants
 Python valides : les tests qui en ont besoin passent par importlib, exactement
-comme le font déjà 04b/07 entre eux."""
+comme le font déjà 04b/07 entre eux.
+
+POURQUOI `data/` A BESOIN D'UN GARDE-FOU. `config.BASE_DIR` vaut `data` -- un
+chemin RELATIF. Tous les chemins de production en découlent, donc tout ce qui
+tourne depuis la racine du dépôt écrit dans les VRAIES données : il suffit
+qu'un test appelle le `main()` d'un script de pipeline pour que
+`multiples.parquet` ou `dcf_historique.parquet` soient réécrits. Rien ne
+l'empêcherait, rien ne le signalerait, et le dégât ne se verrait qu'au prochain
+`git status` -- sur des fichiers LFS de plusieurs mégaoctets, au milieu d'un
+travail sans rapport.
+
+Mesuré au moment où ce garde-fou est posé : aucun test n'écrit dans `data/`.
+Il ne répare donc rien ; il empêche une régression facile à introduire et
+coûteuse à diagnostiquer, pour deux parcours de répertoire par session.
+"""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:

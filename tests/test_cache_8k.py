@@ -78,9 +78,12 @@ def test_un_verdict_manquant_n_est_pas_memorise(sec, tmp_path, monkeypatch):
     rows, _ = module_04c.process_ticker_8k(
         "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
 
-    assert rows[0]["category"] == "non_evalue"
-    assert cache == {}
-    assert not module_04c.llm_cache_path(tmp_path).exists()
+    assert rows[0]["category"] != "non_evalue"
+    assert rows[0]["classification_source"] == "regles_document"
+    # Mémorisé, car déterministe : c'est le TÉLÉCHARGEMENT qu'on évite de
+    # repayer, pas le calcul de la règle.
+    assert len(cache) == 1
+    assert module_04c.llm_cache_path(tmp_path).exists()
 
 
 def test_no_llm_cache_force_la_reanalyse(sec, tmp_path):

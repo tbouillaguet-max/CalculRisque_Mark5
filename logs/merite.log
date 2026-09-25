@@ -1,0 +1,11 @@
+2026-09-22 21:01:33,113 [INFO] Reclassements GICS appliqués : 1446 lignes (47 entreprises) reclassées à leur secteur d'époque. Mouvements (secteur actuel -> secteur d'alors, nb entreprises) : {'Immobilier -> Services financiers': 27, 'Services financiers -> Technologie': 7, 'Medias -> Distribution': 7, 'Agro-alimentaire et boissons -> Distribution': 3, 'Medias -> Technologie': 3}
+2026-09-22 21:01:33,285 [INFO] Couverture de l'univers point-in-time : 89% en moyenne sur 17 millésimes (pire : 72% en 2010, 194/270 membres présents).
+2026-09-22 21:01:33,286 [WARNING] Il manque en moyenne 11% de l'indice d'alors dans data/multiples/multiples.parquet : les entreprises radiées n'ayant jamais été backfillées, les médianes sectorielles historiques restent calculées sur les survivantes et donc SURESTIMÉES. Backfille 03b, 04 et 04b avec --tickers data/universe/sp500_universe_full.csv, puis relance 05 et 06b.
+2026-09-22 21:01:36,600 [INFO] Médianes sectorielles : 1115 groupes (secteur x millésime), 21 pairs en médiane (min 0, max 78) ; 2896/3345 médianes retenues (seuil : 5 pairs).
+2026-09-22 21:01:36,601 [INFO] 119/1115 groupes ont moins de 5 pairs : leurs multiples sont écartés et ces entreprises retombent sur le DCF (source='dcf_fallback').
+2026-09-22 21:01:36,606 [WARNING] 19/503 entreprises de l'univers COMPLET (01b) sont absentes de data/multiples/multiples.parquet : les médianes sectorielles historiques sont donc calculées sur les seuls survivants, et probablement SURESTIMÉES. Backfille 03b et 04 avec --tickers data/universe/sp500_universe_full.csv, puis relance 05 et 06b. Manquantes (extrait) : ABNB, BF B, BRK B, CVNA, DASH, EL, ERIE, HONA, HRL, LEN, META, MKC, RL, STZ, TKO...
+/usr/local/lib/python3.11/dist-packages/pandas/core/arraylike.py:402: RuntimeWarning: divide by zero encountered in log
+  result = getattr(ufunc, method)(*inputs, **kwargs)
+/usr/local/lib/python3.11/dist-packages/pandas/core/arraylike.py:402: RuntimeWarning: invalid value encountered in log
+  result = getattr(ufunc, method)(*inputs, **kwargs)
+2026-09-22 21:36:44,182 [INFO] Valorisation combinée sauvegardée : data/multiples/valorisation_combinee_merite.parquet (27674 lignes, 483 entreprises ; 24094 via multiples sectoriels, 3580 en repli DCF).

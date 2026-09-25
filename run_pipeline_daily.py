@@ -79,8 +79,10 @@ from run_pipeline_quarterly import (
     RETRIES_DEFAULT,
     RunReport,
     Step,
+    avertissement_depots_sec,
     find_interrupted_report,
     resolve_gateway_args,
+    resolve_sec_prerequisite,
     run_step,
     skip_step,
     succeeded_steps,
@@ -131,14 +133,21 @@ def daily_steps(filings_refresh_days: int) -> List[Step]:
             needs_gateway=True, degraded_args=("--skip-ibkr",), accepts_limit=True,
             timeout=STEP_TIMEOUT_IBKR,
         ),
-        Step("04_recuperation_10k.py", required=False, accepts_limit=True, extra_args=refresh),
-        Step("04b_recuperation_10q.py", required=False, accepts_limit=True, extra_args=refresh),
-        Step("04c_recuperation_8k.py", required=False, accepts_limit=True),
+        # Les quatre étapes SEC sont optionnelles un jour ordinaire -- une clé
+        # absente ne doit pas faire perdre la valorisation du jour -- mais leur
+        # absence n'est plus silencieuse : cf. avertissement_depots_sec.
+        Step("04_recuperation_10k.py", required=False, accepts_limit=True,
+             extra_args=refresh, needs_sec=True),
+        Step("04b_recuperation_10q.py", required=False, accepts_limit=True,
+             extra_args=refresh, needs_sec=True),
+        Step("04c_recuperation_8k.py", required=False, accepts_limit=True, needs_sec=True),
         Step("05_calcul_multiples.py"),
         Step("06_calcul_multiples_moyens.py"),
-        Step("06b_calcul_valorisation_combinee.py"),
+        # 07 avant 06b : 06b lit le DCF que 07 écrit (cf. LIVE_STEPS).
         Step("07_calcul_dcf.py"),
-        Step("07b_validation_qualitative.py", required=False, accepts_limit=True),
+        Step("06b_calcul_valorisation_combinee.py"),
+        Step("07b_validation_qualitative.py", required=False, accepts_limit=True,
+             needs_sec=True),
         # Même cadence IBKR que 03b, sur des chaînes d'options bien plus
         # volumineuses que des cours : même délai généreux.
         Step("08_recuperation_options.py", required=False, needs_gateway=True,
@@ -169,6 +178,8 @@ def run_daily(
             continue
         if skip_options and step.script == "08_recuperation_options.py":
             skip_step(step, report, "--skip-options")
+            continue
+        if not resolve_sec_prerequisite(step, report):
             continue
         gateway_args = resolve_gateway_args(step, report)
         if gateway_args is None:
@@ -237,8 +248,14 @@ def main() -> None:
             report, args.limit, args.skip_options, args.prices_only,
             args.retries, args.step_timeout, already_done, args.filings_refresh_days,
         )
+        avertissement = avertissement_depots_sec(report, daily_steps(args.filings_refresh_days))
+        if avertissement:
+            report.avertissements.append(avertissement)
         failed_optional = [s["script"] for s in report.steps if s["status"] == "failed"]
-        report.status = "partial" if failed_optional else "success"
+        # Même règle que le run trimestriel : une étape SEC sautée n'est plus
+        # « failed », il faut donc que l'avertissement suffise à garder le run
+        # « partial » -- sinon il finirait « success » sans un compte frais.
+        report.status = "partial" if (failed_optional or report.avertissements) else "success"
         if failed_optional:
             logger.warning(
                 "Run terminé en mode dégradé : étape(s) optionnelle(s) en échec -> %s",
@@ -258,7 +275,16 @@ def main() -> None:
         report.status, report.duration_seconds,
         report.directory / config.PIPELINE_RUN_REPORT_NAME)
     if report.status != "failed":
-        logger.info("Signal du jour : %s", config.VALORISATION_COMBINEE_FILE)
+        # LA LIGNE QUE L'ON LIT, et c'est pourquoi l'avertissement y est
+        # accolé plutôt que perdu plus haut dans le journal : annoncer « Signal
+        # du jour » sans réserve quand les comptes ont une semaine, c'est
+        # exactement la panne silencieuse que ce correctif supprime.
+        if report.avertissements:
+            for avertissement in report.avertissements:
+                logger.warning("Signal du jour : %s -- %s",
+                               config.VALORISATION_COMBINEE_FILE, avertissement)
+        else:
+            logger.info("Signal du jour : %s", config.VALORISATION_COMBINEE_FILE)
     sys.exit(exit_code)
 
 

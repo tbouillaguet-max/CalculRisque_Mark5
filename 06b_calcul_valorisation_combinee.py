@@ -85,12 +85,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
+import pathlib
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
 import config
+import hierarchie_multiples
+import warranted_multiple
 import sector_history
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -198,32 +202,22 @@ def combine_implied_prices(
     multiples -- par HIÉRARCHIE DE FIABILITÉ par défaut (cf.
     config.MULTIPLE_COMBINATION), médiane à plat si "flat".
 
-    En mode "tiers", chaque ligne n'utilise que le MEILLEUR rang disponible :
-    les multiples de résultats (P/E, EV/EBITDA) quand au moins un est
-    exploitable, EV/Sales seulement à défaut. À l'intérieur d'un rang, la
-    médiane -- pour deux valeurs, c'est leur moyenne.
+    LA MÉCANIQUE EST DANS hierarchie_multiples.py, et pas ici : l'optimiseur a
+    besoin de rejouer cette combinaison SANS régénérer ce parquet, pour comparer
+    les hiérarchies entre elles sur les mêmes données. Deux implémentations
+    divergeraient ; celle-là est la seule. Cette fonction ne garde que la
+    résolution du réglage de config et la validation de son nom, qui sont le
+    contrat de CE script.
 
-    Le calcul est vectorisé par rang plutôt que ligne à ligne : le nombre de
-    rangs est fixe (deux) alors que le nombre de lignes se compte en dizaines
-    de milliers."""
+    `MULTIPLE_RELIABILITY_TIERS` reste la table qui fait foi pour le mode
+    "tiers" : elle est modifiable sans toucher au catalogue de hiérarchies."""
     if combination is None:
         combination = config.MULTIPLE_COMBINATION
-    if combination == "flat":
-        return implied.median(axis=1, skipna=True)
-    if combination != "tiers":
+    if combination not in ("flat", "tiers"):
         raise ValueError(
             f"MULTIPLE_COMBINATION attend 'tiers' ou 'flat', reçu {combination!r}.")
-
-    tiers = config.MULTIPLE_RELIABILITY_TIERS
-    resultat = pd.Series(np.nan, index=implied.index, dtype=float)
-    for rang in sorted(set(tiers.get(col, max(tiers.values()) + 1) for col in implied.columns)):
-        colonnes = [c for c in implied.columns if tiers.get(c, max(tiers.values()) + 1) == rang]
-        if not colonnes:
-            continue
-        candidat = implied[colonnes].median(axis=1, skipna=True)
-        # Un rang ne sert qu'aux lignes qu'aucun rang MEILLEUR n'a servies.
-        resultat = resultat.where(resultat.notna(), candidat)
-    return resultat
+    table = None if combination == "flat" else config.MULTIPLE_RELIABILITY_TIERS
+    return hierarchie_multiples.combiner(implied, table)
 
 
 def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
@@ -255,8 +249,104 @@ def compute_sector_year_multiples(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _multiple_merite(
+    ordered: pd.DataFrame, pairs_index: pd.Index, cible_index, multiple_col: str,
+) -> Optional[float]:
+    """Multiple que les FONDAMENTAUX de cette ligne justifient, estimé par
+    régression en coupe sur ses pairs (Bhojraj & Lee 2002).
+
+    L'idée : une décote sur la médiane sectorielle est le plus souvent
+    *méritée* -- une entreprise moins rentable, plus endettée ou en
+    décroissance vaut légitimement un multiple plus bas. Seul le RÉSIDU est un
+    candidat à la mispricing. `15_test_multiple_merite.py` a tranché la
+    question hors échantillon avant tout branchement : erreur absolue médiane
+    en log de 0,5237 pour le sectoriel contre 0,3750 pour le mérité, soit
+    **28,4% de mieux**, et l'avantage tient sur 62,3% des lignes.
+
+    HORS ÉCHANTILLON PAR CONSTRUCTION : `pairs_index` exclut déjà la ligne
+    valorisée, exactement comme la médiane sectorielle l'exclut de son propre
+    calcul. Se comparer à soi tirerait le résidu vers zéro.
+
+    None quand la régression ne tient pas -- l'appelant se rabat alors sur
+    l'agrégat sectoriel."""
+    pairs = ordered.loc[pairs_index]
+    cible = ordered.loc[[cible_index]]
+    try:
+        predit = warranted_multiple.fit_predict(pairs, cible, multiple_col)
+    except Exception:  # noqa: BLE001 -- une régression qui échoue dégrade, elle n'arrête pas un run de plusieurs heures
+        logger.debug("Régression du multiple mérité en échec sur %s", multiple_col, exc_info=True)
+        return None
+    if predit is None or predit.empty:
+        return None
+    valeur = float(predit.iloc[0])
+    return valeur if np.isfinite(valeur) and valeur > 0 else None
+
+
+VINTAGE_COLUMNS = ["period_type", "fiscal_year", "fiscal_quarter"]
+
+
+def compute_pit_warranted_multiples(
+    df: pd.DataFrame, membership: Optional[sector_history.MembershipIndex] = None,
+) -> pd.DataFrame:
+    """Multiple MÉRITÉ par ligne, régressé sur la coupe COMPLÈTE du millésime.
+
+    LE REGROUPEMENT EST TOUT L'ENJEU, et une première version s'y est trompée.
+    Régresser sur les seuls pairs du même SECTEUR paraît naturel -- c'est le
+    groupe que la médiane utilise -- mais `fit_predict` exige au moins dix
+    observations par régresseur, soit cinquante pour les cinq fondamentaux,
+    quand un secteur x millésime en compte vingt et un en médiane. La
+    régression n'aboutissait alors presque jamais : mesuré, 4,4% des lignes
+    seulement changeaient de valeur, le reste retombant sur la médiane. Le
+    branchement existait sans rien faire.
+
+    Les pairs sont donc pris sur TOUT le millésime, tous secteurs confondus,
+    avec des INDICATRICES SECTORIELLES : elles récupèrent le niveau propre à
+    chaque secteur -- ce que la médiane sectorielle capturait -- tout en
+    donnant aux pentes des fondamentaux les centaines d'observations qu'elles
+    réclament. C'est exactement le regroupement que `15_test_multiple_merite.py`
+    retient par défaut (`--grouping millesime`), et sur lequel il a mesuré les
+    28,4% d'amélioration.
+
+    Restrictions point-in-time identiques à la médiane : seuls les pairs DÉJÀ
+    DÉPOSÉS à la filed_date de la ligne et MEMBRES de l'indice à cette date, la
+    ligne étant exclue d'elle-même."""
+    df = _normalize_fiscal_quarter(df)
+    features = warranted_multiple.build_features(df)
+    enrichi = df.join(features)
+
+    out_index, out_rows = [], []
+    for _, group in enrichi.dropna(subset=["sector"]).groupby(VINTAGE_COLUMNS, dropna=False):
+        filed = pd.to_datetime(group.get("filed_date"), errors="coerce")
+        order = np.argsort(filed.to_numpy(dtype="datetime64[ns]"), kind="stable")
+        ordered = group.iloc[order]
+        ordered_filed = filed.iloc[order].to_numpy(dtype="datetime64[ns]")
+        symbols = ordered["symbol"].to_numpy() if "symbol" in ordered.columns else None
+
+        for position, (idx, when) in enumerate(zip(ordered.index, ordered_filed)):
+            deja_deposes = ordered.index[: position + 1]
+            if membership and symbols is not None and not np.isnat(when):
+                pairs = pd.Index([
+                    p for p, s in zip(deja_deposes, symbols[: position + 1])
+                    if membership.is_member(s, when)
+                ])
+            else:
+                pairs = deja_deposes
+            pairs = pairs.drop(idx, errors="ignore")
+
+            row = {}
+            for col in MULTIPLE_COLUMNS:
+                row[f"{col}_warranted"] = (
+                    _multiple_merite(ordered, pairs, idx, col) if len(pairs) else None
+                )
+            out_index.append(idx)
+            out_rows.append(row)
+
+    return pd.DataFrame(out_rows, index=out_index).reindex(df.index)
+
+
 def compute_pit_sector_multiples(
     df: pd.DataFrame, membership: Optional[sector_history.MembershipIndex] = None,
+    method: Optional[str] = None,
 ) -> pd.DataFrame:
     """Médianes sectorielles POINT-IN-TIME : pour chaque ligne, la médiane
     n'est calculée que sur les pairs du même millésime DÉJÀ DÉPOSÉS à sa
@@ -290,7 +380,16 @@ def compute_pit_sector_multiples(
     `<multiple>_n_peers` (et non plus par groupe) : deux entreprises du même
     secteur et du même millésime n'ont plus forcément la même médiane, ni le
     même nombre de pairs derrière."""
+    method = (method or getattr(config, "SECTOR_MULTIPLE_METHOD", "median")).lower()
+    if method not in ("median", "warranted"):
+        raise ValueError(
+            f"SECTOR_MULTIPLE_METHOD attend 'median' ou 'warranted', recu {method!r}.")
+
     df = _normalize_fiscal_quarter(df)
+    # Le multiple merite se regresse sur la coupe COMPLETE du millesime, pas
+    # sur les pairs d'un seul secteur : une passe separee, pour ce seul motif
+    # (cf. compute_pit_warranted_multiples).
+    merites = compute_pit_warranted_multiples(df, membership) if method == "warranted" else None
     out_index, out_rows = [], []
 
     for _, group in df.dropna(subset=["sector"]).groupby(GROUP_COLUMNS, dropna=False):
@@ -334,9 +433,20 @@ def compute_pit_sector_multiples(
                 # La ligne elle-même est exclue de sa propre médiane : se
                 # comparer à soi tire mécaniquement l'écart vers zéro.
                 visible = visible.drop(index=idx, errors="ignore")
-                row[f"{col}_median"] = (
-                    aggregate_multiple(visible) if len(visible) >= MIN_PEERS_PER_SECTOR_YEAR else None
-                )
+                assez_de_pairs = len(visible) >= MIN_PEERS_PER_SECTOR_YEAR
+                valeur = aggregate_multiple(visible) if assez_de_pairs else None
+
+                # MULTIPLE MÉRITÉ, en option (cf. _multiple_merite et
+                # config.SECTOR_MULTIPLE_METHOD). Repli sur l'agrégat
+                # sectoriel dès que la régression ne tient pas : elle exige
+                # des dizaines d'observations là où une médiane en demande
+                # cinq, et un secteur peu peuplé doit dégrader, pas échouer.
+                if assez_de_pairs and merites is not None:
+                    merite = merites.at[idx, f"{col}_warranted"]
+                    if merite is not None and merite == merite:
+                        valeur = float(merite)
+
+                row[f"{col}_median"] = valeur
                 row[f"{col}_n_peers"] = len(visible)
             out_index.append(idx)
             out_rows.append(row)
@@ -519,6 +629,7 @@ def warn_if_delisted_missing(multiples: pd.DataFrame) -> None:
 def compute_implied_valuations(
     df: pd.DataFrame, sector_year_multiples: pd.DataFrame = None,
     membership: Optional[sector_history.MembershipIndex] = None,
+    method: Optional[str] = None,
 ) -> pd.DataFrame:
     """`sector_year_multiples` : table par GROUP_COLUMNS (comportement
     historique, non point-in-time) ou None pour calculer les médianes
@@ -526,7 +637,7 @@ def compute_implied_valuations(
     `membership` : voir compute_pit_sector_multiples."""
     df = _normalize_fiscal_quarter(df).reset_index(drop=True)
     if sector_year_multiples is None:
-        df = pd.concat([df, compute_pit_sector_multiples(df, membership)], axis=1)
+        df = pd.concat([df, compute_pit_sector_multiples(df, membership, method)], axis=1)
     else:
         sector_year_multiples = _normalize_fiscal_quarter(sector_year_multiples)
         df = df.merge(sector_year_multiples, on=GROUP_COLUMNS, how="left")
@@ -563,7 +674,17 @@ def compute_implied_valuations(
         )
         series.where(applicable, inplace=True)
 
-    implied = pd.concat([price_from_ebitda, price_from_sales, price_from_pe], axis=1)
+    # LES COLONNES SONT NOMMÉES COMME LES TABLES DE CONFIG, et ce n'est pas
+    # cosmétique : `MULTIPLE_RELIABILITY_TIERS` est indexée sur "P/E",
+    # "EV/EBITDA", "EV/Sales". Ces Series portaient jusqu'ici les noms des
+    # colonnes de médianes dont elles dérivent ("pe_median", ...), qu'aucune
+    # table ne connaît -- les trois multiples tombaient donc dans le même rang
+    # de repli, et le mode "tiers" rendait la médiane à plat SANS RIEN DIRE.
+    # `combiner` refuse désormais une colonne inconnue, ce qui rend la panne
+    # bruyante ; ce renommage est ce qui la satisfait.
+    implied = pd.concat(
+        [price_from_ebitda.rename("EV/EBITDA"), price_from_sales.rename("EV/Sales"),
+         price_from_pe.rename("P/E")], axis=1)
     df["valuation_multiples_per_share"] = combine_implied_prices(implied)
     df["n_multiples_used"] = implied.notna().sum(axis=1)
     # ROBUSTESSE de la médiane derrière cette valorisation : le nombre de
@@ -578,7 +699,9 @@ def compute_implied_valuations(
     return df
 
 
-def build_combined_valuation(point_in_time_peers: bool = True) -> pd.DataFrame:
+def build_combined_valuation(
+    point_in_time_peers: bool = True, method: str | None = None,
+) -> pd.DataFrame:
     multiples = pd.read_parquet(config.MULTIPLES_FILE)
     if "filed_date" not in multiples.columns:
         # multiples.parquet régénéré par 05 à partir d'un financials.parquet
@@ -626,7 +749,8 @@ def build_combined_valuation(point_in_time_peers: bool = True) -> pd.DataFrame:
     # et membres de l'indice à cette date.
     log_peer_coverage(compute_sector_year_multiples(multiples))
     warn_if_delisted_missing(multiples)
-    df = compute_implied_valuations(multiples, membership=membership if membership else None)
+    df = compute_implied_valuations(
+        multiples, membership=membership if membership else None, method=method)
     df = _normalize_fiscal_quarter(df)
 
     df = df.merge(
@@ -689,29 +813,45 @@ def main() -> None:
              "et appartenance à l'indice) : rétablit le comportement d'avant la correction, "
              "pour chiffrer l'écart entre les deux.",
     )
+    parser.add_argument(
+        "--multiple-method", choices=("median", "warranted"), default=None,
+        help="Comment etablir le multiple de reference d'une ligne : agregat de ses pairs "
+             "(median, defaut) ou multiple MERITE par regression sur leurs fondamentaux "
+             "(warranted). Voir config.SECTOR_MULTIPLE_METHOD -- le merite predit mieux le "
+             "multiple observe (28,4%%), ce qui ne dit pas encore qu'il predit mieux un "
+             "RENDEMENT : c'est a l'A/B du backtest de le trancher.",
+    )
+    parser.add_argument(
+        "--output", default=None,
+        help="Chemin du parquet de sortie (defaut: config.VALORISATION_COMBINEE_FILE). Sert a "
+             "produire un signal alternatif SANS ecraser celui que lisent les strategies "
+             "options, pour pouvoir comparer les deux.",
+    )
     args = parser.parse_args()
 
     if not config.MULTIPLES_FILE.exists():
         logger.error("Fichier manquant: %s. Lance d'abord 05_calcul_multiples.py.", config.MULTIPLES_FILE)
-        return
+        sys.exit(1)
     if not config.DCF_HISTORY_FILE.exists():
         logger.error("Fichier manquant: %s. Lance d'abord 07_calcul_dcf.py.", config.DCF_HISTORY_FILE)
-        return
+        sys.exit(1)
 
-    df = build_combined_valuation(point_in_time_peers=not args.no_point_in_time_peers)
+    df = build_combined_valuation(
+        point_in_time_peers=not args.no_point_in_time_peers, method=args.multiple_method)
     if df.empty:
         logger.error("Aucune valorisation combinée calculée. Vérifie les données d'entrée.")
-        return
+        sys.exit(1)
 
-    config.VALORISATION_COMBINEE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(config.VALORISATION_COMBINEE_FILE, index=False, engine="pyarrow")
+    sortie = pathlib.Path(args.output) if args.output else config.VALORISATION_COMBINEE_FILE
+    sortie.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(sortie, index=False, engine="pyarrow")
 
     n_multiples = (df["source"] == "multiples").sum()
     n_fallback = (df["source"] == "dcf_fallback").sum()
     logger.info(
         "Valorisation combinée sauvegardée : %s (%d lignes, %d entreprises ; "
         "%d via multiples sectoriels, %d en repli DCF).",
-        config.VALORISATION_COMBINEE_FILE, len(df), df["symbol"].nunique(), n_multiples, n_fallback,
+        sortie, len(df), df["symbol"].nunique(), n_multiples, n_fallback,
     )
 
 

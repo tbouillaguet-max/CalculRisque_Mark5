@@ -72,14 +72,22 @@ def test_l_anomalie_est_trouvee_dans_le_secteur_le_moins_bien_note():
 def test_le_niveau_absolu_d_un_secteur_ne_biaise_plus_l_allocation():
     """Même dispersion INTERNE dans les deux secteurs, seul leur niveau
     diffère -- exactement ce que produit SECTOR_DCF_PARAMS. L'allocation doit
-    être symétrique."""
+    être symétrique.
+
+    Le seuil est passé EXPLICITEMENT (10, l'ancien défaut) : ce test mesure la
+    symétrie entre deux secteurs, pas la sélectivité. Depuis que la grille a
+    porté le défaut à 20, une dispersion de 30 points ne produit plus d'excès
+    sectoriel assez large pour qu'une seule candidate passe -- le test
+    échouerait sur l'absence de candidates, sans rien dire de la symétrie qu'il
+    vérifie."""
     dispersion = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0]
     signaux = _signaux({
         "Technologie": [35.0 + d for d in dispersion],
         "Agro-alimentaire et boissons": [8.0 + d for d in dispersion],
     })
     poids = _poids_par_secteur(
-        ValuationGapSectorNeutralStrategy().generate_target_weights(signaux, set()), signaux,
+        ValuationGapSectorNeutralStrategy(entry_threshold_pct=10.0)
+        .generate_target_weights(signaux, set()), signaux,
     )
     assert poids["Technologie"] == pytest.approx(poids["Agro-alimentaire et boissons"], rel=1e-6)
 
@@ -193,13 +201,25 @@ def test_un_seuil_negatif_ne_divise_pas_par_zero():
 
 
 def test_les_parametres_sont_exposes_pour_la_reproductibilite():
-    """run_config.json doit porter de quoi rejouer le run à l'identique."""
+    """run_config.json doit porter de quoi rejouer le run à l'identique.
+
+    `max_weight_pct` (plafond PAR POSITION, à ne pas confondre avec
+    `max_weight_per_sector_pct` qui borne le cumul d'un secteur) y figure
+    depuis qu'il est balayable par 16_optimize_strategie_actions.py : un
+    réglage qui change le résultat et ne serait pas consigné rendrait
+    précisément irreproductible ce que ce test protège."""
     strategie = ValuationGapSectorNeutralStrategy(
-        entry_threshold_pct=7.0, min_absolute_gap_pct=3.0, max_weight_per_sector_pct=25.0,
+        entry_threshold_pct=7.0, min_absolute_gap_pct=3.0,
+        max_weight_per_sector_pct=25.0, max_weight_pct=15.0,
+        vol_weight_exponent=0.5, max_positions=40, rank_weighting=True,
     )
     assert strategie.params == {
         "entry_threshold_pct": 7.0, "min_absolute_gap_pct": 3.0,
-        "max_weight_per_sector_pct": 25.0,
+        "max_weight_per_sector_pct": 25.0, "max_weight_pct": 15.0,
+        # Les trois réglages de construction de portefeuille ajoutés depuis :
+        # ils changent les poids, donc ils doivent être consignés, sinon un run
+        # cesse d'être reproductible -- exactement ce que ce test protège.
+        "vol_weight_exponent": 0.5, "max_positions": 40, "rank_weighting": True,
     }
 
 

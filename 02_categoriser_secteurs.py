@@ -249,7 +249,7 @@ def main() -> None:
             "Univers introuvable: %s. Lance d'abord 01_build_universe.py (ou "
             "01b_historique_univers_sp500.py pour l'univers complet).", args.universe,
         )
-        return
+        sys.exit(1)
 
     df = pd.read_csv(args.universe, encoding="utf-8-sig")
     if "GICS_Sector" not in df.columns:

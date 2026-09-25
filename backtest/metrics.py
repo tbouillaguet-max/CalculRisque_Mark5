@@ -203,6 +203,120 @@ def deflated_sharpe_ratio(
         returns, benchmark_sharpe=expected_maximum_sharpe(n_trials, sharpe_std))
 
 
+def paired_sharpe_difference(
+    returns_a: pd.Series,
+    returns_b: pd.Series,
+    n_bootstrap: int = 4000,
+    block_days: int = 21,
+    seed: int = 12345,
+    benchmark_returns: Optional[pd.Series] = None,
+) -> dict:
+    """Le Sharpe de B dépasse-t-il celui de A, ou est-ce du bruit ?
+
+    POURQUOI UN TEST APPARIÉ, ET PAS L'ERREUR-TYPE HABITUELLE. L'erreur-type
+    d'un Sharpe estimé sur sept ans vaut ~0,46 (cf. le pavé sur le Sharpe
+    déflaté) : lue seule, elle dit qu'aucune variante n'est distinguable
+    d'aucune autre, et elle a raison -- pour deux stratégies INDÉPENDANTES.
+    Deux variantes d'un même backtest ne le sont pas : mesuré sur ce dépôt,
+    leurs courbes de NAV sont corrélées à 0,97. Ce qui les sépare est un écart
+    APPARIÉ, dont la dispersion est bien plus faible que celle de chaque terme.
+    Comparer deux Sharpe à l'aune de l'erreur-type marginale revient à jeter
+    cette information et à déclarer « non significatif » absolument tout.
+
+    POURQUOI UN BOOTSTRAP PAR BLOCS, ET PAS UNE FORMULE. Jobson-Korkie corrigé
+    par Memmel donne la variance de l'écart en forme fermée, mais sous
+    normalité et indépendance sérielle -- deux hypothèses fausses sur des
+    rendements quotidiens (queues épaisses, volatilité groupée). Le
+    rééchantillonnage par blocs de `block_days` séances conserve
+    l'autocorrélation ET, en rééchantillonnant les MÊMES dates pour les deux
+    séries, la corrélation entre elles. C'est cette seconde propriété qui rend
+    le test apparié ; tirer les deux séries indépendamment le détruirait.
+
+    Retourne l'écart observé, son intervalle de confiance à 95% et
+    `p_value`, la fraction des rééchantillonnages où l'écart est nul ou
+    négatif -- c'est-à-dire la probabilité que B ne vaille pas mieux que A.
+
+    UNE RÉSERVE, mesurée : sur 60 paires de séries sans aucun écart réel, ce
+    test en rejette environ 10% au seuil de 5%. Un bootstrap par blocs est
+    légèrement LIBÉRAL -- il conclut un peu trop souvent. Une p-value juste
+    sous 0,05 ne vaut donc pas une preuve ; un intervalle franchement à droite
+    de zéro, oui.
+
+    `benchmark_returns` bascule la comparaison du Sharpe vers l'INFORMATION
+    RATIO -- le Sharpe de l'écart actif (stratégie moins indice). Les deux
+    mécanismes retirent un facteur commun, mais pas le même : l'appariement
+    retire ce que les deux VARIANTES partagent, l'IR ce que la stratégie
+    partage avec le MARCHÉ. Les gains ne s'additionnent donc pas mécaniquement,
+    et `metrique` dit dans le résultat lequel a été mesuré."""
+    rng = np.random.default_rng(seed)
+    dates = returns_a.index.intersection(returns_b.index)
+    if benchmark_returns is not None:
+        # L'INDICE DOIT ÊTRE RÉÉCHANTILLONNÉ AVEC LES DEUX SÉRIES, sur les mêmes
+        # dates : c'est ce qui fait que le tirage déplace le marché pour A et
+        # pour B en même temps. Le tirer à part rendrait les deux écarts actifs
+        # indépendants, et l'appariement -- tout l'intérêt du test -- serait
+        # détruit exactement comme si on tirait A et B séparément.
+        dates = dates.intersection(benchmark_returns.index)
+    a = returns_a.loc[dates].to_numpy(dtype=float)
+    b = returns_b.loc[dates].to_numpy(dtype=float)
+    indice = (benchmark_returns.loc[dates].to_numpy(dtype=float)
+              if benchmark_returns is not None else None)
+    n_obs = len(a)
+    if n_obs <= block_days or n_bootstrap <= 0:
+        return {}
+
+    annualise = math.sqrt(TRADING_DAYS_PER_YEAR)
+
+    def ratio(x: np.ndarray, marche: Optional[np.ndarray] = None) -> float:
+        """Sharpe annualisé, ou INFORMATION RATIO quand l'indice est fourni.
+
+        L'IR est le Sharpe de l'écart ACTIF (stratégie moins indice). Il retire
+        le facteur marché, qui domine la variance du Sharpe et que les
+        variantes d'une même stratégie partagent intégralement -- d'où un
+        pouvoir de séparation plus élevé à données égales."""
+        serie = x if marche is None else x - marche
+        ecart_type = serie.std()
+        return float(serie.mean() / ecart_type * annualise) if ecart_type > 0 else float("nan")
+
+    observe = ratio(b, indice) - ratio(a, indice)
+    n_blocs = int(np.ceil(n_obs / block_days))
+    ecarts = np.empty(n_bootstrap)
+    for k in range(n_bootstrap):
+        departs = rng.integers(0, n_obs - block_days, n_blocs)
+        indices = np.concatenate([np.arange(d, d + block_days) for d in departs])[:n_obs]
+        marche = None if indice is None else indice[indices]
+        ecarts[k] = ratio(b[indices], marche) - ratio(a[indices], marche)
+
+    bas, haut = np.percentile(ecarts, [2.5, 97.5])
+    return {
+        "metrique": "information_ratio" if indice is not None else "sharpe_ratio",
+        "sharpe_a": ratio(a, indice),
+        "sharpe_b": ratio(b, indice),
+        "sharpe_difference": observe,
+        "difference_ci_low": float(bas),
+        "difference_ci_high": float(haut),
+        "p_value": float((ecarts <= 0).mean()),
+        "correlation": float(np.corrcoef(a, b)[0, 1]) if n_obs > 1 else float("nan"),
+        "n_observations": int(n_obs),
+        "n_bootstrap": int(n_bootstrap),
+        "block_days": int(block_days),
+    }
+
+
+def daily_returns_of(equity_curve: pd.DataFrame, start=None, end=None) -> pd.Series:
+    """Rendements quotidiens d'une courbe de NAV, indexés par date, prêts pour
+    `paired_sharpe_difference`. `start`/`end` découpent une sous-période (la
+    fenêtre de test, typiquement) avant le calcul."""
+    courbe = equity_curve.sort_values("date")
+    dates = pd.DatetimeIndex(courbe["date"])
+    if start is not None:
+        courbe = courbe[dates > pd.Timestamp(start)]
+        dates = pd.DatetimeIndex(courbe["date"])
+    if end is not None:
+        courbe = courbe[dates <= pd.Timestamp(end)]
+    return courbe.set_index("date")["nav"].pct_change(fill_method=None).dropna()
+
+
 def _position_level_metrics(trades: pd.DataFrame) -> dict:
     """Mêmes trades, regroupés par THÈSE (une entrée, ses renforts, ses
     allègements, sa sortie) au lieu d'une ligne par exécution.
@@ -489,8 +603,13 @@ def split_period_metrics(
     split_date: pd.Timestamp,
     risk_free_rate: float = 0.0,
     benchmark_prices: Optional[pd.Series] = None,
+    # `information_ratio`, `alpha_pct` et `beta` sont calculés par fenêtre comme
+    # les autres -- `compute_metrics` reçoit la courbe DÉJÀ découpée et aligne
+    # l'indice dessus. Ils manquaient seulement de cette liste, ce qui rendait
+    # l'IR indisponible comme critère de classement (cf. --rank-metric).
     keys: tuple = ("cagr_pct", "sharpe_ratio", "sortino_ratio", "calmar_ratio",
-                   "max_drawdown_pct", "total_return_pct", "num_trades", "profit_factor"),
+                   "max_drawdown_pct", "total_return_pct", "num_trades", "profit_factor",
+                   "information_ratio", "alpha_pct", "beta", "tracking_error_pct"),
 ) -> dict:
     """Mêmes métriques, calculées SÉPARÉMENT avant et après `split_date`, et
     préfixées `train_` / `test_`.

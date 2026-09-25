@@ -20,13 +20,23 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils import (
-    STATUS_COLORS, build_freshness_table, load_pipeline_runs, read_step_log, status_badge,
+    STATUS_COLORS, avertissements_du_dernier_run, build_freshness_table, load_pipeline_runs,
+    read_step_log, status_badge,
 )
 
 st.set_page_config(page_title="Pipeline — Pipeline options US", page_icon="🩺", layout="wide")
 st.title("🩺 État du pipeline")
 
 runs = load_pipeline_runs()
+
+# ============================================================================
+# Ce que la date d'un fichier ne dit pas : avant la table de fraîcheur, qui
+# marque le signal « à jour » dès que 06b l'a réécrit -- même sur des comptes
+# que 04/04b n'ont pas pu rafraîchir.
+# ============================================================================
+dernier_run, avertissements = avertissements_du_dernier_run(runs)
+for avertissement in avertissements:
+    st.warning(f"**Dernier run ({dernier_run})** — {avertissement}", icon="⚠️")
 
 # ============================================================================
 # Fraîcheur des données : vraie même sans orchestrateur (runs manuels)

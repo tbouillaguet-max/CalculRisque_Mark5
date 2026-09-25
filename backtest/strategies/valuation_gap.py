@@ -16,7 +16,7 @@ from __future__ import annotations
 import pandas as pd
 
 import config
-from backtest.strategies.base import Strategy, capped_weights, inflation_adjusted_gap, register_strategy
+from backtest.strategies.base import Strategy, construire_poids, inflation_adjusted_gap, register_strategy
 
 
 @register_strategy("valuation_gap_dcf")
@@ -24,10 +24,44 @@ class ValuationGapDCFStrategy(Strategy):
     def __init__(
         self,
         entry_threshold_pct: float = config.BACKTEST_ENTRY_THRESHOLD_PCT,
+        max_weight_pct: float = config.BACKTEST_MAX_WEIGHT_PER_POSITION_PCT,
+        vol_weight_exponent: float = config.BACKTEST_VOL_WEIGHT_EXPONENT,
+        max_positions: int = 0,
+        rank_weighting: bool = False,
+        # 0 = PAS de plafond sectoriel, contrairement à
+        # valuation_gap_sector_neutral qui en a un à 30%. C'est le
+        # comportement d'origine de cette stratégie ; le réglage existe pour
+        # être balayable, pas pour changer le défaut en douce.
+        max_weight_per_sector_pct: float = 0.0,
+        # Ancre de conviction : bascule sur la pondération NON RENORMALISANTE
+        # (cf. base.poids_ancres). None garde la pondération historique, donc
+        # cette stratégie et ses filles ne changent pas tant qu'aucune ne la
+        # demande explicitement.
+        conviction_anchor: float | None = None,
         **kwargs,
     ):
-        super().__init__(entry_threshold_pct=entry_threshold_pct, **kwargs)
+        super().__init__(
+            entry_threshold_pct=entry_threshold_pct,
+            max_weight_pct=max_weight_pct,
+            vol_weight_exponent=vol_weight_exponent,
+            max_positions=max_positions,
+            rank_weighting=rank_weighting,
+            max_weight_per_sector_pct=max_weight_per_sector_pct,
+            conviction_anchor=conviction_anchor,
+            **kwargs,
+        )
+        self.conviction_anchor = conviction_anchor
         self.entry_threshold_pct = entry_threshold_pct
+        self.vol_weight_exponent = vol_weight_exponent
+        self.max_positions = max_positions
+        self.rank_weighting = bool(rank_weighting)
+        self.max_weight_per_sector_pct = max_weight_per_sector_pct
+        # Plafond de concentration, jusqu'ici lu directement dans config par
+        # capped_weights. L'exposer en paramètre de stratégie le rend
+        # balayable par un grid-search sans toucher au module de config --
+        # c'est un arbitrage de diversification, donc un réglage de Sharpe au
+        # même titre que le seuil d'entrée. Le défaut ne change rien.
+        self.max_weight_pct = max_weight_pct
 
     def generate_target_weights(self, signals: pd.DataFrame, current_positions: set[str]) -> dict[str, float]:
         # Écart corrigé de l'inflation attendue sur l'horizon de convergence
@@ -46,5 +80,12 @@ class ValuationGapDCFStrategy(Strategy):
         # classement reste fait sur l'écart brut, seul le DIMENSIONNEMENT est
         # borné -- un écart de plusieurs milliers de % est une conviction
         # légitime, pas une raison de mettre 90% du capital sur une ligne.
-        weights = capped_weights(candidates["gap_pct"])
-        return dict(zip(candidates["symbol"], weights))
+        return construire_poids(
+            candidates, candidates["gap_pct"],
+            max_weight_pct=self.max_weight_pct,
+            max_positions=self.max_positions,
+            max_weight_per_sector_pct=self.max_weight_per_sector_pct,
+            vol_weight_exponent=self.vol_weight_exponent,
+            rank_weighting=self.rank_weighting,
+            conviction_anchor=self.conviction_anchor,
+        )
