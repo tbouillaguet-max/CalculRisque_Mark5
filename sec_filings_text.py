@@ -101,6 +101,33 @@ _SECTION_PATTERNS = [
 # Parser BeautifulSoup retenu, résolu une seule fois (voir _best_parser).
 _PARSER: Optional[str] = None
 
+# --------------------------------------------------------------------------- #
+# Fournisseur du LLM : Gemini (Google) ou Mistral
+# --------------------------------------------------------------------------- #
+# 04c, 07b et 02 ne parlent qu'à analyser_texte_llm : le fournisseur se choisit
+# ici, par variables d'environnement, sans toucher aux scripts.
+#
+#   GEMINI_API_KEY définie   -> Gemini (prioritaire)
+#   sinon MISTRAL_API_KEY    -> Mistral (comportement historique)
+#   LLM_PROVIDER=gemini|mistral force le choix quand les deux clés existent.
+#
+# Les CLÉS ne s'écrivent jamais dans ce fichier : les constantes *_ENV
+# ci-dessous sont les NOMS des variables d'environnement où les lire. Y coller
+# une clé revient à chercher une variable qui porterait ce nom -- elle
+# n'existe pas, et le LLM est alors jugé indisponible.
+LLM_PROVIDER_ENV = "LLM_PROVIDER"
+
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+GEMINI_MODEL_ENV = "GEMINI_MODEL"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# Les modèles Gemini « à réflexion » décomptent leurs jetons de réflexion de
+# maxOutputTokens : avec le budget de 500 jetons prévu pour une réponse JSON
+# courte, la réflexion peut tout consommer et la réponse revenir vide. On la
+# coupe sur les modèles flash de la génération 2.5 (budget 0 accepté), et on
+# réserve une marge sur les autres, où elle ne se désactive pas toujours.
+GEMINI_THINKING_HEADROOM_TOKENS = 2048
+
 MISTRAL_API_KEY_ENV = "MISTRAL_API_KEY"
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = "mistral-large-latest"
@@ -669,43 +696,180 @@ def _retry_after_seconds(response: Optional["requests.Response"]) -> Optional[fl
     return max((cible - maintenant).total_seconds(), 0.0)
 
 
+def _retry_delay_from_body(response: Optional["requests.Response"]) -> Optional[float]:
+    """Délai de reprise annoncé DANS LE CORPS de la réponse, en secondes.
+
+    Gemini n'envoie pas d'en-tête Retry-After sur un 429 : il place le délai
+    dans `error.details[].retryDelay`, sous la forme "36s". None si absent ou
+    illisible."""
+    if response is None:
+        return None
+    try:
+        corps = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(corps, dict) or not isinstance(corps.get("error"), dict):
+        return None
+    for detail in corps["error"].get("details") or []:
+        brut = detail.get("retryDelay") if isinstance(detail, dict) else None
+        if isinstance(brut, str) and brut.endswith("s"):
+            try:
+                return max(float(brut[:-1]), 0.0)
+            except ValueError:
+                continue
+    return None
+
+
 def _mistral_retry_delay(response: Optional["requests.Response"], attempt: int) -> float:
     """Retry-After s'il est fourni (le serveur sait mieux que nous), sinon
     backoff exponentiel plafonné avec jitter -- le jitter évite que plusieurs
     appelants repartis en même temps ne se resynchronisent sur le quota."""
     retry_after = _retry_after_seconds(response)
+    if retry_after is None:
+        retry_after = _retry_delay_from_body(response)
     if retry_after is not None:
         return min(retry_after + random.uniform(0, 1), MISTRAL_MAX_RETRY_DELAY)
     return min(MISTRAL_RETRY_DELAY * (2 ** attempt), MISTRAL_MAX_RETRY_DELAY) + random.uniform(0, 1)
 
 
-def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]:
-    """Appelle Mistral avec un prompt demandant une réponse JSON stricte --
-    même pattern que 02_categoriser_secteurs.py::appeler_mistral (retries
-    avec backoff exponentiel, la réponse DOIT être un objet JSON valide).
-    Généraliste (pas de schéma imposé ici) : chaque appelant (07b, 04c)
+def fournisseur_llm() -> Optional[str]:
+    """Fournisseur du LLM à utiliser : "gemini", "mistral", ou None si aucune
+    clé n'est disponible (voir l'en-tête « Fournisseur du LLM »).
+
+    LLM_PROVIDER force le choix ; il ne crée pas de clé pour autant : forcer
+    "gemini" sans GEMINI_API_KEY rend None plutôt que de basculer en silence
+    sur l'autre fournisseur, et le journal dit alors pourquoi."""
+    force = os.environ.get(LLM_PROVIDER_ENV, "").strip().lower()
+    cles = {"gemini": GEMINI_API_KEY_ENV, "mistral": MISTRAL_API_KEY_ENV}
+    if force:
+        if force not in cles:
+            logger.warning("%s='%s' inconnu (attendu : gemini ou mistral) : choix automatique.",
+                           LLM_PROVIDER_ENV, force)
+        else:
+            return force if os.environ.get(cles[force]) else None
+    for nom in ("gemini", "mistral"):
+        if os.environ.get(cles[nom]):
+            return nom
+    return None
+
+
+def llm_disponible() -> bool:
+    """Vrai si une clé d'API permet d'appeler un LLM (Gemini ou Mistral)."""
+    return fournisseur_llm() is not None
+
+
+def description_llm() -> str:
+    """Libellé pour les journaux : fournisseur et modèle, ou comment en activer un."""
+    fournisseur = fournisseur_llm()
+    if fournisseur == "gemini":
+        return f"Gemini ({_gemini_model()})"
+    if fournisseur == "mistral":
+        return f"Mistral ({MISTRAL_MODEL})"
+    return f"aucun LLM ({GEMINI_API_KEY_ENV} ou {MISTRAL_API_KEY_ENV} à définir)"
+
+
+def _gemini_model() -> str:
+    return os.environ.get(GEMINI_MODEL_ENV, "").strip() or GEMINI_DEFAULT_MODEL
+
+
+def _requete_gemini(prompt: str, max_tokens: int, api_key: str) -> Tuple[str, dict, dict]:
+    """(url, en-têtes, corps) d'un appel generateContent de l'API Gemini."""
+    model = _gemini_model()
+    generation = {
+        "temperature": MISTRAL_TEMPERATURE,
+        # Mode JSON natif, l'équivalent du response_format de Mistral.
+        "responseMimeType": "application/json",
+    }
+    if model.startswith("gemini-2.5-flash"):
+        generation["maxOutputTokens"] = max_tokens
+        generation["thinkingConfig"] = {"thinkingBudget": 0}
+    else:
+        generation["maxOutputTokens"] = max_tokens + GEMINI_THINKING_HEADROOM_TOKENS
+    return (
+        GEMINI_URL.format(model=model),
+        # Clé dans un en-tête plutôt que dans l'URL (?key=...) : une URL finit
+        # dans les messages d'erreur de requests, donc dans les journaux.
+        {"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": generation},
+    )
+
+
+def _requete_mistral(prompt: str, max_tokens: int, api_key: str) -> Tuple[str, dict, dict]:
+    """(url, en-têtes, corps) d'un appel chat/completions de l'API Mistral."""
+    return (
+        MISTRAL_URL,
+        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        {
+            "model": MISTRAL_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": MISTRAL_TEMPERATURE,
+            "max_tokens": max_tokens,
+            # Mode JSON natif de l'API : le modèle ne peut plus encadrer sa
+            # réponse d'un bloc de code ni la préfixer d'une phrase. C'est la
+            # correction à la racine ; _parse_json_reponse reste en garde-fou.
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+
+def _contenu_gemini(data: dict) -> str:
+    """Texte de la réponse Gemini. KeyError/IndexError si la réponse n'en porte
+    pas -- prompt bloqué (promptFeedback), ou réponse tronquée sans texte --,
+    traité par l'appelant comme une enveloppe inexploitable."""
+    parts = data["candidates"][0]["content"]["parts"]
+    texte = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+    if not texte:
+        raise KeyError("text")
+    return texte
+
+
+def _contenu_mistral(data: dict) -> str:
+    return data["choices"][0]["message"]["content"]
+
+
+def _extrait_erreur(response: Optional["requests.Response"]) -> str:
+    """Message d'erreur renvoyé par l'API, tronqué : c'est lui qui dit POURQUOI
+    un 403 ou un 400 est refusé (offre non activée, modèle inaccessible, clé
+    révoquée...), là où le seul code HTTP ne le dit pas."""
+    if response is None:
+        return ""
+    try:
+        corps = response.json()
+        if isinstance(corps, dict):
+            erreur = corps.get("error")
+            if isinstance(erreur, dict) and erreur.get("message"):
+                return str(erreur["message"])[:300]
+            if corps.get("message"):
+                return str(corps["message"])[:300]
+            if corps.get("detail"):
+                return str(corps["detail"])[:300]
+    except (ValueError, AttributeError):
+        pass
+    return str(getattr(response, "text", "") or "")[:300]
+
+
+def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
+    """Appelle le LLM configuré (Gemini ou Mistral, voir fournisseur_llm) avec
+    un prompt demandant une réponse JSON stricte -- retries avec backoff
+    exponentiel, la réponse DOIT être un objet JSON valide.
+    Généraliste (pas de schéma imposé ici) : chaque appelant (07b, 04c, 02)
     construit son propre prompt et valide les clés qu'il attend dans le dict
-    retourné. None si MISTRAL_API_KEY est absente, ou après épuisement des
+    retourné. None si aucune clé n'est définie, ou après épuisement des
     tentatives -- l'appelant doit traiter ce cas comme "pas de verdict",
     jamais planter.
 
-    Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter) :
-    espacés en amont pour ne pas provoquer de 429, et espacés DAVANTAGE dès
-    qu'un 429 survient malgré tout."""
-    api_key = os.environ.get(MISTRAL_API_KEY_ENV)
-    if not api_key:
+    Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter),
+    commun aux deux fournisseurs : espacés en amont pour ne pas provoquer de
+    429, et espacés DAVANTAGE dès qu'un 429 survient malgré tout."""
+    fournisseur = fournisseur_llm()
+    if fournisseur is None:
         return None
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": MISTRAL_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": MISTRAL_TEMPERATURE,
-        "max_tokens": max_tokens,
-        # Mode JSON natif de l'API : le modèle ne peut plus encadrer sa
-        # réponse d'un bloc de code ni la préfixer d'une phrase. C'est la
-        # correction à la racine ; _parse_json_reponse reste en garde-fou.
-        "response_format": {"type": "json_object"},
-    }
+    if fournisseur == "gemini":
+        url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
+        extraire, nom = _contenu_gemini, "Gemini"
+    else:
+        url, headers, payload = _requete_mistral(prompt, max_tokens, os.environ[MISTRAL_API_KEY_ENV])
+        extraire, nom = _contenu_mistral, "Mistral"
 
     parse_failures = 0
     network_failures = 0
@@ -715,16 +879,17 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
         MISTRAL_RATE_LIMITER.acquire()
         resp = None
         try:
-            resp = requests.post(MISTRAL_URL, headers=headers, json=payload, timeout=45)
+            resp = requests.post(url, headers=headers, json=payload, timeout=45)
             statut = getattr(resp, "status_code", None)
             if statut is not None and statut >= 400:
                 raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
-            content = resp.json()["choices"][0]["message"]["content"]
+            content = extraire(resp.json())
         except requests.exceptions.RequestException as e:
             statut = getattr(getattr(e, "response", None), "status_code", None)
             if statut is not None and statut not in MISTRAL_RETRYABLE_STATUS:
                 # 401 (clé invalide), 403, 422... : la réponse ne changera pas.
-                logger.error("Appel Mistral refusé définitivement (HTTP %s), aucun réessai : %s", statut, e)
+                logger.error("Appel %s refusé définitivement (HTTP %s), aucun réessai : %s",
+                             nom, statut, _extrait_erreur(getattr(e, "response", None)) or e)
                 return None
 
             network_failures += 1
@@ -736,17 +901,17 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
             if statut == 429:
                 intervalle = MISTRAL_RATE_LIMITER.penalize(pause=delay)
                 logger.warning(
-                    "Quota Mistral atteint (429, tentative %d/%d). Débit ramené à un appel "
+                    "Quota %s atteint (429, tentative %d/%d). Débit ramené à un appel "
                     "toutes les %.1fs ; nouvel essai dans %.1fs...",
-                    network_failures, MISTRAL_MAX_RETRIES, intervalle, delay,
+                    nom, network_failures, MISTRAL_MAX_RETRIES, intervalle, delay,
                 )
             else:
-                logger.warning("Tentative Mistral %d/%d échouée: %s. Nouvel essai dans %.1fs...",
-                               network_failures, MISTRAL_MAX_RETRIES, e, delay)
+                logger.warning("Tentative %s %d/%d échouée: %s. Nouvel essai dans %.1fs...",
+                               nom, network_failures, MISTRAL_MAX_RETRIES, e, delay)
             time.sleep(delay)
             continue
-        except (KeyError, ValueError) as e:
-            logger.error("Réponse Mistral inexploitable (enveloppe): %s", e)
+        except (KeyError, IndexError, TypeError, ValueError) as e:
+            logger.error("Réponse %s inexploitable (enveloppe): %s", nom, e)
             return None
 
         MISTRAL_RATE_LIMITER.reward()
@@ -760,9 +925,14 @@ def analyser_texte_mistral(prompt: str, max_tokens: int = 500) -> Optional[dict]
         # coûte trois appels payants pour un gain marginal.
         parse_failures += 1
         if parse_failures >= MISTRAL_MAX_PARSE_RETRIES:
-            logger.warning("Réponse Mistral non exploitable après %d essais : %s", parse_failures, str(content)[:200])
+            logger.warning("Réponse %s non exploitable après %d essais : %s", nom, parse_failures, str(content)[:200])
             return None
-        logger.warning("Réponse Mistral non parsable, une nouvelle tentative : %s", str(content)[:200])
+        logger.warning("Réponse %s non parsable, une nouvelle tentative : %s", nom, str(content)[:200])
 
-    logger.error("Échec après %d tentatives Mistral : %s", MISTRAL_MAX_RETRIES, derniere_erreur)
+    logger.error("Échec après %d tentatives %s : %s", MISTRAL_MAX_RETRIES, nom, derniere_erreur)
     return None
+
+
+# Nom historique, conservé pour les appelants qui ne sont pas encore passés à
+# analyser_texte_llm : il suit le même choix de fournisseur.
+analyser_texte_mistral = analyser_texte_llm

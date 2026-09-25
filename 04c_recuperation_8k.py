@@ -45,11 +45,12 @@ d'appels déjà effectués. --no-llm-cache force la ré-analyse.
 
 Prérequis :
     pip install requests beautifulsoup4
-    export MISTRAL_API_KEY="ta_cle"   (voir 02_categoriser_secteurs.py -- sans
+    export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
+                                      sec_filings_text.fournisseur_llm -- sans
     cette variable, les 8-K sont journalisés avec category="non_evalue"
     plutôt que de planter)
-    export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers
-    Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
+    export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers le
+    LLM, Gemini ou Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
 
 Usage :
     python 04c_recuperation_8k.py
@@ -64,7 +65,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import sys
 from datetime import datetime
@@ -154,7 +154,7 @@ def compute_search_windows(ttm: pd.DataFrame, symbol: str, today: datetime) -> L
 def classify_8k(symbol: str, filed_date: str, text: str) -> dict:
     item_codes = extract_item_codes(text)
     prompt = build_prompt(symbol, filed_date, item_codes, text)
-    result = sft.analyser_texte_mistral(prompt)
+    result = sft.analyser_texte_llm(prompt)
     if result is None or "category" not in result:
         return {"item_codes": item_codes, "category": "non_evalue", "materiality": None, "summary": None}
     return {
@@ -387,16 +387,18 @@ def main() -> None:
     if sft.sec_http.require_contact_email(logger) is None:
         sys.exit(1)
 
-    if not os.environ.get(sft.MISTRAL_API_KEY_ENV):
+    if not sft.llm_disponible():
         logger.warning(
-            "MISTRAL_API_KEY non définie : les 8-K seront journalisés avec category='non_evalue' "
-            "(pas d'appel Mistral). export MISTRAL_API_KEY=... pour activer la classification."
+            "Aucune clé LLM (%s ou %s) : les 8-K seront journalisés avec category='non_evalue' "
+            "(pas d'appel au modèle). Définis l'une des deux pour activer la classification.",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
         )
     else:
         logger.info(
-            "Débit Mistral : un appel toutes les %.2fs (%s pour l'ajuster au quota de ton plan). "
-            "Le débit se resserre automatiquement en cas de 429.",
-            sft.MISTRAL_RATE_LIMITER.interval, sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
+            "Classification par %s. Débit : un appel toutes les %.2fs (%s pour l'ajuster au "
+            "quota de ton offre). Le débit se resserre automatiquement en cas de 429.",
+            sft.description_llm(), sft.MISTRAL_RATE_LIMITER.interval,
+            sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
         )
 
     if not config.FINANCIALS_TTM_FILE.exists():

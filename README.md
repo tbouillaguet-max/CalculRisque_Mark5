@@ -397,7 +397,7 @@ pas un échec.
 
 ```bash
 export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"   # obligatoire pour 04, 04b, 04c, 07b
-export MISTRAL_API_KEY="ta_cle"                     # optionnel : 02, 04c, 07b
+export GEMINI_API_KEY="ta_cle"                      # optionnel : 02, 04c, 07b (LLM)
 export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfill-dates
 ```
 
@@ -407,9 +407,38 @@ bloquer (403/429). Les scripts qui interrogent la SEC échouent au démarrage
 avec un message explicite si elle est absente, plutôt que de dégrader
 silencieusement.
 
-Sans `MISTRAL_API_KEY`, `04c` et `07b` journalisent leurs lignes en
+### Le LLM : Gemini ou Mistral
+
+`02`, `04c` et `07b` appellent un LLM à travers une seule fonction,
+`sec_filings_text.analyser_texte_llm`. Le fournisseur se choisit par
+l'environnement, sans toucher au code :
+
+| Variable | Rôle |
+|---|---|
+| `GEMINI_API_KEY` | Clé Google AI Studio. Définie, elle rend Gemini prioritaire. |
+| `GEMINI_MODEL` | Modèle Gemini (défaut `gemini-2.5-flash`). |
+| `MISTRAL_API_KEY` | Clé Mistral, utilisée quand aucune clé Gemini n'est définie. |
+| `LLM_PROVIDER` | `gemini` ou `mistral`, pour forcer le choix quand les deux clés existent. |
+| `MISTRAL_REQUESTS_PER_SECOND` | Débit sortant vers le LLM, quel que soit le fournisseur (défaut 1). |
+
+Les clés se donnent **par variable d'environnement**, jamais dans le code :
+les constantes `*_API_KEY_ENV` de `sec_filings_text.py` sont les *noms* des
+variables à lire, pas les clés. Sous Windows :
+
+```powershell
+setx GEMINI_API_KEY "ta_cle"      # puis ouvrir un NOUVEAU terminal
+```
+
+Au démarrage, `04c` et `07b` affichent le fournisseur retenu
+(`Classification par Gemini (gemini-2.5-flash)`). Un refus de l'API (403,
+400…) est journalisé avec le message renvoyé par le fournisseur, qui en dit
+la cause.
+
+Sans aucune clé, `04c` et `07b` journalisent leurs lignes en
 `non_evalue_pas_de_cle_api` au lieu d'appeler le modèle — les filtres
-qualitatifs restent alors sans effet, ce qui est le comportement voulu.
+qualitatifs restent alors sans effet, ce qui est le comportement voulu. Le
+cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert quel que soit le
+fournisseur : un 8-K déjà classé n'est pas re-soumis.
 
 ## Rafraîchissement trimestriel (04b, 04c, 07b, run_pipeline_quarterly.py)
 
@@ -432,9 +461,9 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
                                       (--as-of-date, mode replay)
 
 04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
-filings SEC + appel Mistral générique) et nécessitent `MISTRAL_API_KEY` (voir
-02_categoriser_secteurs.py) pour produire un verdict -- sans cette variable,
-ils journalisent "non_evalue" plutôt que de planter.
+filings SEC + appel LLM générique) et nécessitent `GEMINI_API_KEY` ou
+`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict --
+sans clé, ils journalisent "non_evalue" plutôt que de planter.
 
 05/06b/07 consomment automatiquement le TTM (`FINANCIALS_TTM_FILE`) dès que
 04b a tourné une fois, en plus de l'annuel -- sans régression : identique à
