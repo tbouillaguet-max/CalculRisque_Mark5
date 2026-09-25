@@ -758,6 +758,22 @@ def llm_disponible() -> bool:
     return fournisseur_llm() is not None
 
 
+def aide_cle_absente() -> str:
+    """Quoi vérifier quand aucune clé n'est vue. Le cas fréquent n'est pas une
+    clé manquante, mais une clé posée là où ce processus ne la voit pas."""
+    import env_local
+
+    noms = (GEMINI_API_KEY_ENV, MISTRAL_API_KEY_ENV)
+    if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", nom) for nom in noms):
+        return ("sec_filings_text.py a été modifié : GEMINI_API_KEY_ENV et MISTRAL_API_KEY_ENV "
+                "doivent contenir le NOM d'une variable ('GEMINI_API_KEY'), pas la clé. Restaure "
+                "le fichier (git checkout -- sec_filings_text.py) et mets la clé dans .env.")
+    return (f"Ajoute la ligne {GEMINI_API_KEY_ENV}=ta_cle au fichier {env_local.FICHIER} (lu par "
+            f"tous les scripts, jamais poussé sur git), ou, sous PowerShell, "
+            f"$env:{GEMINI_API_KEY_ENV} = \"ta_cle\" dans CE terminal. Après setx, seul un "
+            "NOUVEAU terminal voit la variable.")
+
+
 def description_llm() -> str:
     """Libellé pour les journaux : fournisseur et modèle, ou comment en activer un."""
     fournisseur = fournisseur_llm()

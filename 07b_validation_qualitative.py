@@ -235,9 +235,8 @@ def main() -> None:
     if not sft.llm_disponible():
         logger.warning(
             "Aucune clé LLM (%s ou %s) : toutes les périodes seront journalisées comme "
-            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). Définis l'une des deux "
-            "pour activer la validation qualitative.",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
+            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info("Validation qualitative par %s.", sft.description_llm())

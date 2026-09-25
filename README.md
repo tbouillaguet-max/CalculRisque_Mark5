@@ -613,10 +613,30 @@ parquet réécrit en bloc ne l'est pas.
 
 ## Configuration requise
 
+**Le plus simple, surtout sous Windows : un fichier `.env`.** Copie
+`.env.example` en `.env` à la racine du dépôt et remplis-le :
+
+```
+SEC_CONTACT_EMAIL=ton.adresse@exemple.fr      # obligatoire pour 04, 04b, 04c, 07b
+GEMINI_API_KEY=ta_cle                         # optionnel : 02, 04c, 07b (LLM)
+ALPHAVANTAGE_API_KEY=ta_cle                   # optionnel : 08 --av-backfill-dates
+```
+
+Tous les scripts le lisent au démarrage (`env_local.py`, appelé par
+`config.py`), d'où qu'ils soient lancés : terminal, éditeur, tâche planifiée.
+`.env` est ignoré par git, et une variable déjà définie dans l'environnement
+l'emporte sur lui. C'est la réponse à un piège constaté : « Aucune clé LLM »
+alors que la clé avait été « mise ». Sous Windows, `setx` n'agit que sur les
+terminaux ouverts après lui, `$env:CLE = ...` que sur la fenêtre PowerShell
+courante, et `set CLE=...` (syntaxe de cmd) pas du tout sous PowerShell. Le
+message affiché quand aucune clé n'est vue dit maintenant quoi vérifier.
+
+Les variables d'environnement restent possibles :
+
 ```bash
-export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"   # obligatoire pour 04, 04b, 04c, 07b
-export GEMINI_API_KEY="ta_cle"                      # optionnel : 02, 04c, 07b (LLM)
-export ALPHAVANTAGE_API_KEY="ta_cle"                # optionnel : 08 --av-backfill-dates
+export SEC_CONTACT_EMAIL="ton.adresse@exemple.fr"
+export GEMINI_API_KEY="ta_cle"
+export ALPHAVANTAGE_API_KEY="ta_cle"
 ```
 
 `SEC_CONTACT_EMAIL` n'a **pas** de valeur par défaut : la SEC exige un

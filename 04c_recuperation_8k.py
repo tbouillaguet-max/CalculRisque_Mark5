@@ -637,9 +637,8 @@ def main() -> None:
         # inutile alors que chaque 8-K est bel et bien lu et classé.
         logger.info(
             "Aucune clé LLM (%s ou %s) : chaque 8-K est téléchargé et classé PAR RÈGLES à partir "
-            "de son texte. Définis l'une des deux pour que le modèle classe les nouveaux 8-K et "
-            "reprenne ceux-là.",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV,
+            "de son texte. Pour que le modèle classe les 8-K récents : %s",
+            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info(

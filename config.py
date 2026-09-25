@@ -54,6 +54,13 @@ import math
 from pathlib import Path
 from typing import Optional
 
+import env_local
+
+# Clés et réglages du fichier .env à la racine du dépôt (SEC_CONTACT_EMAIL,
+# GEMINI_API_KEY...), sans jamais écraser l'environnement : voir env_local.py.
+# Ici parce que tous les scripts importent config avant toute autre chose.
+env_local.charger()
+
 # ----------------------------------------------------------------------------
 # Arborescence de sortie (unique, partagée par tous les scripts)
 # ----------------------------------------------------------------------------
