@@ -103,6 +103,23 @@ def test_les_8k_ne_tentent_pas_l_extraction_par_section(sert):
     assert mode == "debut_document"
 
 
+def test_un_depot_xml_se_lit_sans_avertissement(sert):
+    """Un dépôt ouvert par <?xml ...?> faisait afficher XMLParsedAsHTMLWarning
+    à chaque run de 04c. Le lire en HTML est voulu (voir fetch_filing_text) :
+    l'avertissement n'apprenait rien, et passait pour une erreur."""
+    import warnings
+
+    from bs4 import XMLParsedAsHTMLWarning
+
+    sert(b'<?xml version="1.0" encoding="utf-8"?>\n'
+         b"<document><type>8-K</type><text>Item 2.02 Results of Operations</text></document>")
+    with warnings.catch_warnings(record=True) as recus:
+        warnings.simplefilter("always")
+        texte, _ = sft.fetch_filing_text("https://sec.gov/x.xml", form="8-K")
+    assert "Results of Operations" in texte
+    assert not [w for w in recus if issubclass(w.category, XMLParsedAsHTMLWarning)]
+
+
 @pytest.mark.parametrize("variante", [
     "ITEM 1A.", "Item 1A.", "item 1a:", "ITEM  1A", "Item 1A —",
 ])
