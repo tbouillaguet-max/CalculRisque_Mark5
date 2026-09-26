@@ -101,6 +101,19 @@ def test_requete_gemini(gemini):
     assert appel["json"]["contents"][0]["parts"][0]["text"] == "mon prompt"
     generation = appel["json"]["generationConfig"]
     assert generation["responseMimeType"] == "application/json"
+    # Le modèle par défaut n'est plus un 2.5-flash : sa réflexion ne se coupe
+    # pas par un budget nul, elle reçoit une marge de jetons.
+    assert "thinkingConfig" not in generation
+    assert generation["maxOutputTokens"] == 321 + sft.GEMINI_THINKING_HEADROOM_TOKENS
+
+
+def test_gemini_2_5_flash_garde_sa_reflexion_coupee(gemini, monkeypatch):
+    """Toujours choisissable par GEMINI_MODEL (clé ancienne) : réflexion à
+    budget nul, tout le budget de jetons va à la réponse."""
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-2.5-flash")
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p", max_tokens=321)
+    generation = appels[0]["json"]["generationConfig"]
     assert generation["maxOutputTokens"] == 321
     assert generation["thinkingConfig"] == {"thinkingBudget": 0}
 

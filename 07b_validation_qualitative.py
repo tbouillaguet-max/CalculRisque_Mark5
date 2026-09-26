@@ -296,6 +296,9 @@ def main() -> None:
     finally:
         save_progress(args.output_dir, processed_keys)
 
+    if sft.llm_disponible():
+        logger.info("Modèle : %s", sft.bilan_llm())
+
     rows = load_checkpoint_rows(args.output_dir)
     if not rows:
         logger.warning("Aucun résultat produit, pas de fichier de sortie généré.")

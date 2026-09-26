@@ -766,6 +766,13 @@ def main() -> None:
         ok_count, not_found_count, network_fail_count, event_count,
         cache_hit_count, event_count - cache_hit_count,
     )
+    if sft.llm_disponible():
+        # Le modèle a-t-il vraiment travaillé ? Une ligne, plutôt que de le
+        # déduire de centaines de lignes de réessais.
+        logger.info("Modèle : %s", sft.bilan_llm())
+        if sft.documents_sans_modele():
+            logger.info("Les 8-K récents classés par règles faute de réponse du modèle lui seront "
+                        "rendus au prochain run.")
     if llm_cache is not None:
         logger.info("Mémoire des classifications : %d 8-K au total dans %s.",
                     len(llm_cache), llm_cache_path(args.output_dir))

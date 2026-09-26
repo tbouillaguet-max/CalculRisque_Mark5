@@ -22,7 +22,7 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
         compare report test install universe bootstrap slippage merite lfs lfs-apply \
-        backtest-distant optimize-actions paper paper-transmettre paper-hors-ligne
+        backtest-distant optimize-actions paper paper-transmettre paper-hors-ligne llm
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -32,6 +32,7 @@ help:
 	@echo "    make daily-fast    Cours + recalcul du signal seulement (aucun appel SEC ni LLM)"
 	@echo "    make quarterly     Rafraichissement TRIMESTRIEL (10-Q, 8-K, valorisation)"
 	@echo "    make replay AS_OF=2024-06-30   Reconstitution point-in-time, hors ligne"
+	@echo "    make llm           Teste la cle et le modele LLM en quelques secondes (avant 04c/07b)"
 	@echo
 	@echo "  PAPER TRADING (IB Gateway en mode Paper Trading)"
 	@echo "    make paper              Plan d'ordres du compte paper, SANS rien envoyer"
@@ -83,6 +84,11 @@ quarterly:
 replay:
 	@test -n "$(AS_OF)" || (echo "Renseigne AS_OF, ex: make replay AS_OF=2024-06-30" && false)
 	$(PYTHON) run_pipeline_quarterly.py --as-of-date $(AS_OF)
+
+# Trois requetes de test au modele configure : la reponse brute du fournisseur
+# (modele retire, surcharge, quota) sans attendre les telechargements de 04c.
+llm:
+	$(PYTHON) diagnostic_llm.py
 
 # ---------------------------------------------------------------------------
 # Paper trading (17_paper_trading.py, compte PAPER uniquement)

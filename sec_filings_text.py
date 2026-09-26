@@ -46,14 +46,15 @@ import random
 import re
 import threading
 import time
+import warnings
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 import config
 import sec_http
@@ -119,7 +120,10 @@ LLM_PROVIDER_ENV = "LLM_PROVIDER"
 
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+# Constaté le 2026-09-25 : gemini-2.5-flash répond 404 à une clé récente
+# (« no longer available to new users ») et Google y désigne gemini-3.8-flash.
+# Un autre modèle se choisit par GEMINI_MODEL, sans toucher à ce fichier.
+GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 # Les modèles Gemini « à réflexion » décomptent leurs jetons de réflexion de
 # maxOutputTokens : avec le budget de 500 jetons prévu pour une réponse JSON
@@ -499,7 +503,15 @@ def fetch_filing_text(
     if content is None:
         return None
 
-    soup = BeautifulSoup(content, _best_parser())
+    # Les dépôts récents sont du XHTML (iXBRL) ouvert par une déclaration
+    # <?xml ...?> : BeautifulSoup avertit alors qu'il lit du XML avec un parser
+    # HTML (XMLParsedAsHTMLWarning). C'est voulu : le parser HTML tolère un
+    # document coupé par MAX_DOWNLOAD_BYTES ou mal balisé, là où un parser XML
+    # s'arrête à la première erreur, et seul le texte est gardé. Filtré ICI
+    # seulement, pour ne rien masquer ailleurs.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        soup = BeautifulSoup(content, _best_parser())
     for tag in soup(["script", "style"]):
         tag.decompose()
     text = soup.get_text(separator=" ", strip=True)
@@ -829,13 +841,21 @@ def _requete_mistral(prompt: str, max_tokens: int, api_key: str) -> Tuple[str, d
 
 
 def _contenu_gemini(data: dict) -> str:
-    """Texte de la réponse Gemini. KeyError/IndexError si la réponse n'en porte
-    pas -- prompt bloqué (promptFeedback), ou réponse tronquée sans texte --,
-    traité par l'appelant comme une enveloppe inexploitable."""
-    parts = data["candidates"][0]["content"]["parts"]
+    """Texte de la réponse Gemini. KeyError si la réponse n'en porte pas --
+    prompt bloqué (promptFeedback), ou réponse tronquée sans texte --, traité
+    par l'appelant comme une enveloppe inexploitable. Le message dit lequel :
+    finishReason=MAX_TOKENS signale une réflexion qui a mangé tout le budget
+    (voir GEMINI_THINKING_HEADROOM_TOKENS)."""
+    if not isinstance(data, dict):
+        raise TypeError(f"réponse inattendue ({type(data).__name__})")
+    candidats = data.get("candidates") or []
+    if not candidats:
+        bloque = (data.get("promptFeedback") or {}).get("blockReason")
+        raise KeyError(f"aucune réponse, prompt bloqué ({bloque})" if bloque else "aucune réponse")
+    parts = (candidats[0].get("content") or {}).get("parts") or []
     texte = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
     if not texte:
-        raise KeyError("text")
+        raise KeyError(f"réponse sans texte (finishReason={candidats[0].get('finishReason')})")
     return texte
 
 
@@ -861,39 +881,200 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
                 return str(corps["detail"])[:300]
     except (ValueError, AttributeError):
         pass
-    return str(getattr(response, "text", "") or "")[:300]
+    # Corps non JSON (page HTML d'un proxy...) : une ligne, pas un pavé.
+    return " ".join(str(getattr(response, "text", "") or "").split())[:300]
 
 
 # --------------------------------------------------------------------------- #
-# Disjoncteur de quota
+# Disjoncteur du modèle
 # --------------------------------------------------------------------------- #
-# POURQUOI. Un quota PAR MINUTE se résorbe pendant les réessais ; un quota PAR
-# JOUR, non. Une fois celui du palier gratuit de Gemini atteint, chaque appel
-# épuisait ses MISTRAL_MAX_RETRIES tentatives, espacées jusqu'à
-# MISTRAL_MAX_RETRY_DELAY secondes, avant de rendre None : plusieurs minutes
-# par document, pour rien. Sur les ~97 500 8-K que 04c avait à classer, le run
-# rampait des jours au lieu de finir.
+# POURQUOI. Une analyse sans réponse épuise ses MISTRAL_MAX_RETRIES tentatives
+# avant de rendre None : une bonne minute sur un 503 (attentes de 2, 4, 8, 16
+# et 32 s), davantage sur un 429. C'est la bonne patience pour un incident
+# passager. Face à une panne qui DURE, elle se paie sur chaque document --
+# quota quotidien atteint (palier gratuit de Gemini), modèle « overloaded »
+# (503) des heures durant -- et les ~6 300 8-K récents de 04c prenaient des
+# jours.
 #
-# Après LLM_REFUS_QUOTA_AVANT_COUPURE analyses de suite refusées pour quota
-# (429 jusqu'à la dernière tentative), plus aucun appel pour le reste du
-# PROCESSUS : analyser_texte_llm rend None tout de suite, et chaque appelant
-# fait ce qu'il fait déjà sans modèle (04c classe par règles -- verdicts que
-# le modèle reprend au run suivant --, 07b journalise non_evalue). Un seul
-# succès, ou un échec d'une autre nature, remet le compte à zéro.
-LLM_REFUS_QUOTA_AVANT_COUPURE = 3
-_refus_quota_consecutifs = 0
-_llm_coupe_pour_ce_run = False
+# PAUSE. Après LLM_ECHECS_AVANT_PAUSE analyses de suite sans réponse (429, 5xx
+# ou réseau jusqu'à la dernière tentative), le modèle est mis en pause :
+# analyser_texte_llm rend None sans appel, et chaque appelant fait ce qu'il
+# fait déjà sans modèle (04c classe par règles, verdicts que le modèle reprend
+# au run suivant ; 07b journalise non_evalue). La première analyse après la
+# pause sert de test : une réponse rouvre tout, un nouvel échec relance une
+# pause deux fois plus longue, jusqu'à LLM_PAUSE_MAX_S. Toute réponse du
+# fournisseur, même un refus propre à un document, remet le compte à zéro.
+#
+# COUPURE. Un refus qui vise la CONFIGURATION (clé invalide, modèle inconnu ou
+# retiré, accès refusé) coupe le modèle pour tout le run, dès le premier : la
+# réponse serait la même pour chaque document, et l'ancien comportement -- un
+# appel et une ligne d'erreur par document -- noyait la cause sous des
+# milliers de lignes identiques.
+LLM_ECHECS_AVANT_PAUSE = 3
+LLM_PAUSE_INITIALE_S = 15 * 60.0
+LLM_PAUSE_MAX_S = 2 * 3600.0
+# 401 clé invalide, 402 paiement requis, 403 accès refusé, 404 modèle inconnu
+# ou retiré. Un 400 ne vise la configuration que s'il le dit (Gemini répond
+# 400 à une clé invalide ou depuis un pays non couvert) ; sinon il vise la
+# requête, donc ce document-là.
+LLM_STATUTS_CONFIGURATION = frozenset((401, 402, 403, 404))
+_MOTIFS_400_CONFIGURATION = ("api key", "api_key", "location is not supported", "billing")
+# « ... Please update your code to use models/gemini-3.8-flash ... »
+_MODELE_PROPOSE = re.compile(r"\buse\s+(?:models/)?(gemini-[\w.\-]+)", re.IGNORECASE)
+
+_horloge = time.monotonic          # remplaçable par les tests
+_echecs_consecutifs = 0
+_pause_jusqu_a: Optional[float] = None
+_duree_pause = LLM_PAUSE_INITIALE_S
+_coupure: Optional[str] = None
+# Ce que le modèle a réellement fait pendant le run (voir bilan_llm).
+_bilan: Dict[str, int] = {}
 
 
 def reinitialiser_disjoncteur_llm() -> None:
-    """Réarme le disjoncteur (tests ; un run de production est un processus)."""
-    global _refus_quota_consecutifs, _llm_coupe_pour_ce_run
-    _refus_quota_consecutifs = 0
-    _llm_coupe_pour_ce_run = False
+    """Réarme le disjoncteur et vide le bilan (tests ; un run de production
+    est un processus)."""
+    global _echecs_consecutifs, _pause_jusqu_a, _duree_pause, _coupure
+    _echecs_consecutifs = 0
+    _pause_jusqu_a = None
+    _duree_pause = LLM_PAUSE_INITIALE_S
+    _coupure = None
+    _bilan.clear()
 
 
 def llm_coupe_pour_ce_run() -> bool:
-    return _llm_coupe_pour_ce_run
+    """Vrai après un refus de configuration : plus aucun appel de tout le run."""
+    return _coupure is not None
+
+
+def llm_en_pause() -> bool:
+    """Vrai pendant une pause (le modèle ne répondait plus). Faux dès qu'elle
+    est écoulée : l'analyse suivante teste alors le modèle."""
+    return _pause_jusqu_a is not None and _horloge() < _pause_jusqu_a
+
+
+def bilan_llm() -> str:
+    """Une ligne pour la fin d'un run : ce que le modèle a réellement fait."""
+    morceaux = [f"{_bilan.get('verdicts', 0)} verdict(s)"]
+    if _bilan.get("inexploitables"):
+        morceaux.append(f"{_bilan['inexploitables']} réponse(s) inexploitable(s) ou refusée(s)")
+    if _bilan.get("sans_reponse"):
+        morceaux.append(f"{_bilan['sans_reponse']} analyse(s) sans réponse malgré les réessais")
+    if _bilan.get("ecartes"):
+        pourquoi = f"modèle coupé, {_coupure}" if _coupure else f"{_bilan.get('pauses', 0)} pause(s)"
+        morceaux.append(f"{_bilan['ecartes']} document(s) traité(s) sans le modèle ({pourquoi})")
+    return f"{description_llm()} -- " + ", ".join(morceaux) + "."
+
+
+def documents_sans_modele() -> int:
+    """Documents rendus sans verdict faute de réponse du modèle (réessais
+    épuisés, pause, coupure) pendant ce run."""
+    return _bilan.get("sans_reponse", 0) + _bilan.get("ecartes", 0)
+
+
+def _compter(evenement: str) -> None:
+    _bilan[evenement] = _bilan.get(evenement, 0) + 1
+
+
+def _message(erreur: Exception) -> str:
+    """str(KeyError("x")) vaut "'x'" : le message sans ses guillemets."""
+    if isinstance(erreur, KeyError) and erreur.args:
+        return str(erreur.args[0])
+    return str(erreur)
+
+
+def _duree_lisible(secondes: float) -> str:
+    minutes = round(secondes / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    heures, reste = divmod(minutes, 60)
+    return f"{heures} h" if not reste else f"{heures} h {reste:02d}"
+
+
+def _raison_echec(erreur: Optional[Exception]) -> str:
+    """Pourquoi une tentative n'a pas abouti, avec les mots du fournisseur :
+    « HTTP 503 : The model is overloaded... » dit que la panne est chez lui,
+    là où « HTTP 503 » seul se lisait comme une panne du code."""
+    if erreur is None:
+        return "raison inconnue"
+    reponse = getattr(erreur, "response", None)
+    statut = getattr(reponse, "status_code", None)
+    if statut is None:
+        return f"{type(erreur).__name__} : {str(erreur)[:200]}"
+    message = _extrait_erreur(reponse)
+    return f"HTTP {statut} : {message}" if message else f"HTTP {statut}"
+
+
+def _refus_de_configuration(statut: int, message: str) -> bool:
+    """Le refus vise-t-il la configuration (même réponse pour tout document) ?"""
+    if statut in LLM_STATUTS_CONFIGURATION:
+        return True
+    return statut == 400 and any(motif in message.lower() for motif in _MOTIFS_400_CONFIGURATION)
+
+
+def _aide_configuration(fournisseur: str, statut: int, message: str) -> str:
+    """Quoi changer. Sur un modèle retiré, Google nomme son successeur : on le
+    reprend tel quel."""
+    if fournisseur == "gemini" and statut == 404:
+        propose = _MODELE_PROPOSE.search(message)
+        if propose:
+            modele = propose.group(1).rstrip(".")
+            return f"Google propose {modele} : mets la ligne {GEMINI_MODEL_ENV}={modele} dans .env."
+        return (f"Le modèle {_gemini_model()} n'existe pas ou n'est pas ouvert à cette clé : choisis-en "
+                f"un autre avec {GEMINI_MODEL_ENV} dans .env (python diagnostic_llm.py --modeles "
+                "liste ceux de ta clé).")
+    return "python diagnostic_llm.py teste la clé et le modèle en quelques secondes."
+
+
+def _le_modele_repond(nom: str) -> None:
+    """Le fournisseur a répondu : compte remis à zéro, pause levée."""
+    global _echecs_consecutifs, _pause_jusqu_a, _duree_pause
+    if _pause_jusqu_a is not None:
+        logger.info("%s répond de nouveau : fin de la pause, le modèle reprend la main.", nom)
+    _echecs_consecutifs = 0
+    _pause_jusqu_a = None
+    _duree_pause = LLM_PAUSE_INITIALE_S
+
+
+def _sans_reponse(nom: str, fournisseur: str, derniere_erreur: Optional[Exception], test_de_reprise: bool) -> None:
+    """Une analyse vient d'épuiser ses réessais : pause au troisième échec de
+    suite, ou dès le premier si c'était l'essai qui suit une pause."""
+    global _echecs_consecutifs, _pause_jusqu_a, _duree_pause
+    _compter("sans_reponse")
+    _echecs_consecutifs += 1
+    raison = _raison_echec(derniere_erreur)
+    if not test_de_reprise and _echecs_consecutifs < LLM_ECHECS_AVANT_PAUSE:
+        logger.warning("%s sans réponse après %d tentatives (%s) : ce document est traité sans le modèle.",
+                       nom, MISTRAL_MAX_RETRIES, raison)
+        return
+
+    duree = _duree_pause
+    _pause_jusqu_a = _horloge() + duree
+    _duree_pause = min(duree * 2, LLM_PAUSE_MAX_S)
+    _compter("pauses")
+    sans_lui = ("entre-temps, les documents sont traités sans lui (04c les classe par règles, et le "
+                "modèle les reprendra au prochain run)")
+    statut = getattr(getattr(derniere_erreur, "response", None), "status_code", None)
+    if test_de_reprise:
+        logger.warning("Toujours aucune réponse de %s (%s) : nouvelle pause de %s, %s.",
+                       nom, raison, _duree_lisible(duree), sans_lui)
+    elif statut == 429:
+        logger.error(
+            "Quota %s épuisé : %d analyses de suite refusées (429) malgré %d tentatives chacune (%s). "
+            "Modèle en pause %s puis réessayé ; %s. Un quota quotidien ne revient que le lendemain ; "
+            "sur une offre payante, relève %s.",
+            nom, _echecs_consecutifs, MISTRAL_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
+            MISTRAL_REQUESTS_PER_SECOND_ENV)
+    else:
+        autre_modele = (f" Si ça dure, essaie un autre modèle : {GEMINI_MODEL_ENV}=... dans .env "
+                        "(python diagnostic_llm.py --modeles liste ceux de ta clé)."
+                        if fournisseur == "gemini" else "")
+        logger.error(
+            "%s ne répond plus : %d analyses de suite sans réponse malgré %d tentatives chacune "
+            "(dernière erreur : %s). La panne est chez le fournisseur, pas dans le code. Modèle en "
+            "pause %s puis réessayé ; %s.%s",
+            nom, _echecs_consecutifs, MISTRAL_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
+            autre_modele)
 
 
 def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
@@ -902,16 +1083,20 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     exponentiel, la réponse DOIT être un objet JSON valide.
     Généraliste (pas de schéma imposé ici) : chaque appelant (07b, 04c, 02)
     construit son propre prompt et valide les clés qu'il attend dans le dict
-    retourné. None si aucune clé n'est définie, ou après épuisement des
-    tentatives -- l'appelant doit traiter ce cas comme "pas de verdict",
-    jamais planter.
+    retourné. None si aucune clé n'est définie, après épuisement des
+    tentatives, ou pendant une pause du disjoncteur (voir « Disjoncteur du
+    modèle ») -- l'appelant doit traiter ce cas comme "pas de verdict", jamais
+    planter.
 
     Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter),
     commun aux deux fournisseurs : espacés en amont pour ne pas provoquer de
     429, et espacés DAVANTAGE dès qu'un 429 survient malgré tout."""
-    global _refus_quota_consecutifs, _llm_coupe_pour_ce_run
+    global _coupure
     fournisseur = fournisseur_llm()
-    if fournisseur is None or _llm_coupe_pour_ce_run:
+    if fournisseur is None:
+        return None
+    if _coupure is not None or llm_en_pause():
+        _compter("ecartes")
         return None
     if fournisseur == "gemini":
         url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
@@ -919,6 +1104,9 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
     else:
         url, headers, payload = _requete_mistral(prompt, max_tokens, os.environ[MISTRAL_API_KEY_ENV])
         extraire, nom = _contenu_mistral, "Mistral"
+    test_de_reprise = _pause_jusqu_a is not None     # pause écoulée : cette analyse la teste
+    if test_de_reprise:
+        logger.info("Fin de la pause : nouvel essai de %s.", nom)
 
     parse_failures = 0
     network_failures = 0
@@ -932,15 +1120,25 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
             statut = getattr(resp, "status_code", None)
             if statut is not None and statut >= 400:
                 raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
-            _refus_quota_consecutifs = 0     # le fournisseur répond : pas de quota épuisé
+            _le_modele_repond(nom)
             content = extraire(resp.json())
         except requests.exceptions.RequestException as e:
             statut = getattr(getattr(e, "response", None), "status_code", None)
             if statut is not None and statut not in MISTRAL_RETRYABLE_STATUS:
-                # 401 (clé invalide), 403, 422... : la réponse ne changera pas.
+                message = _extrait_erreur(getattr(e, "response", None))
+                if _refus_de_configuration(statut, message):
+                    _coupure = f"HTTP {statut}"
+                    _compter("ecartes")
+                    logger.error(
+                        "%s refuse la configuration (HTTP %s) : %s -- plus aucun appel au modèle "
+                        "jusqu'à la fin de ce run, les documents restants sont traités sans lui. %s",
+                        nom, statut, message or e, _aide_configuration(fournisseur, statut, message))
+                    return None
+                # 400 ou 422 propre à CE document : la réponse ne changera pas.
                 logger.error("Appel %s refusé définitivement (HTTP %s), aucun réessai : %s",
-                             nom, statut, _extrait_erreur(getattr(e, "response", None)) or e)
-                _refus_quota_consecutifs = 0
+                             nom, statut, message or e)
+                _le_modele_repond(nom)
+                _compter("inexploitables")
                 return None
 
             network_failures += 1
@@ -957,17 +1155,23 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
                     nom, network_failures, MISTRAL_MAX_RETRIES, intervalle, delay,
                 )
             else:
-                logger.warning("Tentative %s %d/%d échouée: %s. Nouvel essai dans %.1fs...",
-                               nom, network_failures, MISTRAL_MAX_RETRIES, e, delay)
+                # Surcharge (503), erreur serveur ou coupure réseau : un
+                # incident du fournisseur, que les réessais absorbent le plus
+                # souvent. En INFO et avec ses mots : l'ancien « Tentative
+                # échouée: HTTP 503 » en WARNING se lisait comme une panne du code.
+                logger.info("%s : tentative %d/%d sans réponse (%s). Nouvel essai dans %.1fs.",
+                            nom, network_failures, MISTRAL_MAX_RETRIES, _raison_echec(e), delay)
             time.sleep(delay)
             continue
-        except (KeyError, IndexError, TypeError, ValueError) as e:
-            logger.error("Réponse %s inexploitable (enveloppe): %s", nom, e)
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
+            logger.error("Réponse %s inexploitable : %s", nom, _message(e))
+            _compter("inexploitables")
             return None
 
         MISTRAL_RATE_LIMITER.reward()
         parsed = _parse_json_reponse(content)
         if parsed is not None:
+            _compter("verdicts")
             return parsed
 
         # Réponse non parsable : UNE seule reprise, pas trois. L'ancienne
@@ -977,24 +1181,47 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
         parse_failures += 1
         if parse_failures >= MISTRAL_MAX_PARSE_RETRIES:
             logger.warning("Réponse %s non exploitable après %d essais : %s", nom, parse_failures, str(content)[:200])
+            _compter("inexploitables")
             return None
         logger.warning("Réponse %s non parsable, une nouvelle tentative : %s", nom, str(content)[:200])
 
-    logger.error("Échec après %d tentatives %s : %s", MISTRAL_MAX_RETRIES, nom, derniere_erreur)
-    statut_final = getattr(getattr(derniere_erreur, "response", None), "status_code", None)
-    if statut_final != 429:
-        _refus_quota_consecutifs = 0
-        return None
-    _refus_quota_consecutifs += 1
-    if _refus_quota_consecutifs >= LLM_REFUS_QUOTA_AVANT_COUPURE:
-        _llm_coupe_pour_ce_run = True
-        logger.error(
-            "Quota %s épuisé : %d analyses de suite refusées (429) malgré %d tentatives chacune. "
-            "Plus aucun appel au modèle jusqu'à la fin de ce run -- les documents restants sont "
-            "traités sans lui (04c les classe par règles, et le modèle les reprendra au prochain "
-            "run). Relance plus tard, ou passe à une offre payante et relève %s.",
-            nom, _refus_quota_consecutifs, MISTRAL_MAX_RETRIES, MISTRAL_REQUESTS_PER_SECOND_ENV)
+    _sans_reponse(nom, fournisseur, derniere_erreur, test_de_reprise)
     return None
+
+
+class EssaiLLM(NamedTuple):
+    """Résultat d'essai_unique_llm."""
+    statut: Optional[int]      # code HTTP, None sans réponse du tout
+    ok: bool                   # une réponse avec du texte
+    texte: str                 # la réponse, ou la raison de l'échec
+    duree_s: float
+
+
+def essai_unique_llm(prompt: str, max_tokens: int = 64) -> EssaiLLM:
+    """UNE requête au fournisseur configuré -- la même que celle de
+    analyser_texte_llm, sans réessai, limiteur ni disjoncteur -- pour
+    diagnostic_llm.py, qui doit montrer la réponse brute."""
+    fournisseur = fournisseur_llm()
+    if fournisseur is None:
+        return EssaiLLM(None, False, "aucune clé", 0.0)
+    if fournisseur == "gemini":
+        url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
+        extraire = _contenu_gemini
+    else:
+        url, headers, payload = _requete_mistral(prompt, max_tokens, os.environ[MISTRAL_API_KEY_ENV])
+        extraire = _contenu_mistral
+    debut = time.monotonic()
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=45)
+    except requests.exceptions.RequestException as e:
+        return EssaiLLM(None, False, _raison_echec(e), time.monotonic() - debut)
+    duree = time.monotonic() - debut
+    if resp.status_code >= 400:
+        return EssaiLLM(resp.status_code, False, _extrait_erreur(resp), duree)
+    try:
+        return EssaiLLM(resp.status_code, True, extraire(resp.json()), duree)
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
+        return EssaiLLM(resp.status_code, False, f"réponse inexploitable : {_message(e)}", duree)
 
 
 # Nom historique, conservé pour les appelants qui ne sont pas encore passés à

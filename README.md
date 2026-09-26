@@ -658,7 +658,7 @@ l'environnement, sans toucher au code :
 | Variable | Rôle |
 |---|---|
 | `GEMINI_API_KEY` | Clé Google AI Studio. Définie, elle rend Gemini prioritaire. |
-| `GEMINI_MODEL` | Modèle Gemini (défaut `gemini-2.5-flash`). |
+| `GEMINI_MODEL` | Modèle Gemini (défaut `gemini-3.8-flash` ; `gemini-2.5-flash` répond 404 aux clés récentes). |
 | `MISTRAL_API_KEY` | Clé Mistral, utilisée quand aucune clé Gemini n'est définie. |
 | `LLM_PROVIDER` | `gemini` ou `mistral`, pour forcer le choix quand les deux clés existent. |
 | `MISTRAL_REQUESTS_PER_SECOND` | Débit sortant vers le LLM, quel que soit le fournisseur (défaut 1). |
@@ -672,7 +672,7 @@ setx GEMINI_API_KEY "ta_cle"      # puis ouvrir un NOUVEAU terminal
 ```
 
 Au démarrage, `04c` et `07b` affichent le fournisseur retenu
-(`Classification par Gemini (gemini-2.5-flash)`). Un refus de l'API (403,
+(`Classification par Gemini (gemini-3.8-flash)`). Un refus de l'API (403,
 400…) est journalisé avec le message renvoyé par le fournisseur, qui en dit
 la cause.
 
@@ -695,14 +695,41 @@ sur 99 147 (6,4 %) dans la fenêtre, au lieu de tout l'historique.
 modèle. Le backtest historique s'appuie donc sur la classification par règles
 pour tout ce qui est plus ancien.
 
-**Le quota.** Même réduit à environ 6 300 appels, le premier run avec une clé
-peut dépasser le quota quotidien du palier gratuit de Gemini. Un
-**disjoncteur** coupe alors le modèle : après trois analyses de suite refusées
-pour quota malgré leurs réessais, plus aucun appel jusqu'à la fin du run. Les
-8-K restants sont classés par règles, et le modèle reprend les récents au run
-suivant. Sans lui, chaque appel attendait ses six réessais, jusqu'à 90 s
-chacun, et le run rampait. Sur une offre payante, relève
-`MISTRAL_REQUESTS_PER_SECOND`.
+**Quand le modèle ne répond pas.** Un 503 (`The model is overloaded`) ou une
+coupure réseau est un incident chez le fournisseur, pas dans le code : l'appel
+est réessayé jusqu'à six fois, et le journal le signale en INFO avec le message
+du fournisseur. Parfois trois analyses de suite restent sans réponse : surcharge
+qui dure, ou quota quotidien du palier gratuit atteint (429), que le premier run
+avec une clé peut dépasser même réduit à 6 300 appels. Un **disjoncteur** met
+alors le modèle en pause 15 min, puis le réessaie. Chaque nouvel échec double la
+pause, jusqu'à 2 h. Pendant la pause, les 8-K sont classés par règles, et le
+modèle reprend les récents au run suivant. Sans disjoncteur, chaque 8-K
+attendait ses six réessais (une bonne minute sur un 503, davantage sur un 429)
+et le run rampait. Sur une offre payante, relève `MISTRAL_REQUESTS_PER_SECOND`.
+
+**Quand le modèle est refusé.** Clé invalide, accès refusé ou modèle retiré
+(401, 403, 404) : la réponse serait la même pour chaque document. Le modèle est
+donc coupé pour tout le run dès le premier refus, avec la correction à faire.
+Pour un modèle retiré, Google nomme son successeur, et le message le reprend :
+`mets la ligne GEMINI_MODEL=… dans .env`. En fin de run, `04c` et `07b`
+affichent une ligne `Modèle : …` qui dit ce que le modèle a réellement fait :
+verdicts, analyses sans réponse, documents traités sans lui.
+
+**Tester la clé et le modèle en quelques secondes**, sans attendre les
+téléchargements de `04c` :
+
+```powershell
+python diagnostic_llm.py                  # 3 requêtes de test : réponse brute du fournisseur
+python diagnostic_llm.py --essais 10      # taux de surcharge (503) du modèle
+python diagnostic_llm.py --modeles        # modèles Gemini ouverts à ta clé
+python diagnostic_llm.py --modele NOM     # essayer un autre modèle, sans toucher à .env
+```
+
+Il dit d'où vient la clé (`.env` ou environnement du terminal) sans jamais
+l'afficher, montre pour chaque essai le code HTTP et le message du fournisseur,
+et conclut : modèle opérationnel, refus à corriger, quota ou surcharge. Chaque
+essai consomme un appel du quota. Pour adopter un autre modèle : la ligne
+`GEMINI_MODEL=NOM` dans `.env`.
 
 **Essayer sur quelques entreprises sans risque.** `04c --ticker AAPL`,
 `04c --limit 5` ou `07b --limit 5` ne remplacent, dans le fichier de sortie
