@@ -181,6 +181,16 @@ def test_le_message_du_fournisseur_accompagne_chaque_reessai_sans_alarmer(gemini
     reessai = [r for r in caplog.records if "tentative 1/" in r.getMessage()]
     assert reessai and reessai[0].levelname == "INFO"
     assert SURCHARGE in reessai[0].getMessage()
+    # Et la fin de la série se voit : le document est passé.
+    reprise = [r for r in caplog.records if "a répondu à la tentative 2/" in r.getMessage()]
+    assert reprise and reprise[0].levelname == "INFO"
+
+
+def test_une_reponse_du_premier_coup_ne_journalise_rien(gemini, horloge, caplog):
+    gemini([200])
+    with caplog.at_level("INFO", logger="sec_filings_text"):
+        sft.analyser_texte_llm("p")
+    assert "a répondu" not in caplog.text
 
 
 # --------------------------------------------------------------------------- #
