@@ -1120,6 +1120,11 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
             statut = getattr(resp, "status_code", None)
             if statut is not None and statut >= 400:
                 raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
+            if network_failures:
+                # Referme la série « tentative k/6 sans réponse » : sans cette
+                # ligne, rien ne disait que le document avait fini par passer,
+                # et une surcharge absorbée se lisait comme un échec.
+                logger.info("%s a répondu à la tentative %d/%d.", nom, network_failures + 1, MISTRAL_MAX_RETRIES)
             _le_modele_repond(nom)
             content = extraire(resp.json())
         except requests.exceptions.RequestException as e:
