@@ -104,8 +104,8 @@ def test_07b_un_essai_limite_garde_les_autres_periodes(tmp_path, monkeypatch):
         "symbol": "AAPL", "period_type": "10-K", "fiscal_year": 2023, "fiscal_quarter": math.nan,
         "filed_date": "2023-11-03", "gap_pct": 30.0, "cik": "320193",
     }]))
-    monkeypatch.setattr(_07b, "evaluate_period",
-                        lambda row: {"verdict": "coherent", "justification": "x", "risques_cites": None})
+    monkeypatch.setattr(_07b, "preparer_periode", lambda row, memoire=None: (
+        {"verdict": "coherent", "justification": "x", "risques_cites": None}, None))
     monkeypatch.setattr(sys, "argv", ["07b", "--limit", "1", "--output-dir", str(tmp_path)])
 
     _07b.main()

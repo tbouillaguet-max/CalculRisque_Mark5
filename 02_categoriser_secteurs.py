@@ -38,15 +38,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # --- LLM (fallback uniquement) -------------------------------------------------
-# L'appel passe par sec_filings_text.analyser_document, partagé avec 04c et
+# L'appel passe par sec_filings_text.analyser_documents, partagé avec 04c et
 # 07b : Gemini, avec la clé GEMINI_API_KEY. Les clés se lisent uniquement
 # depuis .env ou l'environnement, jamais depuis ce fichier, ex. dans .env :
 #   GEMINI_API_KEY=ta_cle
 #
-# La liste des entreprises du lot, la consigne (CONSIGNE) et le format de la
-# réponse (schema_reponse) partent séparément. Gemini génère sous la contrainte
-# du schéma : pour CHAQUE entreprise du lot, un secteur de SECTEURS ou
-# « indetermine » -- ni entreprise oubliée, ni secteur inventé.
+# Les entreprises du lot (une par balise <document id="dN">), la consigne
+# (CONSIGNE) et le format de la réponse (SCHEMA_SECTEUR, exigé pour chaque
+# entreprise) partent séparément. Gemini génère sous la contrainte du schéma :
+# pour CHAQUE entreprise du lot, un secteur de SECTEURS ou « indetermine » --
+# ni entreprise oubliée, ni secteur inventé.
 
 SECTEURS = [
     "Agro-alimentaire et boissons", "Assurance", "Automobiles et équipementiers",
@@ -80,19 +81,32 @@ GICS_TO_SECTEUR = {
 CACHE_FILE = Path("secteur_cache.json")
 MANUAL_SECTORS_FILE = Path("secteurs_manuels.json")
 
-BATCH_SIZE = 5
-MAX_TOKENS = 100
+# Entreprises par requête : au palier gratuit de Gemini, c'est le nombre de
+# requêtes par jour qui compte, et une réponse ne coûte qu'une vingtaine de
+# jetons par entreprise (son identifiant, un secteur). 25 au lieu de 5 : cinq
+# fois moins de requêtes pour les radiées de 01b, qui passent toutes par le LLM.
+BATCH_SIZE = 25
+# Budget de RÉPONSE par entreprise.
+MAX_TOKENS = 40
 
 # Réponse quand aucun secteur de la liste ne convient.
 INDETERMINE = "indetermine"
 
-# La CONSIGNE donnée à Gemini (instruction système). La liste des entreprises
-# part à côté, et le format -- y compris la liste des secteurs autorisés --
-# dans schema_reponse : la consigne ne les répète pas, Google le déconseille.
-CONSIGNE = """Tu es un expert en analyse financière. Le document fourni liste \
-des entreprises cotées, une par ligne. Classe chacune dans le secteur qui \
-décrit le mieux son activité principale, ou « indetermine » si aucun secteur \
-ne convient ou si tu ne connais pas l'entreprise."""
+# La CONSIGNE donnée à Gemini (instruction système). Les entreprises partent à
+# côté, et le format -- y compris la liste des secteurs autorisés -- dans
+# SCHEMA_SECTEUR : la consigne ne les répète pas, Google le déconseille.
+CONSIGNE = """Tu es un expert en analyse financière. Tu reçois des entreprises \
+cotées, chacune entre des balises <document id="...">. Classe chacune dans le \
+secteur qui décrit le mieux son activité principale, ou « indetermine » si \
+aucun secteur ne convient ou si tu ne connais pas l'entreprise."""
+
+# Le FORMAT de la réponse pour UNE entreprise ; analyser_documents en exige un
+# par entreprise du lot, sous un identifiant court (d1, d2...) : le nom de
+# l'entreprise en clé allongeait le schéma -- que Gemini refuse au-delà d'une
+# certaine taille -- et l'ancien prompt, un exemple de JSON avec la seule
+# première entreprise, n'empêchait ni d'en oublier une, ni d'inventer un
+# secteur hors de la liste.
+SCHEMA_SECTEUR = {"type": "string", "enum": [*SECTEURS, INDETERMINE]}
 
 
 def charger_json(path: Path) -> Dict[str, str]:
@@ -113,22 +127,6 @@ def sauvegarder_cache(cache: Dict[str, str]) -> None:
         logger.error("Erreur de sauvegarde du cache: %s", e)
 
 
-def schema_reponse(entreprises: List[str]) -> dict:
-    """Le FORMAT de la réponse pour un lot : un champ obligatoire par
-    entreprise, dont la valeur est un secteur de SECTEURS ou INDETERMINE.
-
-    Construit par lot, parce que les champs SONT les entreprises : l'ancien
-    prompt donnait un exemple de JSON avec la seule première, et rien
-    n'empêchait d'en oublier une ou d'inventer un secteur hors de la liste."""
-    secteur = {"type": "string", "enum": [*SECTEURS, INDETERMINE]}
-    return {
-        "type": "object",
-        "properties": {entreprise: secteur for entreprise in entreprises},
-        "required": list(entreprises),
-        "propertyOrdering": list(entreprises),
-    }
-
-
 def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
     # Un nom absent (NaN, possible pour une radiée de 01b) n'a rien à soumettre :
     # il reste « indetermine » chez l'appelant, au lieu de faire échouer le lot.
@@ -144,15 +142,14 @@ def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
         )
         return {}
 
-    # Réessais, débit et vérification du format : sec_filings_text.analyser_document.
-    result = sft.analyser_document(
-        document="\n".join(entreprises), consigne=CONSIGNE,
-        schema=schema_reponse(entreprises), max_tokens=MAX_TOKENS * len(entreprises),
-    )
-    if result is None:
+    # Réessais, débit, vérification du format, et lot recoupé quand une
+    # entreprise le fait échouer : sec_filings_text.analyser_documents.
+    documents = {f"d{rang}": entreprise for rang, entreprise in enumerate(entreprises, start=1)}
+    reponses = sft.analyser_documents(documents, CONSIGNE, SCHEMA_SECTEUR, max_tokens_par_document=MAX_TOKENS)
+    if reponses is None:
         logger.error("Pas de réponse exploitable du LLM pour %s", entreprises)
         return {}
-    return {entreprise: result.get(entreprise, INDETERMINE) for entreprise in entreprises}
+    return {entreprise: reponses.get(ident, INDETERMINE) for ident, entreprise in documents.items()}
 
 
 # Bucket retenu pour une financière dont la sous-industrie est absente ou

@@ -599,9 +599,9 @@ pas un point de contrôle périodique dépassé. Les lignes récupérées vont d
 JSONL *append-only*, relisible même après une interruption brutale — là où un
 parquet réécrit en bloc ne l'est pas.
 
-`04c` ajoute un troisième niveau qui lui est propre : un **cache par dépôt**
-(`cache_8k.jsonl`), qui évite de retélécharger ET de reclassifier un
-8-K déjà vu, même entre deux runs complets.
+`04c` et `07b` ajoutent un troisième niveau : une **mémoire par dépôt**
+(`cache_8k.jsonl`, `cache_qualitative.jsonl`), qui évite de retélécharger ET
+de resoumettre au modèle un document déjà jugé, même entre deux runs complets.
 
 > **Note historique.** `04` était le seul des quatre sans reprise : il
 > accumulait tout en mémoire et n'écrivait qu'à la fin, si bien qu'une
@@ -658,9 +658,9 @@ toucher au code :
 | Variable | Rôle |
 |---|---|
 | `GEMINI_API_KEY` | Clé Google AI Studio. Sans elle, aucun appel au modèle. |
-| `GEMINI_MODEL` | Modèle (défaut `gemini-3.8-flash` ; `gemini-2.5-flash` répond 404 aux clés récentes). |
-| `GEMINI_THINKING_LEVEL` | Réflexion du modèle avant de répondre : `minimal`, `low` (défaut), `medium` ou `high`. |
-| `GEMINI_REQUESTS_PER_SECOND` | Débit sortant vers Gemini (défaut 1 appel par seconde). |
+| `GEMINI_MODEL` | Modèle, ou liste de modèles séparés par des virgules, essayés dans l'ordre (défaut `gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.8-flash` ; voir « Au moindre coût » plus bas). |
+| `GEMINI_THINKING_LEVEL` | Réflexion du modèle avant de répondre : `minimal` (défaut), `low`, `medium` ou `high`. |
+| `GEMINI_REQUESTS_PER_SECOND` | Débit sortant vers Gemini (défaut 0,2 : un appel toutes les 5 s, 12 par minute). |
 
 Les clés se donnent **par `.env` ou variable d'environnement**, jamais dans le
 code : la constante `GEMINI_API_KEY_ENV` de `sec_filings_text.py` est le *nom*
@@ -672,45 +672,100 @@ setx GEMINI_API_KEY "ta_cle"      # puis ouvrir un NOUVEAU terminal
 ```
 
 **Un document, une consigne, un format.** `04c`, `07b` et `02` passent tous
-les trois par `sec_filings_text.analyser_document(document, consigne, schema)`,
-qui envoie les trois séparément : la consigne en instruction système
+les trois par `sec_filings_text.analyser_document(document, consigne, schema)`
+-- ou `analyser_documents`, pour plusieurs documents en une requête --, qui
+envoie les trois séparément : la consigne en instruction système
 (`systemInstruction`), le document comme contenu (`contents`), et le format de
 la réponse comme schéma JSON (`generationConfig.responseJsonSchema`). Gemini
 génère alors sous la contrainte du schéma, et ne peut répondre que :
 
-| Script | Document | Format imposé |
+| Script | Documents d'une requête | Format imposé |
 |---|---|---|
-| `04c` | texte du 8-K | une des sept catégories, un booléen de matérialité, une phrase de résumé |
-| `07b` | extrait du 10-K/10-Q | un verdict (`coherent`, `a_surveiller`, `contradictoire`), une phrase de justification, au plus cinq risques cités |
-| `02` | liste des entreprises du lot | pour chaque entreprise, un secteur de la liste ou `indetermine` |
+| `04c` | jusqu'à 10 8-K déposés le même jour | pour chaque 8-K : une des sept catégories, un booléen de matérialité, une phrase de résumé |
+| `07b` | jusqu'à 5 extraits de 10-K/10-Q déposés le même jour | pour chaque extrait : un verdict (`coherent`, `a_surveiller`, `contradictoire`), une phrase de justification, au plus cinq risques cités |
+| `02` | jusqu'à 25 entreprises | pour chaque entreprise, un secteur de la liste ou `indetermine` |
+
+Dans une requête à plusieurs documents, chacun part entre balises
+`<document id="d1">…</document>`, et le schéma exige une réponse par
+identifiant : aucun document ne peut être oublié. Le corps de chaque requête
+est celui qu'enverrait le SDK officiel `google-genai` (vérifié en interceptant
+ses requêtes).
 
 La réponse est revérifiée contre le schéma avant d'être gardée ; une réponse
 hors format est redemandée une fois, puis abandonnée : `04c` classe alors le
-8-K par règles, `07b` écrit `non_evalue_reponse_invalide`, `02` laisse le lot en
-`indetermine` pour le prochain run. Aucune consigne ne contient le format ni un
+8-K par règles, `07b` écrit `non_evalue_reponse_invalide`, `02` laisse
+l'entreprise en `indetermine` pour le prochain run. Quand l'échec tient au
+contenu (réponse hors format, bloquée, requête refusée pour ce qu'elle
+contient, schéma du lot trop lourd — « too many states »), le lot est coupé en
+deux pour isoler le document en cause : les autres ont leur verdict, et le lot
+n'échoue pas de nouveau, à l'identique, à chaque run. Quand les deux moitiés
+échouent aussi, la recherche s'arrête là, sans descendre document par
+document. Aucune consigne ne contient le format ni un
 exemple de JSON, comme Google le recommande. Avant ces schémas, le mode JSON
 seul garantissait du JSON, pas ses valeurs : la mémoire des 8-K contenait une
 catégorie inventée (`aut_materiel`), et `07b` ou `02` n'auraient pas vu un
 verdict hors liste ou un secteur inventé. Aucune requête n'envoie
 `temperature`, que Google demande de retirer pour les modèles 3.8.
 
-Au démarrage, `04c` et `07b` affichent le modèle retenu
-(`Classification par Gemini (gemini-3.8-flash, réflexion low)`). Un refus de
-l'API (403, 400…) est journalisé avec le message renvoyé par Google, qui en
-dit la cause.
+Au démarrage, `04c` et `07b` affichent les modèles retenus
+(`Classification par Gemini (gemini-3.5-flash-lite > gemini-3.1-flash-lite >
+gemini-3.8-flash, réflexion minimal)…`). Un refus de l'API (403, 400…) est
+journalisé avec le message renvoyé par Google, qui en dit la cause.
 
-Sans clé, `07b` journalise ses lignes en `non_evalue_pas_de_cle_api` au lieu
-d'appeler le modèle, et `04c` classe chaque 8-K **par règles** à partir de son
-texte. La mémoire de `04c` (`cache_8k.jsonl`) évite de re-soumettre un 8-K déjà
-classé par Gemini. Un 8-K classé par règles, lui, est repris par le modèle dès
-qu'une clé est définie.
+Sans clé, `07b` sert les verdicts qu'il a en mémoire et journalise les autres
+lignes en `non_evalue_pas_de_cle_api` au lieu d'appeler le modèle, et `04c`
+classe chaque 8-K **par règles** à partir de son texte. La mémoire de `04c`
+(`cache_8k.jsonl`) évite de re-soumettre un 8-K déjà classé par Gemini. Un 8-K
+récent classé par règles, lui, est repris par le modèle dès qu'une clé est
+définie.
+
+**Au moindre coût en requêtes et en jetons.** Au palier gratuit de l'API,
+c'est le nombre de **requêtes par jour** qui borne un run, et chaque modèle a
+son propre quota : quelques centaines de requêtes par jour pour un Flash-Lite,
+une vingtaine pour un Flash (ordres de grandeur de septembre 2026, que Google
+change souvent ; ceux de ta clé s'affichent dans Google AI Studio). Un
+abonnement à l'application Gemini (offre étudiante, Google AI Pro) ne relève
+pas ces quotas : seule la facturation Cloud du projet de la clé le fait.
+D'où :
+
+- **des modèles en chaîne** : quand le quota du jour d'un modèle est épuisé
+  (429 dont l'identifiant de quota dit « PerDay »), le suivant de la liste
+  reprend la même requête, et garde la main jusqu'à la fin du run. Un modèle
+  inconnu de la clé (404), ou qui refuse un réglage, passe aussi la main. Tous
+  les quotas du jour épuisés, Gemini est coupé pour le run : les documents
+  restants attendent le run suivant (`04c` les classe par règles d'ici là) ;
+- **un tri** (`04c`) : seuls vont au modèle les 8-K récents dont les Items ne
+  décident pas seuls — 1.01, 1.02, 5.02, 8.01, sans Item matériel par
+  définition. Résultats (2.02), Regulation FD (7.01), votes (5.07)… sont
+  classés par règles, sans requête ;
+- **des lots** : 10 8-K, 5 périodes ou 25 entreprises par requête (`--par-requete N`
+  pour `04c` et `07b`). Pour `04c` et `07b`, uniquement des documents déposés
+  le **même jour**, les plus récents d'abord : jamais un document plus récent
+  à côté d'un plus ancien, qu'il pourrait éclairer ;
+- **moins de jetons** : texte du 8-K sans page de garde ni signatures, 6 000
+  caractères au plus ; extrait de 10-K/10-Q de 8 000 caractères ; schémas sans
+  descriptions ; réflexion minimale ;
+- **une mémoire** : `04c` (`cache_8k.jsonl`) et `07b` (`cache_qualitative.jsonl`,
+  un verdict par filing et par sens de l'écart de valorisation) ne renvoient
+  jamais un document déjà jugé. `--no-llm-cache` force la ré-analyse ;
+  `04c --vider-memoire` efface la mémoire des 8-K pour tout retélécharger à la
+  SEC et tout reclasser.
+
+Sur l'archive du dépôt au 2026-09-27 : `04c` lit 2 884 des 6 327 8-K récents,
+en 390 requêtes (une par 8-K récent auparavant, 6 327) ; `07b` juge 2 182
+périodes en 1 165 requêtes au premier run — déposées sur 1 122 jours
+différents, elles se regroupent peu —, puis seulement les nouvelles (toutes,
+à chaque run, auparavant) ; `02` fait cinq fois moins de requêtes qu'avec ses
+lots de 5.
 
 **Les verdicts de Mistral sont écartés.** Le projet utilisait auparavant
-Mistral. Sa mémoire s'appelait `cache_8k_mistral.jsonl` : elle est renommée
-`cache_8k.jsonl` au premier lancement de `04c`, et les verdicts de Mistral
-qu'elle contient en sont retirés (1 647 dans la version du dépôt, sur dix
-entreprises, 77 % jugés matériels). Leurs 8-K sont reclassés comme des neufs :
-par Gemini les récents, par règles les anciens, comme le reste de l'univers.
+Mistral. Sa mémoire s'appelait `cache_8k_mistral.jsonl` (1 647 verdicts de
+Mistral sur dix entreprises, 77 % jugés matériels) : elle a été **vidée du
+dépôt le 2026-09-27**, et le run suivant de `04c` retélécharge chaque 8-K à
+la SEC pour le reclasser — par Gemini les récents à lire, par règles les
+autres. Une copie locale de l'ancienne mémoire est renommée `cache_8k.jsonl`
+au lancement de `04c`, sans ses verdicts de Mistral ; `--vider-memoire` efface
+l'une et l'autre.
 
 **Seuls les 8-K récents vont au modèle.** Un 8-K ne sert qu'à périmer un
 signal encore actionnable. Au-delà de la plus longue durée de vie d'un signal
@@ -727,9 +782,10 @@ pour tout ce qui est plus ancien.
 **Quand le modèle ne répond pas.** Un 503 (`The model is overloaded`) ou une
 coupure réseau est un incident chez Google, pas dans le code : l'appel est
 réessayé jusqu'à six fois, et le journal le signale en INFO avec le message de
-Google. Parfois trois analyses de suite restent sans réponse : surcharge qui
-dure, ou quota quotidien du palier gratuit atteint (429), que le premier run
-avec une clé peut dépasser même réduit à 6 300 appels. Un **disjoncteur** met
+Google. Un 429 du quota **par minute** est réessayé sur le même modèle, en
+ralentissant le débit ; celui du quota **du jour** passe au modèle suivant
+(voir plus haut). Parfois trois analyses de suite restent sans réponse :
+surcharge qui dure. Un **disjoncteur** met
 alors le modèle en pause 15 min, puis le réessaie. Chaque nouvel échec double la
 pause, jusqu'à 2 h. Pendant la pause, les 8-K sont classés par règles, et le
 modèle reprend les récents au run suivant. Sans disjoncteur, chaque 8-K
@@ -741,27 +797,29 @@ et le run rampait. Sur une offre payante, relève `GEMINI_REQUESTS_PER_SECOND`.
 réflexion ou le schéma) : la réponse serait la même pour chaque document. Le
 modèle est donc coupé pour tout le run dès le premier refus, avec la correction
 à faire. Pour un modèle retiré, Google nomme son successeur, et le message le
-reprend : `mets la ligne GEMINI_MODEL=… dans .env`. En fin de run, `04c` et
-`07b` affichent une ligne `Modèle : …` qui dit ce que le modèle a réellement
-fait : verdicts, réponses inexploitables, analyses sans réponse, documents
-traités sans lui.
+reprend : `mets la ligne GEMINI_MODEL=… dans .env`. Avec une liste de modèles,
+seul le modèle refusé est écarté, et le suivant prend le relais ; un refus de
+la clé coupe tout. En fin de run, `04c` et `07b` affichent une ligne
+`Modèle : …` qui dit ce que le modèle a réellement fait : verdicts, réponses
+inexploitables, analyses sans réponse, documents traités sans lui, requêtes
+envoyées, modèles écartés en cours de run.
 
-**Tester la clé et le modèle en quelques secondes**, sans attendre les
+**Tester la clé et les modèles en quelques secondes**, sans attendre les
 téléchargements de `04c` :
 
 ```powershell
-python diagnostic_llm.py                  # 3 requêtes de test, de la forme de celles de 04c
-python diagnostic_llm.py --essais 10      # taux de surcharge (503) du modèle
-python diagnostic_llm.py --modeles        # modèles Gemini ouverts à ta clé
+python diagnostic_llm.py                  # 1 requête de test à chaque modèle de la liste
+python diagnostic_llm.py --essais 10      # taux de surcharge (503) de chaque modèle
+python diagnostic_llm.py --modeles        # modèles Gemini ouverts à ta clé, et leur rang dans la liste
 python diagnostic_llm.py --modele NOM     # essayer un autre modèle, sans toucher à .env
 ```
 
 Il dit d'où vient la clé (`.env` ou environnement du terminal) sans jamais
 l'afficher, montre pour chaque essai le code HTTP et le message de Google,
-vérifie que la réponse respecte le format demandé, et conclut : modèle
-opérationnel, refus à corriger, quota ou surcharge. Chaque
-essai consomme un appel du quota. Pour adopter un autre modèle : la ligne
-`GEMINI_MODEL=NOM` dans `.env`.
+vérifie que la réponse respecte le format demandé, et conclut pour chaque
+modèle : opérationnel, refus à corriger, quota ou surcharge — puis combien
+répondent. Chaque essai consomme une requête du quota du modèle. Pour adopter
+d'autres modèles : la ligne `GEMINI_MODEL=NOM1,NOM2` dans `.env`.
 
 **Essayer sur quelques entreprises sans risque.** `04c --ticker AAPL`,
 `04c --limit 5` ou `07b --limit 5` ne remplacent, dans le fichier de sortie
@@ -791,7 +849,7 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
 
 04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
 filings SEC + appel à Gemini) et nécessitent `GEMINI_API_KEY` (voir
-« Configuration requise ») pour produire un verdict de modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue", et
+« Configuration requise ») pour produire un verdict de modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue" (hors verdicts déjà en mémoire), et
 04c classe chaque 8-K PAR RÈGLES à partir de son texte, verdicts que le modèle
 reprend dès qu'une clé est définie.
 

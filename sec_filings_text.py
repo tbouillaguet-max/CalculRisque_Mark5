@@ -106,8 +106,9 @@ _PARSER: Optional[str] = None
 # --------------------------------------------------------------------------- #
 # Le LLM : Gemini (Google), API generateContent
 # --------------------------------------------------------------------------- #
-# 04c, 07b et 02 ne parlent qu'à analyser_document : le modèle se règle ici,
-# par variables d'environnement, sans toucher aux scripts.
+# 04c, 07b et 02 ne parlent qu'à analyser_document (un document) et
+# analyser_documents (plusieurs par requête) : le modèle se règle ici, par
+# variables d'environnement, sans toucher aux scripts.
 #
 # UNE REQUÊTE, TROIS ZONES. Pour soumettre un document avec une consigne et le
 # format de la réponse, generateContent sépare les trois -- corps identique à
@@ -134,22 +135,31 @@ _PARSER: Optional[str] = None
 # n'existe pas, et le LLM est alors jugé indisponible.
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
-# Constaté le 2026-09-25 : gemini-2.5-flash répond 404 à une clé récente
-# (« no longer available to new users ») et Google y désigne gemini-3.8-flash.
-# Un autre modèle se choisit par GEMINI_MODEL, sans toucher à ce fichier.
-GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
+# MODÈLES, DANS L'ORDRE OÙ ILS SONT ESSAYÉS. Au palier gratuit, chaque modèle a
+# SON quota quotidien, et c'est lui qui borne un run : relevé en septembre 2026
+# (sources tierces, la page officielle variant par compte), environ 20
+# requêtes par jour pour les modèles Flash, 500 à 1 500 pour les Flash-Lite.
+# gemini-3.8-flash seul, l'ancien défaut, demandait donc des mois pour les
+# 8-K récents. Flash-Lite d'abord ; quand le quota du jour d'un modèle est
+# épuisé, les analyses passent au suivant (voir « Modèles écartés »), et
+# gemini-3.8-flash, le plus fin mais le plus rationné, ferme la marche.
+# GEMINI_MODEL remplace la liste : un nom, ou plusieurs séparés par des
+# virgules. Les vrais quotas de ta clé s'affichent dans AI Studio.
+GEMINI_DEFAULT_MODELS = ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash")
+GEMINI_DEFAULT_MODEL = GEMINI_DEFAULT_MODELS[0]
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 # RÉFLEXION. Les modèles Gemini réfléchissent avant de répondre, et leurs jetons
 # de réflexion se décomptent de maxOutputTokens : non réglée, la réflexion peut
 # consommer tout le budget, et la réponse revenir vide ou coupée
 # (finishReason=MAX_TOKENS) -- un verdict perdu. Depuis la génération 3, elle
-# se règle par NIVEAU ; "low" suffit pour classer un document court, vite et à
-# peu de frais. Les modèles 2.x ne connaissent que le budget en jetons (coupé à
-# 0 sur les 2.5-flash) et refuseraient un niveau.
+# se règle par NIVEAU ; "minimal" suffit pour classer un document court, et
+# c'est le niveau qui consomme le moins de jetons. Les modèles 2.x ne
+# connaissent que le budget en jetons (coupé à 0 sur les 2.5-flash) et
+# refuseraient un niveau.
 GEMINI_THINKING_LEVEL_ENV = "GEMINI_THINKING_LEVEL"
 GEMINI_THINKING_LEVELS = ("minimal", "low", "medium", "high")
-GEMINI_DEFAULT_THINKING_LEVEL = "low"
+GEMINI_DEFAULT_THINKING_LEVEL = "minimal"
 # Marge de jetons laissée à la réflexion, en plus du budget de la réponse. Un
 # plafond, pas une dépense : seuls les jetons réellement produits sont facturés.
 GEMINI_THINKING_HEADROOM_TOKENS = 8192
@@ -182,11 +192,12 @@ GEMINI_RETRYABLE_STATUS = frozenset((408, 409, 425, 429, 500, 502, 503, 504))
 # Débit sortant vers Gemini. Le vrai correctif du 429 n'est pas de mieux
 # réessayer : c'est de ne pas dépasser le quota. Sans limiteur, 04c enchaînait
 # ses appels aussi vite que le réseau le permettait et se faisait jeter dès le
-# premier ticker. 1 requête/seconde par défaut ; GEMINI_REQUESTS_PER_SECOND
-# l'ajuste au quota de l'offre (plus bas sur le palier gratuit, plus haut sur
-# une offre payante).
+# premier ticker. 0,2 requête/seconde par défaut, soit 12 par minute : sous
+# les 15 par minute du palier gratuit des Flash-Lite, et une requête refusée
+# est une requête perdue. GEMINI_REQUESTS_PER_SECOND l'ajuste au quota de
+# l'offre (plus haut sur une clé facturée).
 GEMINI_REQUESTS_PER_SECOND_ENV = "GEMINI_REQUESTS_PER_SECOND"
-GEMINI_DEFAULT_REQUESTS_PER_SECOND = 1.0
+GEMINI_DEFAULT_REQUESTS_PER_SECOND = 0.2
 # Plafond de l'auto-freinage : au-delà, ce n'est plus une rafale à lisser mais
 # un quota épuisé, et il vaut mieux échouer visiblement que ramper.
 GEMINI_MAX_INTERVAL = 30.0
@@ -550,23 +561,26 @@ def fetch_filing_text(
     return text[:max_chars], "debut_document"
 
 
-def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-Q")) -> Optional[Dict]:
+def find_filing_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-Q")) -> Optional[Dict]:
     """Le filing EXACT déposé à filed_date -- jamais un autre, ni plus
     récent ni plus ancien (voir "Contrainte anti-anticipation" en tête de
-    fichier). filed_date doit correspondre à une vraie date de dépôt (cas
-    normal : c'est déjà la filed_date XBRL extraite par 04/04b pour la même
-    période). None si aucun filing de ce type n'a été déposé exactement à
-    cette date (CIK introuvable, désynchronisation de cache, etc.).
+    fichier) --, SANS télécharger son document : ses seules métadonnées
+    {form, filing_date, accession_number, primary_document}, lues dans l'index
+    des dépôts. 07b s'en sert pour reconnaître un filing déjà jugé avant de
+    payer son téléchargement.
+
+    filed_date doit correspondre à une vraie date de dépôt (cas normal : c'est
+    déjà la filed_date XBRL extraite par 04/04b pour la même période). None si
+    aucun filing de ce type n'a été déposé exactement à cette date (CIK
+    introuvable, désynchronisation de cache, etc.), ou s'il n'a pas de document
+    principal.
 
     Quand PLUSIEURS filings partagent la même date de dépôt, l'ordre de la
     tuple `forms` départage : elle exprime une préférence (07b passe
     ("10-Q", "10-K") pour une période TTM, ("10-K",) pour un exercice), mais
     le filtre `if form not in forms` ne la respectait pas -- c'était
     `filings[0]`, donc l'ordre du JSON SEC, qui décidait. filter_filings trie
-    désormais sur ce critère (cf. D3), et le cas est journalisé en debug.
-
-    Retourne {form, filing_date, accession_number, primary_document, text,
-    extraction_mode}."""
+    désormais sur ce critère (cf. D3), et le cas est journalisé en debug."""
     filings = list_company_filings(cik, forms=forms, start_date=filed_date, end_date=filed_date)
     if not filings:
         return None
@@ -588,9 +602,20 @@ def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-
             cik, filing.get("accession_number"), filed_date,
         )
         return None
+    return filing
 
+
+def get_filing_text_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-Q"),
+                         max_chars: int = MAX_TEXT_CHARS) -> Optional[Dict]:
+    """find_filing_asof, puis le texte de son document (au plus max_chars).
+
+    Retourne {form, filing_date, accession_number, primary_document, text,
+    extraction_mode}, ou None (filing introuvable, ou téléchargement échoué)."""
+    filing = find_filing_asof(cik, filed_date, forms=forms)
+    if filing is None:
+        return None
     url = filing_document_url(cik, filing["accession_number"], filing["primary_document"])
-    extracted = fetch_filing_text(url, form=filing.get("form"))
+    extracted = fetch_filing_text(url, max_chars=max_chars, form=filing.get("form"))
     if extracted is None:
         return None
     text, extraction_mode = extracted
@@ -793,20 +818,42 @@ def aide_cle_absente() -> str:
 
 
 def description_llm() -> str:
-    """Libellé pour les journaux : modèle et réflexion, ou comment activer Gemini."""
+    """Libellé pour les journaux : modèles et réflexion, ou comment activer Gemini."""
     if not llm_disponible():
         return f"aucun LLM ({GEMINI_API_KEY_ENV} à définir)"
-    model = _gemini_model()
-    if _generation_2(model):
-        return f"Gemini ({model})"
-    return f"Gemini ({model}, réflexion {_niveau_reflexion()})"
+    modeles = _modeles_configures()
+    # " > " et non une flèche : un journal redirigé vers un fichier sous Windows
+    # s'écrit en cp1252, qui n'a pas de flèche.
+    liste = " > ".join(modeles)
+    if all(_generation_2(m) for m in modeles):
+        return f"Gemini ({liste})"
+    return f"Gemini ({liste}, réflexion {_niveau_reflexion()})"
+
+
+def _modeles_configures() -> List[str]:
+    """Les modèles de GEMINI_MODEL, dans l'ordre, sinon la liste par défaut.
+    Sans le préfixe "models/" que Google écrit dans ses messages et listes :
+    recopié tel quel, il donnait une URL invalide."""
+    noms = [nom.strip().removeprefix("models/") for nom in os.environ.get(GEMINI_MODEL_ENV, "").split(",")]
+    return list(dict.fromkeys(nom for nom in noms if nom)) or list(GEMINI_DEFAULT_MODELS)
+
+
+def _modeles_restants() -> List[str]:
+    """Les modèles de la liste qui n'ont pas été écartés pendant ce run."""
+    return [m for m in _modeles_configures() if m not in _modeles_ecartes]
 
 
 def _gemini_model() -> str:
-    """Modèle de GEMINI_MODEL, sans le préfixe "models/" que Google écrit dans
-    ses messages et listes -- recopié tel quel, il donnait une URL invalide."""
-    nom = os.environ.get(GEMINI_MODEL_ENV, "").strip().removeprefix("models/")
-    return nom or GEMINI_DEFAULT_MODEL
+    """Le modèle à appeler : le premier qui n'a pas été écarté pendant ce run
+    (le premier de la liste s'ils l'ont tous été, pour les messages)."""
+    restants = _modeles_restants()
+    return restants[0] if restants else _modeles_configures()[0]
+
+
+def dernier_modele_utilise() -> Optional[str]:
+    """Le modèle qui a rendu le dernier verdict, à consigner avec lui : quand
+    un modèle passe la main au suivant, un même run mêle leurs verdicts."""
+    return _dernier_modele
 
 
 def _generation_2(model: str) -> bool:
@@ -815,7 +862,7 @@ def _generation_2(model: str) -> bool:
 
 
 def _niveau_reflexion() -> str:
-    """Niveau de réflexion demandé par GEMINI_THINKING_LEVEL, "low" par défaut."""
+    """Niveau de réflexion demandé par GEMINI_THINKING_LEVEL, "minimal" par défaut."""
     return _niveau_valide(os.environ.get(GEMINI_THINKING_LEVEL_ENV, "").strip().lower())
 
 
@@ -834,11 +881,12 @@ def _niveau_valide(brut: str) -> str:
 
 def _requete_gemini(
     document: str, consigne: str, schema: dict, max_tokens: int, api_key: str,
+    model: Optional[str] = None,
 ) -> Tuple[str, dict, dict]:
-    """(url, en-têtes, corps) d'un appel generateContent : le document dans
-    contents, la consigne dans systemInstruction, le schéma dans
-    generationConfig -- voir « Le LLM » plus haut."""
-    model = _gemini_model()
+    """(url, en-têtes, corps) d'un appel generateContent au modèle `model` (par
+    défaut le modèle courant) : le document dans contents, la consigne dans
+    systemInstruction, le schéma dans generationConfig -- voir « Le LLM »."""
+    model = model or _gemini_model()
     # Mode JSON sous la contrainte du schéma : la réponse est un JSON conforme,
     # sans bloc de code ni phrase autour.
     generation: dict = {"responseMimeType": "application/json", "responseJsonSchema": schema}
@@ -977,22 +1025,36 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
 # LLM_PAUSE_MAX_S. Toute réponse de Gemini, même un refus propre à un
 # document, remet le compte à zéro.
 #
-# COUPURE. Un refus qui vise la CONFIGURATION (clé invalide, modèle inconnu ou
-# retiré, accès refusé, réglage refusé par le modèle) coupe le modèle pour tout
-# le run, dès le premier : la réponse serait la même pour chaque document, et
-# l'ancien comportement -- un appel et une ligne d'erreur par document --
-# noyait la cause sous des milliers de lignes identiques.
+# MODÈLES ÉCARTÉS. Un refus qui ne vise qu'UN modèle l'écarte pour le reste du
+# run, et le suivant de la liste (GEMINI_DEFAULT_MODELS, ou GEMINI_MODEL)
+# reprend la même requête, sans attendre : son quota du jour épuisé (un 429
+# dont le quota est « PerDay » -- attendre des heures n'y changerait rien),
+# modèle inconnu ou retiré pour cette clé (404), ou réglage qu'il refuse (400
+# sur la réflexion, le schéma, un champ de la requête). Chaque modèle ayant son
+# propre quota, la liste multiplie ce qu'un run peut faire en une journée.
+#
+# COUPURE. Un refus qui vise la CLÉ (invalide, accès refusé, paiement requis,
+# pays non couvert) coupe Gemini pour tout le run, dès le premier ; de même
+# quand le dernier modèle de la liste est écarté. La réponse serait la même
+# pour chaque document, et l'ancien comportement -- un appel et une ligne
+# d'erreur par document -- noyait la cause sous des milliers de lignes
+# identiques.
 LLM_ECHECS_AVANT_PAUSE = 3
 LLM_PAUSE_INITIALE_S = 15 * 60.0
 LLM_PAUSE_MAX_S = 2 * 3600.0
-# 401 clé invalide, 402 paiement requis, 403 accès refusé, 404 modèle inconnu
-# ou retiré. Un 400 ne vise la configuration que s'il le dit : Gemini répond
-# 400 à une clé invalide, depuis un pays non couvert, ou à un réglage que le
-# modèle ne connaît pas (niveau de réflexion, schéma, champ inconnu de la
-# requête) ; sinon il vise la requête, donc ce document-là.
-LLM_STATUTS_CONFIGURATION = frozenset((401, 402, 403, 404))
-_MOTIFS_400_CONFIGURATION = ("api key", "api_key", "location is not supported", "billing",
-                             "thinking", "schema", "unknown name", "invalid json payload")
+# 401 clé invalide, 402 paiement requis, 403 accès refusé. Un 400 ne vise la
+# clé que s'il le dit (clé invalide, pays non couvert, facturation).
+LLM_STATUTS_CLE = frozenset((401, 402, 403))
+_MOTIFS_400_CLE = ("api key", "api_key", "location is not supported", "billing")
+# 404 modèle inconnu ou retiré. Un 400 ne vise le modèle que s'il le dit
+# (réglage inconnu du modèle) ; sinon il vise la requête, donc ce document-là.
+LLM_STATUTS_MODELE = frozenset((404,))
+_MOTIFS_400_MODELE = ("thinking", "schema", "unknown name", "invalid json payload")
+# Sauf « The specified schema produces a constraint that has too many states
+# for serving » : le schéma de CETTE requête est trop lourd -- un lot trop grand,
+# que analyser_documents recoupe --, pas le modèle. Lu comme un refus du
+# modèle, il les écartait l'un après l'autre et coupait Gemini pour le run.
+_MOTIFS_400_REQUETE = ("too many states",)
 # « ... Please update your code to use models/gemini-3.8-flash ... »
 _MODELE_PROPOSE = re.compile(r"\buse\s+(?:models/)?(gemini-[\w.\-]+)", re.IGNORECASE)
 
@@ -1001,18 +1063,28 @@ _echecs_consecutifs = 0
 _pause_jusqu_a: Optional[float] = None
 _duree_pause = LLM_PAUSE_INITIALE_S
 _coupure: Optional[str] = None
+# Modèle -> raison de son écart, pour le reste du run.
+_modeles_ecartes: Dict[str, str] = {}
+_dernier_modele: Optional[str] = None
+# Vrai quand la dernière analyse a échoué à cause de ce qu'elle soumettait --
+# requête refusée pour son contenu, réponse bloquée ou hors format --, et non
+# faute de réponse, de quota ou de clé (voir analyser_documents).
+_echec_du_contenu = False
 # Ce que le modèle a réellement fait pendant le run (voir bilan_llm).
 _bilan: Dict[str, int] = {}
 
 
 def reinitialiser_disjoncteur_llm() -> None:
-    """Réarme le disjoncteur et vide le bilan (tests ; un run de production
-    est un processus)."""
-    global _echecs_consecutifs, _pause_jusqu_a, _duree_pause, _coupure
+    """Réarme le disjoncteur, rend leur chance aux modèles écartés et vide le
+    bilan (tests ; un run de production est un processus)."""
+    global _echecs_consecutifs, _pause_jusqu_a, _duree_pause, _coupure, _dernier_modele, _echec_du_contenu
     _echecs_consecutifs = 0
     _pause_jusqu_a = None
     _duree_pause = LLM_PAUSE_INITIALE_S
     _coupure = None
+    _modeles_ecartes.clear()
+    _dernier_modele = None
+    _echec_du_contenu = False
     _bilan.clear()
 
 
@@ -1037,6 +1109,11 @@ def bilan_llm() -> str:
     if _bilan.get("ecartes"):
         pourquoi = f"modèle coupé, {_coupure}" if _coupure else f"{_bilan.get('pauses', 0)} pause(s)"
         morceaux.append(f"{_bilan['ecartes']} document(s) traité(s) sans le modèle ({pourquoi})")
+    if _bilan.get("requetes"):
+        morceaux.append(f"{_bilan['requetes']} requête(s) envoyée(s)")
+    if _modeles_ecartes:
+        morceaux.append("écarté(s) en cours de run : " + ", ".join(
+            f"{modele} ({raison})" for modele, raison in _modeles_ecartes.items()))
     return f"{description_llm()} -- " + ", ".join(morceaux) + "."
 
 
@@ -1046,8 +1123,8 @@ def documents_sans_modele() -> int:
     return _bilan.get("sans_reponse", 0) + _bilan.get("ecartes", 0)
 
 
-def _compter(evenement: str) -> None:
-    _bilan[evenement] = _bilan.get(evenement, 0) + 1
+def _compter(evenement: str, n: int = 1) -> None:
+    _bilan[evenement] = _bilan.get(evenement, 0) + n
 
 
 def _message(erreur: Exception) -> str:
@@ -1079,29 +1156,77 @@ def _raison_echec(erreur: Optional[Exception]) -> str:
     return f"HTTP {statut} : {message}" if message else f"HTTP {statut}"
 
 
-def _refus_de_configuration(statut: int, message: str) -> bool:
-    """Le refus vise-t-il la configuration (même réponse pour tout document) ?"""
-    if statut in LLM_STATUTS_CONFIGURATION:
+def _refus_de_la_cle(statut: int, message: str) -> bool:
+    """Le refus vise-t-il la clé (même réponse pour tout modèle et tout document) ?"""
+    if statut in LLM_STATUTS_CLE:
         return True
-    return statut == 400 and any(motif in message.lower() for motif in _MOTIFS_400_CONFIGURATION)
+    return statut == 400 and any(motif in message.lower() for motif in _MOTIFS_400_CLE)
 
 
-def _aide_configuration(statut: int, message: str) -> str:
+def _refus_du_modele(statut: int, message: str) -> bool:
+    """Le refus vise-t-il le modèle appelé (un autre modèle pourrait répondre) ?"""
+    if statut in LLM_STATUTS_MODELE:
+        return True
+    message = message.lower()
+    return (statut == 400 and any(motif in message for motif in _MOTIFS_400_MODELE)
+            and not any(motif in message for motif in _MOTIFS_400_REQUETE))
+
+
+def _refus_de_configuration(statut: int, message: str) -> bool:
+    """Le refus vise-t-il la configuration -- clé ou modèle -- plutôt que le
+    document ? La même réponse reviendrait pour chaque document."""
+    return _refus_de_la_cle(statut, message) or _refus_du_modele(statut, message)
+
+
+def _quota_du_jour(reponse: Optional["requests.Response"]) -> bool:
+    """Ce 429 vient-il du quota QUOTIDIEN, épuisé jusqu'au lendemain, plutôt
+    que du quota par minute ? Gemini le dit dans le corps, par l'identifiant du
+    quota dépassé (« GenerateRequestsPerDayPerProjectPerModel-FreeTier »)."""
+    if reponse is None:
+        return False
+    try:
+        corps = reponse.json()
+    except (ValueError, AttributeError):
+        return False
+    erreur = corps.get("error") if isinstance(corps, dict) else None
+    if not isinstance(erreur, dict):
+        return False
+    for detail in erreur.get("details") or []:
+        for violation in (detail.get("violations") or []) if isinstance(detail, dict) else []:
+            if isinstance(violation, dict) and "PerDay" in str(violation.get("quotaId", "")):
+                return True
+    return bool(re.search(r"per\s*day|daily", str(erreur.get("message", "")), re.IGNORECASE))
+
+
+def _ecarter_modele(modele: str, raison: str) -> bool:
+    """Écarte `modele` pour le reste du run. Vrai s'il reste un modèle pour
+    reprendre la requête, faux si c'était le dernier."""
+    _modeles_ecartes[modele] = raison
+    restants = _modeles_restants()
+    if restants:
+        logger.warning("Gemini : %s écarté pour ce run (%s) -- %s prend le relais.",
+                       modele, raison, restants[0])
+        return True
+    return False
+
+
+def _aide_configuration(statut: int, message: str, modele: Optional[str] = None) -> str:
     """Quoi changer. Sur un modèle retiré, Google nomme son successeur : on le
     reprend tel quel."""
+    modele = modele or _gemini_model()
     if statut == 404:
         propose = _MODELE_PROPOSE.search(message)
         if propose:
-            modele = propose.group(1).rstrip(".")
-            return f"Google propose {modele} : mets la ligne {GEMINI_MODEL_ENV}={modele} dans .env."
-        return (f"Le modèle {_gemini_model()} n'existe pas ou n'est pas ouvert à cette clé : choisis-en "
+            successeur = propose.group(1).rstrip(".")
+            return f"Google propose {successeur} : mets la ligne {GEMINI_MODEL_ENV}={successeur} dans .env."
+        return (f"Le modèle {modele} n'existe pas ou n'est pas ouvert à cette clé : choisis-en "
                 f"un autre avec {GEMINI_MODEL_ENV} dans .env (python diagnostic_llm.py --modeles "
                 "liste ceux de ta clé).")
     if statut == 400 and "thinking" in message.lower():
-        return (f"Le modèle {_gemini_model()} ne règle pas sa réflexion par niveau "
+        return (f"Le modèle {modele} ne règle pas sa réflexion par niveau "
                 f"({GEMINI_THINKING_LEVEL_ENV}) : choisis un modèle Gemini 3 ou plus récent avec "
                 f"{GEMINI_MODEL_ENV} dans .env.")
-    return "python diagnostic_llm.py teste la clé et le modèle en quelques secondes."
+    return "python diagnostic_llm.py teste la clé et chaque modèle en quelques secondes."
 
 
 def _le_modele_repond() -> None:
@@ -1114,11 +1239,12 @@ def _le_modele_repond() -> None:
     _duree_pause = LLM_PAUSE_INITIALE_S
 
 
-def _sans_reponse(derniere_erreur: Optional[Exception], test_de_reprise: bool) -> None:
+def _sans_reponse(derniere_erreur: Optional[Exception], test_de_reprise: bool,
+                  nb_documents: int = 1) -> None:
     """Une analyse vient d'épuiser ses réessais : pause au troisième échec de
     suite, ou dès le premier si c'était l'essai qui suit une pause."""
     global _echecs_consecutifs, _pause_jusqu_a, _duree_pause
-    _compter("sans_reponse")
+    _compter("sans_reponse", nb_documents)
     _echecs_consecutifs += 1
     raison = _raison_echec(derniere_erreur)
     if not test_de_reprise and _echecs_consecutifs < LLM_ECHECS_AVANT_PAUSE:
@@ -1165,12 +1291,107 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
     Réessais avec backoff sur les incidents de réseau et de quota ; les appels
     passent par GEMINI_RATE_LIMITER (voir AdaptiveRateLimiter) : espacés en
     amont pour ne pas provoquer de 429, et DAVANTAGE dès qu'un 429 survient
-    malgré tout.
+    malgré tout. Un modèle écarté passe la main au suivant de la liste (voir
+    « Modèles écartés »).
 
     None si aucune clé n'est définie, après épuisement des tentatives, ou
     pendant une pause du disjoncteur (voir « Disjoncteur du modèle ») :
     l'appelant doit traiter ce cas comme « pas de verdict », jamais planter."""
-    global _coupure
+    return _analyser(document, consigne, schema, max_tokens, nb_documents=1)
+
+
+def analyser_documents(documents: Dict[str, str], consigne: str, schema_element: dict,
+                       max_tokens_par_document: int = 150) -> Optional[Dict[str, dict]]:
+    """Plusieurs documents en UNE requête, et leurs réponses par identifiant.
+
+    L'économie qui compte au palier gratuit : c'est le nombre de REQUÊTES par
+    jour qui borne un run, pas leur taille. La consigne et le format partent
+    une fois pour tout le lot ; chaque document part entre balises
+    <document id="...">, et la réponse attendue est un objet avec un champ
+    OBLIGATOIRE par identifiant, conforme à schema_element -- aucun document
+    ne peut être oublié. Des identifiants courts (d1, d2...) coûtent moins de
+    jetons qu'un numéro d'accession.
+
+    La consigne doit demander de juger chaque document séparément.
+
+    UN DOCUMENT NE FAIT PAS TOMBER SON LOT. Une requête qui échoue à cause de
+    ce qu'elle soumet -- refusée pour son contenu, réponse bloquée ou hors
+    format -- peut ne tenir qu'à un document, et le même lot échouerait de
+    nouveau, à l'identique, à chaque run. Il est alors coupé en deux, chaque
+    moitié soumise à part ; une moitié en échec face à une moitié qui répond
+    est recoupée à son tour, jusqu'à isoler le document en cause -- quelques
+    requêtes de plus, en cas d'échec seulement. Quand les DEUX moitiés
+    échouent, la cause n'est pas un document isolé : on s'arrête là, plutôt
+    que de finir document par document et de multiplier les requêtes.
+
+    Rend les réponses obtenues par identifiant -- un document sans verdict en
+    est absent --, {} pour un lot vide, None quand aucun document n'a de
+    verdict (voir analyser_document)."""
+    if not documents:
+        return {}
+    obtenues = _requete_de_lot(documents, consigne, schema_element, max_tokens_par_document)
+    if obtenues is not None or not _echec_du_contenu:
+        return obtenues
+    if len(documents) == 1:
+        _compter("inexploitables", 1)
+        return None
+
+    obtenues = {}
+    en_cause = dict(documents)
+    while len(en_cause) > 1:
+        logger.warning("Gemini : %d documents sans réponse exploitable ensemble -- coupés en deux pour "
+                       "isoler celui qui fait échouer la requête.", len(en_cause))
+        idents = list(en_cause)
+        moities = [{ident: en_cause[ident] for ident in part}
+                   for part in (idents[:len(idents) // 2], idents[len(idents) // 2:])]
+        en_echec, repondu = [], False
+        for moitie in moities:
+            reponses = _requete_de_lot(moitie, consigne, schema_element, max_tokens_par_document)
+            if reponses is not None:
+                obtenues.update(reponses)
+                repondu = True
+            elif _echec_du_contenu:
+                en_echec.append(moitie)
+        if not (repondu and len(en_echec) == 1):
+            # Deux moitiés en échec : la cause n'est pas un document isolé. Une
+            # moitié sans réponse (quota, panne) : rien à isoler -- _analyser
+            # l'a comptée.
+            _compter("inexploitables", sum(len(moitie) for moitie in en_echec))
+            return obtenues or None
+        en_cause = en_echec[0]
+    logger.warning("Gemini : document %s isolé -- la requête échoue à cause de lui ; les autres du lot "
+                   "ont leur verdict.", next(iter(en_cause)))
+    _compter("inexploitables", len(en_cause))
+    return obtenues or None
+
+
+def _requete_de_lot(documents: Dict[str, str], consigne: str, schema_element: dict,
+                    max_tokens_par_document: int) -> Optional[Dict[str, dict]]:
+    """UNE requête pour tout le lot (voir analyser_documents). Un échec dû au
+    contenu n'est pas compté ici : le lot sera peut-être recoupé."""
+    texte = "\n\n".join(f'<document id="{ident}">\n{contenu}\n</document>'
+                         for ident, contenu in documents.items())
+    schema = {
+        "type": "object",
+        "properties": {ident: schema_element for ident in documents},
+        "required": list(documents),
+        "propertyOrdering": list(documents),
+    }
+    reponse = _analyser(texte, consigne, schema, max_tokens_par_document * len(documents),
+                        nb_documents=len(documents), compter_inexploitables=False)
+    if reponse is None:
+        return None
+    return {ident: reponse[ident] for ident in documents}
+
+
+def _analyser(document: str, consigne: str, schema: dict, max_tokens: int,
+              nb_documents: int, compter_inexploitables: bool = True) -> Optional[dict]:
+    """L'appel lui-même (voir analyser_document). `nb_documents` : combien de
+    documents la requête porte, pour que le bilan compte des documents.
+    `compter_inexploitables` : faux quand l'appelant compte lui-même un échec
+    dû au contenu (voir _echec_du_contenu)."""
+    global _coupure, _dernier_modele, _echec_du_contenu
+    _echec_du_contenu = False
     if not llm_disponible():
         return None
     if not document or not document.strip():
@@ -1178,10 +1399,9 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
         logger.warning("Document vide : rien à soumettre à Gemini.")
         return None
     if _coupure is not None or llm_en_pause():
-        _compter("ecartes")
+        _compter("ecartes", nb_documents)
         return None
-    url, headers, payload = _requete_gemini(
-        document, consigne, schema, max_tokens, os.environ[GEMINI_API_KEY_ENV])
+    cle = os.environ[GEMINI_API_KEY_ENV]
     test_de_reprise = _pause_jusqu_a is not None     # pause écoulée : cette analyse la teste
     if test_de_reprise:
         logger.info("Fin de la pause : nouvel essai de Gemini.")
@@ -1191,7 +1411,12 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
     derniere_erreur: Optional[Exception] = None
 
     while network_failures < GEMINI_MAX_RETRIES:
+        # Recalculée à chaque tentative : un modèle écarté entre-temps cède
+        # la place au suivant, avec les réglages qui lui conviennent.
+        modele = _gemini_model()
+        url, headers, payload = _requete_gemini(document, consigne, schema, max_tokens, cle, modele)
         GEMINI_RATE_LIMITER.acquire()
+        _compter("requetes")
         resp = None
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT_S)
@@ -1206,22 +1431,48 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
             _le_modele_repond()
             content = _contenu_gemini(resp.json())
         except requests.exceptions.RequestException as e:
-            statut = getattr(getattr(e, "response", None), "status_code", None)
+            reponse = getattr(e, "response", None)
+            statut = getattr(reponse, "status_code", None)
+            if statut == 429 and _quota_du_jour(reponse):
+                # Attendre ne servirait à rien avant le lendemain : au suivant.
+                if _ecarter_modele(modele, "quota du jour épuisé"):
+                    continue
+                _coupure = "quotas du jour épuisés"
+                _compter("ecartes", nb_documents)
+                logger.error(
+                    "Gemini : quota du jour épuisé pour chaque modèle de la liste (%s) -- plus aucun "
+                    "appel jusqu'à la fin de ce run. Les documents restants sont traités sans lui, et "
+                    "le modèle les reprendra au prochain run : les quotas quotidiens reviennent le "
+                    "lendemain. Une clé facturée (Cloud Billing) les relève.",
+                    ", ".join(_modeles_configures()))
+                return None
             if statut is not None and statut not in GEMINI_RETRYABLE_STATUS:
-                message = _extrait_erreur(getattr(e, "response", None))
-                if _refus_de_configuration(statut, message):
+                message = _extrait_erreur(reponse)
+                if _refus_de_la_cle(statut, message):
                     _coupure = f"HTTP {statut}"
-                    _compter("ecartes")
+                    _compter("ecartes", nb_documents)
                     logger.error(
                         "Gemini refuse la configuration (HTTP %s) : %s -- plus aucun appel au modèle "
                         "jusqu'à la fin de ce run, les documents restants sont traités sans lui. %s",
-                        statut, message or e, _aide_configuration(statut, message))
+                        statut, message or e, _aide_configuration(statut, message, modele))
+                    return None
+                if _refus_du_modele(statut, message):
+                    logger.error("Gemini refuse le modèle %s (HTTP %s) : %s -- %s",
+                                 modele, statut, message or e, _aide_configuration(statut, message, modele))
+                    if _ecarter_modele(modele, f"HTTP {statut}"):
+                        continue
+                    _coupure = f"HTTP {statut}"
+                    _compter("ecartes", nb_documents)
+                    logger.error("Plus aucun modèle de la liste n'est utilisable : plus aucun appel "
+                                 "jusqu'à la fin de ce run, les documents restants sont traités sans lui.")
                     return None
                 # 400 propre à CE document : la réponse ne changera pas.
                 logger.error("Appel Gemini refusé définitivement (HTTP %s), aucun réessai : %s",
                              statut, message or e)
                 _le_modele_repond()
-                _compter("inexploitables")
+                _echec_du_contenu = True
+                if compter_inexploitables:
+                    _compter("inexploitables", nb_documents)
                 return None
 
             network_failures += 1
@@ -1248,14 +1499,17 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
             continue
         except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
             logger.error("Réponse Gemini inexploitable : %s", _message(e))
-            _compter("inexploitables")
+            _echec_du_contenu = True
+            if compter_inexploitables:
+                _compter("inexploitables", nb_documents)
             return None
 
         GEMINI_RATE_LIMITER.reward()
         parsed = _parse_json_reponse(content)
         ecart = "JSON illisible" if parsed is None else _ecart_au_schema(parsed, schema)
         if ecart is None:
-            _compter("verdicts")
+            _compter("verdicts", nb_documents)
+            _dernier_modele = modele
             return parsed
 
         # Réponse hors format : UNE seule reprise. Insister davantage sur un
@@ -1265,12 +1519,14 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
         if parse_failures >= GEMINI_MAX_PARSE_RETRIES:
             logger.warning("Réponse Gemini hors format après %d essais (%s) : %s",
                            parse_failures, ecart, str(content)[:200])
-            _compter("inexploitables")
+            _echec_du_contenu = True
+            if compter_inexploitables:
+                _compter("inexploitables", nb_documents)
             return None
         logger.warning("Réponse Gemini hors format (%s), une nouvelle tentative : %s",
                        ecart, str(content)[:200])
 
-    _sans_reponse(derniere_erreur, test_de_reprise)
+    _sans_reponse(derniere_erreur, test_de_reprise, nb_documents)
     return None
 
 
@@ -1282,15 +1538,17 @@ class EssaiLLM(NamedTuple):
     duree_s: float
 
 
-def essai_unique_llm(document: str, consigne: str, schema: dict, max_tokens: int = 64) -> EssaiLLM:
+def essai_unique_llm(document: str, consigne: str, schema: dict, max_tokens: int = 64,
+                     modele: Optional[str] = None) -> EssaiLLM:
     """UNE requête à Gemini -- la même que celle d'analyser_document, sans
     réessai, limiteur ni disjoncteur -- pour diagnostic_llm.py, qui doit
-    montrer la réponse brute. Une réponse qui ne respecte pas le schéma compte
-    comme un échec : aucun script ne s'en servirait."""
+    montrer la réponse brute. `modele` : celui à essayer (défaut : le premier
+    de la liste). Une réponse qui ne respecte pas le schéma compte comme un
+    échec : aucun script ne s'en servirait."""
     if not llm_disponible():
         return EssaiLLM(None, False, "aucune clé", 0.0)
     url, headers, payload = _requete_gemini(
-        document, consigne, schema, max_tokens, os.environ[GEMINI_API_KEY_ENV])
+        document, consigne, schema, max_tokens, os.environ[GEMINI_API_KEY_ENV], modele)
     debut = time.monotonic()
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT_S)

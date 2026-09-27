@@ -83,14 +83,17 @@ def test_08_un_contrat_refait_garde_sa_version_la_plus_fraiche(tmp_path):
 # La mémoire des 8-K de 04c
 # --------------------------------------------------------------------------- #
 def _verdict(sym, acc, source, n=0):
+    # Item 8.01 : un 8-K que Gemini lirait (cf. passe_au_modele), le seul cas
+    # où un verdict par règles repart au modèle quand une clé est disponible.
     return {"symbol": sym, "accession_number": acc, "classification_source": source,
-            "category": f"{source}-{n}"}
+            "category": f"{source}-{n}", "item_codes": ["Item 8.01"]}
 
 
 def _reference(entrees, llm):
     """La sémantique de load_llm_cache AVANT nettoyage : dernière écriture
     gagnante, verdicts d'avant Gemini (Mistral, ou sans source) ignorés,
-    verdicts par règles ignorés quand un modèle est disponible."""
+    verdicts par règles d'un 8-K à lire ignorés quand un modèle est
+    disponible."""
     cache = {}
     for e in entrees:
         if e.get("classification_source") not in ("gemini", "regles_document"):

@@ -28,7 +28,7 @@ VERDICT = {
 @pytest.fixture
 def sec(monkeypatch):
     """Remplace la couche SEC + LLM de 04c, et compte ce qui a réellement été
-    téléchargé et classifié."""
+    téléchargé et classifié par Gemini (en 8-K, pas en requêtes)."""
     compteurs = {"telechargements": 0, "classifications": 0}
     sft = module_04c.sft
 
@@ -40,44 +40,55 @@ def sec(monkeypatch):
         compteurs["telechargements"] += 1
         return ("Item 5.02 Departure of Officers.", "brut")
 
-    def faux_classify(document, consigne, schema, max_tokens=500):
-        compteurs["classifications"] += 1
-        return {"category": "depart_dirigeant", "materiality": True,
-                "summary": "Départ du directeur financier."}
+    def faux_lot(documents, consigne, schema_element, max_tokens_par_document=150):
+        compteurs["classifications"] += len(documents)
+        return {ident: {"category": "depart_dirigeant", "materiality": True,
+                        "summary": "Départ du directeur financier."} for ident in documents}
 
     monkeypatch.setattr(sft, "fetch_filing_text", faux_fetch)
-    monkeypatch.setattr(sft, "analyser_document", faux_classify)
+    monkeypatch.setattr(sft, "analyser_documents", faux_lot)
     return compteurs
 
 
-def test_un_8k_deja_classifie_n_est_ni_retelecharge_ni_reanalyse(sec, tmp_path):
-    cache = {}
+def _run(cache, tmp_path):
+    """Les deux temps de 04c pour MMM : classement par règles et mise en
+    attente, puis le lot pour Gemini. Rend (lignes finales, 8-K servis par la
+    mémoire) ; la ligne de Gemini remplace celle des règles, comme dans le
+    fichier de sortie."""
+    attente = []
     rows, hits = module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
+        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path, None, attente)
+    finales = {row["accession_number"]: row for row in rows}
+    finales.update({ligne["accession_number"]: ligne
+                    for ligne in module_04c.classer_en_attente(attente, cache, tmp_path)})
+    return list(finales.values()), hits
+
+
+def test_un_8k_deja_classifie_n_est_ni_retelecharge_ni_reanalyse(sec, tmp_path):
+    rows, hits = _run({}, tmp_path)
     assert hits == 0
     assert sec == {"telechargements": 1, "classifications": 1}
-    assert rows[0]["category"] == "depart_dirigeant"
+    assert (rows[0]["category"], rows[0]["classification_source"]) == ("depart_dirigeant", "gemini")
 
     # Second run : le cache relu depuis le disque, comme au démarrage réel.
     relu = module_04c.load_llm_cache(tmp_path)
-    rows2, hits2 = module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], relu, tmp_path)
+    rows2, hits2 = _run(relu, tmp_path)
 
     assert hits2 == 1
     assert sec == {"telechargements": 1, "classifications": 1}, "aucun nouvel appel attendu"
     assert rows2[0]["category"] == "depart_dirigeant"
     assert rows2[0]["materiality"] is True
     assert rows2[0]["from_cache"] is True
+    assert rows2[0]["classification_source"] == "gemini"
 
 
 def test_un_verdict_manquant_n_est_pas_memorise(sec, tmp_path, monkeypatch):
-    """Pas de verdict du modèle (quota épuisé, clé absente) : le 8-K est
-    classé par règles, et ce verdict-là, déterministe, est mémorisé."""
-    monkeypatch.setattr(module_04c.sft, "analyser_document", lambda *a, **k: None)
+    """Pas de verdict du modèle (quota épuisé, clé absente) : le 8-K garde son
+    verdict par règles, qui est mémorisé, car déterministe."""
+    monkeypatch.setattr(module_04c.sft, "analyser_documents", lambda *a, **k: None)
 
     cache = {}
-    rows, _ = module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
+    rows, _ = _run(cache, tmp_path)
 
     assert rows[0]["category"] != "non_evalue"
     assert rows[0]["classification_source"] == "regles_document"
@@ -91,8 +102,7 @@ def test_no_llm_cache_force_la_reanalyse(sec, tmp_path):
     """llm_cache=None (--no-llm-cache) : ni lecture ni écriture de la mémoire."""
     module_04c.append_llm_cache(tmp_path, {"symbol": "MMM", **FILING, **VERDICT})
 
-    rows, hits = module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], None, tmp_path)
+    rows, hits = _run(None, tmp_path)
 
     assert hits == 0
     assert sec == {"telechargements": 1, "classifications": 1}
@@ -101,15 +111,23 @@ def test_no_llm_cache_force_la_reanalyse(sec, tmp_path):
 
 def test_le_cache_est_ecrit_au_fil_de_l_eau(sec, tmp_path):
     """Un appel payé doit survivre à un Ctrl-C immédiat : l'écriture ne peut
-    pas attendre la fin du run."""
+    pas attendre la fin du run. Le verdict par règles d'abord, dès le
+    téléchargement ; celui de Gemini dès la réponse à son lot."""
+    attente = []
     module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], {}, tmp_path)
+        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], {}, tmp_path, None, attente)
 
-    lignes = module_04c.llm_cache_path(tmp_path).read_text(encoding="utf-8").strip().splitlines()
+    chemin = module_04c.llm_cache_path(tmp_path)
+    lignes = chemin.read_text(encoding="utf-8").strip().splitlines()
     assert len(lignes) == 1
     entree = json.loads(lignes[0])
     assert entree["accession_number"] == FILING["accession_number"]
     assert entree["symbol"] == "MMM"
+    assert entree["classification_source"] == "regles_document"
+
+    module_04c.classer_en_attente(attente, {}, tmp_path)
+    lignes = chemin.read_text(encoding="utf-8").strip().splitlines()
+    assert [json.loads(l)["classification_source"] for l in lignes] == ["regles_document", "gemini"]
 
 
 def test_une_ligne_corrompue_ne_perd_pas_tout_le_cache(tmp_path, caplog):
@@ -186,8 +204,7 @@ def test_un_8k_classe_par_mistral_est_reclasse(sec, tmp_path, monkeypatch):
     module_04c.llm_cache_path(tmp_path).write_text(json.dumps(ancien) + "\n", encoding="utf-8")
 
     cache = module_04c.load_llm_cache(tmp_path)
-    rows, hits = module_04c.process_ticker_8k(
-        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
+    rows, hits = _run(cache, tmp_path)
 
     assert hits == 0
     assert sec == {"telechargements": 1, "classifications": 1}

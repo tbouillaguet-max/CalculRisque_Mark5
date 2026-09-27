@@ -154,51 +154,129 @@ def test_une_mention_de_passage_dans_un_depot_administratif_ne_compte_pas():
 # --------------------------------------------------------------------------- #
 # Intégration : le repli s'enclenche, et n'écrase pas le modèle
 # --------------------------------------------------------------------------- #
-def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
-    """Sans clé d'API, `analyser_document` rend None : le document doit
-    alors être classé par règles au lieu de repartir en `non_evalue`."""
-    monkeypatch.setattr(_c8k.sft, "analyser_document", lambda *a, **k: None)
-    resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nThe Company recorded an impairment charge.")
+FUSION = ("Item 8.01 Other Events\nThe Company entered into an Agreement and Plan of Merger "
+          "pursuant to which it will acquire all outstanding shares of the target.")
 
-    assert resultat["category"] != "non_evalue"
-    assert resultat["materiality"] is True
-    assert resultat["classification_source"] == "regles_document"
+
+def _en_attente(texte: str, date: str = "2026-06-01") -> "_c8k.EnAttente":
+    """Un 8-K classé par règles, en attente de Gemini, comme le laisse process_ticker_8k."""
+    ligne = {"symbol": "AAPL", "cik": "320193", "filed_date": date, "accession_number": "0000-1",
+             **_c8k.classify_8k_par_regles(_c8k.extract_item_codes(texte), texte)}
+    return _c8k.EnAttente(ligne=ligne, texte=_c8k.texte_pour_le_modele(texte))
+
+
+def test_sans_reponse_du_modele_le_verdict_par_regles_reste(monkeypatch):
+    """Pas de réponse de Gemini (quota épuisé, clé absente) : le 8-K garde son
+    verdict par règles au lieu de repartir en `non_evalue`."""
+    monkeypatch.setattr(_c8k.sft, "analyser_documents", lambda *a, **k: None)
+    attente = _en_attente(FUSION)
+
+    assert _c8k.classer_en_attente([attente]) == []
+    assert attente.ligne["category"] == "fusion_acquisition"
+    assert attente.ligne["materiality"] is True
+    assert attente.ligne["classification_source"] == "regles_document"
 
 
 def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch):
     """La règle est un repli, pas un remplacement : un verdict du modèle ne
     doit jamais être écrasé par elle."""
-    monkeypatch.setenv(_c8k.sft.GEMINI_API_KEY_ENV, "une-cle")
     monkeypatch.setattr(
-        _c8k.sft, "analyser_document",
-        lambda *a, **k: {"category": "rachat_actions", "materiality": True, "summary": "verdict du modèle"},
+        _c8k.sft, "analyser_documents",
+        lambda documents, *a, **k: {i: {"category": "rachat_actions", "materiality": True,
+                                        "summary": "verdict du modèle"} for i in documents},
     )
-    resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nimpairment charge")
+    [resultat] = _c8k.classer_en_attente([_en_attente(FUSION)])
 
     assert resultat["category"] == "rachat_actions"
     assert resultat["summary"] == "verdict du modèle"
     assert resultat["classification_source"] == "gemini"
 
 
+def test_un_8k_isole_sans_reponse_garde_son_verdict_par_regles(monkeypatch):
+    """Le lot a répondu, sauf pour le 8-K qui le faisait échouer (voir
+    sec_filings_text.analyser_documents) : les autres prennent le verdict du
+    modèle, lui garde celui des règles."""
+    monkeypatch.setattr(_c8k.sft, "analyser_documents", lambda documents, *a, **k: {
+        "d2": {"category": "rachat_actions", "materiality": True, "summary": "verdict du modèle"}})
+    premier, second = _en_attente(FUSION), _en_attente(FUSION)
+    second.ligne["accession_number"] = "0000-2"
+
+    [resultat] = _c8k.classer_en_attente([premier, second])
+
+    assert resultat["accession_number"] == "0000-2" and resultat["classification_source"] == "gemini"
+    assert premier.ligne["classification_source"] == "regles_document"
+
+
 def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch):
     """Un repli mémorisé ne doit pas devenir un plafond : dès qu'une clé
-    Gemini est disponible, les lignes classées par règles repartent au
-    modèle."""
+    Gemini est disponible, les 8-K classés par règles que Gemini lirait
+    repartent au modèle -- pas ceux dont les Items décident seuls."""
     import json
 
     cache = _c8k.llm_cache_path(tmp_path)
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(
         json.dumps({"symbol": "AAPL", "accession_number": "0000-1", "category": "autre_materiel",
-                    "classification_source": "regles_document"}) + "\n"
+                    "item_codes": ["Item 8.01"], "classification_source": "regles_document"}) + "\n"
         + json.dumps({"symbol": "AAPL", "accession_number": "0000-2", "category": "rachat_actions",
-                      "classification_source": "gemini"}) + "\n",
+                      "item_codes": ["Item 8.01"], "classification_source": "gemini"}) + "\n"
+        + json.dumps({"symbol": "AAPL", "accession_number": "0000-3", "category": "non_materiel",
+                      "item_codes": ["Item 2.02", "Item 9.01"], "classification_source": "regles_document"}) + "\n",
         encoding="utf-8",
     )
 
-    assert len(_c8k.load_llm_cache(tmp_path)) == 2, "sans clé, le repli mémorisé doit être réutilisé"
+    assert len(_c8k.load_llm_cache(tmp_path)) == 3, "sans clé, le repli mémorisé doit être réutilisé"
 
     monkeypatch.setenv(_c8k.sft.GEMINI_API_KEY_ENV, "une-cle")
     avec_cle = _c8k.load_llm_cache(tmp_path)
-    assert len(avec_cle) == 1
-    assert _c8k.cache_key("AAPL", "0000-2") in avec_cle
+    assert set(avec_cle) == {_c8k.cache_key("AAPL", "0000-2"), _c8k.cache_key("AAPL", "0000-3")}
+
+
+# --------------------------------------------------------------------------- #
+# Ce que Gemini lit, et ce qui lui est épargné
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("codes, lu", [
+    (["Item 5.02"], True),                       # départ ou élection : le texte tranche
+    (["Item 8.01", "Item 9.01"], True),          # « autre événement »
+    (["Item 1.01"], True),
+    (["Item 1.02"], True),
+    (["Item 2.02", "Item 9.01"], False),         # résultats : renvoi à l'Exhibit 99.1
+    (["Item 7.01"], False),                      # Regulation FD : idem
+    (["Item 5.07"], False),                      # vote en assemblée : administratif
+    (["Item 9.01"], False),
+    (["Item 5.02", "Item 2.06"], False),         # un Item matériel par définition décide seul
+    ([], False),
+])
+def test_seuls_les_8k_que_le_texte_tranche_vont_au_modele(codes, lu):
+    assert _c8k.passe_au_modele(codes) is lu
+
+
+def test_le_texte_envoye_perd_la_page_de_garde_et_les_signatures():
+    texte = ("UNITED STATES SECURITIES AND EXCHANGE COMMISSION Washington, D.C. FORM 8-K "
+             "Check the appropriate box below   Written communications pursuant to Rule 425 "
+             "Item 5.02 Departure of Directors.\n\n  The Chief Executive Officer resigned.   "
+             "SIGNATURES Pursuant to the requirements of the Securities Exchange Act of 1934...")
+    assert _c8k.texte_pour_le_modele(texte) == (
+        "Item 5.02 Departure of Directors. The Chief Executive Officer resigned.")
+
+
+def test_le_texte_envoye_est_plafonne():
+    texte = "Item 8.01 Other Events. " + "x " * 10_000
+    assert len(_c8k.texte_pour_le_modele(texte)) == _c8k.MAX_CARACTERES_MODELE
+
+
+def test_les_8k_du_meme_jour_partent_ensemble_les_plus_recents_d_abord(monkeypatch):
+    """Au plus DOCUMENTS_PAR_REQUETE 8-K par requête, tous déposés le même
+    jour : un 8-K plus récent n'éclaire jamais le classement d'un plus ancien."""
+    lots = []
+
+    def faux_lot(documents, consigne, schema_element, max_tokens_par_document=150):
+        lots.append((consigne, len(documents)))
+        return {i: {"category": "non_materiel", "materiality": False, "summary": "."} for i in documents}
+
+    monkeypatch.setattr(_c8k.sft, "analyser_documents", faux_lot)
+    attentes = [_en_attente(FUSION, "2026-06-01") for _ in range(3)] + [_en_attente(FUSION, "2026-06-02")]
+    _c8k.classer_en_attente(attentes, par_requete=2)
+
+    assert [(consigne.split("déposés le ")[1][:10], n) for consigne, n in lots] == [
+        ("2026-06-02", 1), ("2026-06-01", 2), ("2026-06-01", 1)]
