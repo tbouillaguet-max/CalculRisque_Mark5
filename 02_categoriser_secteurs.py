@@ -11,10 +11,10 @@ Corrections / changements par rapport à CateEntMark2 :
       d'appel API. Le LLM n'est appelé qu'en dernier recours (GICS absent
       ou mapping ambigu), ce qui réduit fortement le coût/temps par rapport
       au script d'origine qui appelait l'API pour les 600 entreprises.
-    - La clé d'API se lit depuis l'environnement (GEMINI_API_KEY ou
-      MISTRAL_API_KEY, au lieu d'être en dur dans le fichier) : évite de
-      committer une clé par erreur. Le script tourne sans clé si le mapping
-      GICS suffit (cas le plus fréquent) et sans fichier secteurs_manuels.json.
+    - La clé d'API (GEMINI_API_KEY) se lit dans .env ou l'environnement, au
+      lieu d'être en dur dans le fichier : évite de committer une clé par
+      erreur. Le script tourne sans clé si le mapping GICS suffit (cas le plus
+      fréquent) et sans fichier secteurs_manuels.json.
 
 Usage :
     python 02_categoriser_secteurs.py
@@ -39,11 +39,9 @@ logger = logging.getLogger(__name__)
 
 # --- LLM (fallback uniquement) -------------------------------------------------
 # L'appel passe par sec_filings_text.analyser_texte_llm, partagé avec 04c et
-# 07b : Gemini si GEMINI_API_KEY est définie, sinon Mistral (MISTRAL_API_KEY).
-# ⚠️ Une clé Mistral était autrefois codée en dur dans ce fichier (committée
-# dans un dépôt public) : si tu utilises encore cette clé, RÉVOQUE-LA côté
-# Mistral. Les clés se lisent uniquement depuis l'environnement, ex:
-#   export GEMINI_API_KEY="ta_cle"
+# 07b : Gemini, avec la clé GEMINI_API_KEY. Les clés se lisent uniquement
+# depuis .env ou l'environnement, jamais depuis ce fichier, ex. dans .env :
+#   GEMINI_API_KEY=ta_cle
 
 SECTEURS = [
     "Agro-alimentaire et boissons", "Assurance", "Automobiles et équipementiers",
@@ -104,10 +102,10 @@ def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
         return {}
     if not sft.llm_disponible():
         logger.warning(
-            "Aucune clé LLM (%s ou %s) : %d entreprises sans secteur GICS "
+            "Aucune clé Gemini (%s) : %d entreprises sans secteur GICS "
             "exploitable resteront 'indetermine' (renseigne secteurs_manuels.json "
             "ou définis une clé pour les résoudre via l'API). %s",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, len(entreprises), sft.aide_cle_absente(),
+            sft.GEMINI_API_KEY_ENV, len(entreprises), sft.aide_cle_absente(),
         )
         return {}
 

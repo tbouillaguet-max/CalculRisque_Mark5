@@ -1,5 +1,5 @@
 """
-Validation QUALITATIVE, par LLM (Mistral), du signal quantitatif de
+Validation QUALITATIVE, par LLM (Gemini), du signal quantitatif de
 valorisation (07_calcul_dcf.py / 06b_calcul_valorisation_combinee.py) :
 pour chaque (symbol, période) déjà valorisé, récupère le texte du 10-K/10-Q
 DE CE DÉPÔT PRÉCIS (jamais un filing plus récent) et demande au modèle si le
@@ -30,10 +30,9 @@ la détection d'événements matériels).
 
 Prérequis :
     pip install requests beautifulsoup4
-    export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
-                                      sec_filings_text.fournisseur_llm -- sans
-    cette variable, le script journalise chaque ligne comme "non_evalue" et
-    n'appelle jamais le modèle, plutôt que de planter)
+    GEMINI_API_KEY=ta_cle dans .env (modèle : .env.example) -- sans cette
+    variable, le script journalise chaque ligne comme "non_evalue" et
+    n'appelle jamais le modèle, plutôt que de planter
 
 Usage :
     python 07b_validation_qualitative.py
@@ -143,10 +142,7 @@ def evaluate_period(row: pd.Series) -> dict:
     if not sft.llm_disponible():
         return {
             "verdict": "non_evalue_pas_de_cle_api",
-            "justification": (
-                f"Ni {sft.GEMINI_API_KEY_ENV} ni {sft.MISTRAL_API_KEY_ENV} définie : "
-                "aucun appel au modèle."
-            ),
+            "justification": f"{sft.GEMINI_API_KEY_ENV} non définie : aucun appel au modèle.",
             "risques_cites": None,
             "accession_number": filing["accession_number"],
             "form": filing["form"],
@@ -234,9 +230,9 @@ def main() -> None:
 
     if not sft.llm_disponible():
         logger.warning(
-            "Aucune clé LLM (%s ou %s) : toutes les périodes seront journalisées comme "
+            "Aucune clé Gemini (%s) : toutes les périodes seront journalisées comme "
             "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
+            sft.GEMINI_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info("Validation qualitative par %s.", sft.description_llm())

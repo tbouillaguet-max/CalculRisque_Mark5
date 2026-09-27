@@ -59,7 +59,7 @@ def gemini(monkeypatch):
     """Pose une file de réponses : un code HTTP, (code, message), une exception."""
     monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "cle-de-test")
     monkeypatch.setattr(sft.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(sft, "MISTRAL_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
+    monkeypatch.setattr(sft, "GEMINI_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
     appels = []
 
     def poser(reponses):
@@ -80,7 +80,7 @@ def gemini(monkeypatch):
 
 def _sans_reponse(statut=503, message=SURCHARGE):
     """Une analyse sans réponse jusqu'à sa dernière tentative."""
-    return [(statut, message)] * sft.MISTRAL_MAX_RETRIES
+    return [(statut, message)] * sft.GEMINI_MAX_RETRIES
 
 
 def _mettre_en_pause(gemini, statut=503, message=SURCHARGE, ensuite=()):
@@ -110,7 +110,7 @@ def test_trois_analyses_sans_reponse_mettent_le_modele_en_pause(gemini, horloge,
 
 def test_une_erreur_reseau_persistante_met_aussi_en_pause(gemini, horloge):
     coupure = requests.exceptions.ConnectionError("réseau coupé")
-    gemini([coupure] * sft.MISTRAL_MAX_RETRIES * sft.LLM_ECHECS_AVANT_PAUSE)
+    gemini([coupure] * sft.GEMINI_MAX_RETRIES * sft.LLM_ECHECS_AVANT_PAUSE)
     for _ in range(sft.LLM_ECHECS_AVANT_PAUSE):
         sft.analyser_texte_llm("p")
     assert sft.llm_en_pause()
@@ -227,6 +227,28 @@ def test_une_cle_invalide_coupe_mais_pas_un_refus_propre_au_document(gemini, hor
     assert sft.llm_coupe_pour_ce_run()
 
 
+@pytest.mark.parametrize("message", [
+    "Thinking level is not supported for this model.",
+    'Invalid JSON payload received. Unknown name "responseJsonSchema" at \'generation_config\': '
+    "Cannot find field.",
+])
+def test_un_reglage_refuse_par_le_modele_coupe_tout_de_suite(gemini, horloge, caplog, message):
+    """Un 400 sur le niveau de réflexion ou un champ de la requête vise le
+    réglage, pas le document : la même réponse reviendrait pour chaque 8-K."""
+    appels = gemini([(400, message), 200])
+    assert sft.analyser_texte_llm("p") is None
+    assert sft.llm_coupe_pour_ce_run()
+    assert sft.analyser_texte_llm("p") is None
+    assert len(appels) == 1
+
+
+def test_un_niveau_de_reflexion_refuse_dit_quoi_changer(gemini, horloge, caplog, monkeypatch):
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemma-4-31b-it")
+    gemini([(400, "Thinking level is not supported for this model.")])
+    sft.analyser_texte_llm("p")
+    assert "gemma-4-31b-it" in caplog.text and "Gemini 3" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # Ce que voient les appelants
 # --------------------------------------------------------------------------- #
@@ -248,7 +270,7 @@ def test_le_bilan_dit_ce_que_le_modele_a_fait(gemini, horloge):
     sft.analyser_texte_llm("p")
     sft.analyser_texte_llm("p")
     bilan = sft.bilan_llm()
-    assert bilan.startswith("Gemini (gemini-3.8-flash) -- 2 verdict(s)")
+    assert bilan.startswith("Gemini (gemini-3.8-flash, réflexion low) -- 2 verdict(s)")
     assert "3 analyse(s) sans réponse" in bilan
 
     sft.reinitialiser_disjoncteur_llm()

@@ -280,7 +280,7 @@ trois scripts recopiaient telles quelles dans leur fichier de sortie. Ils
 relisent désormais leur checkpoint par `reprise_jsonl` : une ligne par 8-K,
 par période ou par contrat, la dernière écriture gagnant. Une dernière ligne
 tronquée par l'interruption est ignorée au lieu de faire planter la reprise.
-La mémoire des 8-K de `04c` (`cache_8k_mistral.jsonl`) est en outre nettoyée
+La mémoire des 8-K de `04c` (`cache_8k.jsonl`) est en outre nettoyée
 à chaque démarrage : les verdicts remplacés en sont retirés, sans rien changer
 à ce qu'elle rend, avec ou sans clé LLM. Mesuré au 2026-09-25 sur les fichiers
 du dépôt : aucun doublon, aucun fichier réécrit.
@@ -600,7 +600,7 @@ JSONL *append-only*, relisible même après une interruption brutale — là où
 parquet réécrit en bloc ne l'est pas.
 
 `04c` ajoute un troisième niveau qui lui est propre : un **cache par dépôt**
-(`cache_8k_mistral.jsonl`), qui évite de retélécharger ET de reclassifier un
+(`cache_8k.jsonl`), qui évite de retélécharger ET de reclassifier un
 8-K déjà vu, même entre deux runs complets.
 
 > **Note historique.** `04` était le seul des quatre sans reprise : il
@@ -649,39 +649,61 @@ jour quotidienne »). La variable doit être visible du processus qui lance le
 run : une tâche planifiée Windows ou un cron ne lisent pas le profil du shell
 interactif.
 
-### Le LLM : Gemini ou Mistral
+### Le LLM : Gemini
 
-`02`, `04c` et `07b` appellent un LLM à travers une seule fonction,
-`sec_filings_text.analyser_texte_llm`. Le fournisseur se choisit par
-l'environnement, sans toucher au code :
+`02`, `04c` et `07b` appellent Gemini (Google) à travers `sec_filings_text.py`,
+par l'API `generateContent`. Tout se règle par l'environnement ou `.env`, sans
+toucher au code :
 
 | Variable | Rôle |
 |---|---|
-| `GEMINI_API_KEY` | Clé Google AI Studio. Définie, elle rend Gemini prioritaire. |
-| `GEMINI_MODEL` | Modèle Gemini (défaut `gemini-3.8-flash` ; `gemini-2.5-flash` répond 404 aux clés récentes). |
-| `MISTRAL_API_KEY` | Clé Mistral, utilisée quand aucune clé Gemini n'est définie. |
-| `LLM_PROVIDER` | `gemini` ou `mistral`, pour forcer le choix quand les deux clés existent. |
-| `MISTRAL_REQUESTS_PER_SECOND` | Débit sortant vers le LLM, quel que soit le fournisseur (défaut 1). |
+| `GEMINI_API_KEY` | Clé Google AI Studio. Sans elle, aucun appel au modèle. |
+| `GEMINI_MODEL` | Modèle (défaut `gemini-3.8-flash` ; `gemini-2.5-flash` répond 404 aux clés récentes). |
+| `GEMINI_THINKING_LEVEL` | Réflexion du modèle avant de répondre : `minimal`, `low` (défaut), `medium` ou `high`. |
+| `GEMINI_REQUESTS_PER_SECOND` | Débit sortant vers Gemini (défaut 1 appel par seconde). |
 
-Les clés se donnent **par variable d'environnement**, jamais dans le code :
-les constantes `*_API_KEY_ENV` de `sec_filings_text.py` sont les *noms* des
-variables à lire, pas les clés. Sous Windows :
+Les clés se donnent **par `.env` ou variable d'environnement**, jamais dans le
+code : la constante `GEMINI_API_KEY_ENV` de `sec_filings_text.py` est le *nom*
+de la variable à lire, pas la clé. Sous Windows, le plus simple est la ligne
+`GEMINI_API_KEY=ta_cle` dans `.env` (modèle : `.env.example`), ou :
 
 ```powershell
 setx GEMINI_API_KEY "ta_cle"      # puis ouvrir un NOUVEAU terminal
 ```
 
-Au démarrage, `04c` et `07b` affichent le fournisseur retenu
-(`Classification par Gemini (gemini-3.8-flash)`). Un refus de l'API (403,
-400…) est journalisé avec le message renvoyé par le fournisseur, qui en dit
-la cause.
+**Un document, une consigne, un format.** `04c` passe par
+`sec_filings_text.analyser_document(document, consigne, schema)`, qui envoie les
+trois séparément : la consigne en instruction système (`systemInstruction`), le
+texte du 8-K comme contenu (`contents`), et le format de la réponse comme schéma
+JSON (`generationConfig.responseJsonSchema`). Gemini génère alors sous la
+contrainte du schéma : il ne peut répondre qu'une des sept catégories, un vrai
+booléen pour la matérialité et une phrase de résumé. La réponse est revérifiée
+contre le schéma avant d'être gardée ; une réponse hors format est redemandée
+une fois, puis le 8-K est classé par règles. La consigne ne contient ni le
+format ni un exemple de JSON, comme Google le recommande. Avant ce schéma, le
+mode JSON seul garantissait du JSON, pas ses valeurs : la mémoire des 8-K
+contenait une catégorie inventée (`aut_materiel`). `02` et `07b` gardent un
+prompt unique sans schéma (`analyser_texte_llm`) et valident eux-mêmes les
+clés qu'ils attendent. Aucune requête n'envoie `temperature`, que Google demande
+de retirer pour les modèles 3.8.
 
-Sans aucune clé, `07b` journalise ses lignes en `non_evalue_pas_de_cle_api`
-au lieu d'appeler le modèle, et `04c` classe chaque 8-K **par règles** à partir
-de son texte. Le cache de `04c` (`cache_8k_mistral.jsonl`, nom conservé) sert
-quel que soit le fournisseur : un 8-K déjà classé par le modèle n'est pas
-re-soumis. Un 8-K classé par règles, lui, est repris par le modèle dès qu'une
-clé est définie.
+Au démarrage, `04c` et `07b` affichent le modèle retenu
+(`Classification par Gemini (gemini-3.8-flash, réflexion low)`). Un refus de
+l'API (403, 400…) est journalisé avec le message renvoyé par Google, qui en
+dit la cause.
+
+Sans clé, `07b` journalise ses lignes en `non_evalue_pas_de_cle_api` au lieu
+d'appeler le modèle, et `04c` classe chaque 8-K **par règles** à partir de son
+texte. La mémoire de `04c` (`cache_8k.jsonl`) évite de re-soumettre un 8-K déjà
+classé par Gemini. Un 8-K classé par règles, lui, est repris par le modèle dès
+qu'une clé est définie.
+
+**Les verdicts de Mistral sont écartés.** Le projet utilisait auparavant
+Mistral. Sa mémoire s'appelait `cache_8k_mistral.jsonl` : elle est renommée
+`cache_8k.jsonl` au premier lancement de `04c`, et les verdicts de Mistral
+qu'elle contient en sont retirés (1 647 dans la version du dépôt, sur dix
+entreprises, 77 % jugés matériels). Leurs 8-K sont reclassés comme des neufs :
+par Gemini les récents, par règles les anciens, comme le reste de l'univers.
 
 **Seuls les 8-K récents vont au modèle.** Un 8-K ne sert qu'à périmer un
 signal encore actionnable. Au-delà de la plus longue durée de vie d'un signal
@@ -696,38 +718,41 @@ modèle. Le backtest historique s'appuie donc sur la classification par règles
 pour tout ce qui est plus ancien.
 
 **Quand le modèle ne répond pas.** Un 503 (`The model is overloaded`) ou une
-coupure réseau est un incident chez le fournisseur, pas dans le code : l'appel
-est réessayé jusqu'à six fois, et le journal le signale en INFO avec le message
-du fournisseur. Parfois trois analyses de suite restent sans réponse : surcharge
-qui dure, ou quota quotidien du palier gratuit atteint (429), que le premier run
+coupure réseau est un incident chez Google, pas dans le code : l'appel est
+réessayé jusqu'à six fois, et le journal le signale en INFO avec le message de
+Google. Parfois trois analyses de suite restent sans réponse : surcharge qui
+dure, ou quota quotidien du palier gratuit atteint (429), que le premier run
 avec une clé peut dépasser même réduit à 6 300 appels. Un **disjoncteur** met
 alors le modèle en pause 15 min, puis le réessaie. Chaque nouvel échec double la
 pause, jusqu'à 2 h. Pendant la pause, les 8-K sont classés par règles, et le
 modèle reprend les récents au run suivant. Sans disjoncteur, chaque 8-K
 attendait ses six réessais (une bonne minute sur un 503, davantage sur un 429)
-et le run rampait. Sur une offre payante, relève `MISTRAL_REQUESTS_PER_SECOND`.
+et le run rampait. Sur une offre payante, relève `GEMINI_REQUESTS_PER_SECOND`.
 
-**Quand le modèle est refusé.** Clé invalide, accès refusé ou modèle retiré
-(401, 403, 404) : la réponse serait la même pour chaque document. Le modèle est
-donc coupé pour tout le run dès le premier refus, avec la correction à faire.
-Pour un modèle retiré, Google nomme son successeur, et le message le reprend :
-`mets la ligne GEMINI_MODEL=… dans .env`. En fin de run, `04c` et `07b`
-affichent une ligne `Modèle : …` qui dit ce que le modèle a réellement fait :
-verdicts, analyses sans réponse, documents traités sans lui.
+**Quand le modèle est refusé.** Clé invalide, accès refusé, modèle retiré
+(401, 403, 404) ou réglage que le modèle ne connaît pas (400 sur le niveau de
+réflexion ou le schéma) : la réponse serait la même pour chaque document. Le
+modèle est donc coupé pour tout le run dès le premier refus, avec la correction
+à faire. Pour un modèle retiré, Google nomme son successeur, et le message le
+reprend : `mets la ligne GEMINI_MODEL=… dans .env`. En fin de run, `04c` et
+`07b` affichent une ligne `Modèle : …` qui dit ce que le modèle a réellement
+fait : verdicts, réponses inexploitables, analyses sans réponse, documents
+traités sans lui.
 
 **Tester la clé et le modèle en quelques secondes**, sans attendre les
 téléchargements de `04c` :
 
 ```powershell
-python diagnostic_llm.py                  # 3 requêtes de test : réponse brute du fournisseur
+python diagnostic_llm.py                  # 3 requêtes de test, de la forme de celles de 04c
 python diagnostic_llm.py --essais 10      # taux de surcharge (503) du modèle
 python diagnostic_llm.py --modeles        # modèles Gemini ouverts à ta clé
 python diagnostic_llm.py --modele NOM     # essayer un autre modèle, sans toucher à .env
 ```
 
 Il dit d'où vient la clé (`.env` ou environnement du terminal) sans jamais
-l'afficher, montre pour chaque essai le code HTTP et le message du fournisseur,
-et conclut : modèle opérationnel, refus à corriger, quota ou surcharge. Chaque
+l'afficher, montre pour chaque essai le code HTTP et le message de Google,
+vérifie que la réponse respecte le format demandé, et conclut : modèle
+opérationnel, refus à corriger, quota ou surcharge. Chaque
 essai consomme un appel du quota. Pour adopter un autre modèle : la ligne
 `GEMINI_MODEL=NOM` dans `.env`.
 
@@ -758,9 +783,8 @@ point-in-time (chaque donnée datée de son dépôt SEC réel) :
                                       (--as-of-date, mode replay)
 
 04c et 07b réutilisent `sec_filings_text.py` (recherche/téléchargement de
-filings SEC + appel LLM générique) et nécessitent `GEMINI_API_KEY` ou
-`MISTRAL_API_KEY` (voir « Configuration requise ») pour produire un verdict de
-modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue", et
+filings SEC + appel à Gemini) et nécessitent `GEMINI_API_KEY` (voir
+« Configuration requise ») pour produire un verdict de modèle. Sans clé, aucun des deux ne plante : 07b journalise "non_evalue", et
 04c classe chaque 8-K PAR RÈGLES à partir de son texte, verdicts que le modèle
 reprend dès qu'une clé est définie.
 

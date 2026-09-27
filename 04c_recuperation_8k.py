@@ -17,10 +17,19 @@ Contrainte anti-anticipation
 ------------------------------
 Chaque 8-K est un document déjà intrinsèquement point-in-time (il ne peut
 par construction parler que d'événements connus à SA date de dépôt) : la
-classification par Mistral ne porte QUE sur le texte de CE 8-K, jamais sur un
+classification par Gemini ne porte QUE sur le texte de CE 8-K, jamais sur un
 résumé agrégé ou une connaissance d'événements postérieurs -- même garantie
 structurelle que 07b_validation_qualitative.py (sec_filings_text.py::
 fetch_filing_text ne télécharge qu'UN document à la fois).
+
+Classification par Gemini : document, consigne et format séparés
+----------------------------------------------------------------
+Le texte du 8-K, la consigne (CONSIGNE_TEMPLATE) et le format de la réponse
+(SCHEMA_REPONSE, un schéma JSON) partent séparément
+(sec_filings_text.analyser_document). Gemini génère sous la contrainte du
+schéma : il ne peut répondre qu'une des sept catégories, un booléen pour la
+matérialité et une phrase de résumé -- et la réponse est revérifiée avant
+d'être gardée.
 
 Pré-classification par regex (codes "Item X.XX", boilerplate standardisé du
 formulaire 8-K -- ex: Item 5.02 = départ/nomination de dirigeant, Item 8.01 =
@@ -28,15 +37,14 @@ autres événements, Item 1.01 = accord matériel) : gratuite et fiable, gardée
 en plus du verdict LLM (pas à sa place) pour un recoupement rapide côté
 rapport, sans dépendre uniquement de la classification sémantique du modèle.
 
-Mémoire des classifications (cache_8k_mistral.jsonl)
-----------------------------------------------------
+Mémoire des classifications (cache_8k.jsonl)
+--------------------------------------------
 Un 8-K est un document FIGÉ : son texte ne changera plus, donc sa
-classification non plus. Chaque 8-K classifié AVEC SUCCÈS par Mistral est
-mémorisé (clé : symbole + numéro d'accession) dans un cache JSONL persistant,
-et n'est jamais ré-analysé -- ni son texte re-téléchargé auprès de la SEC.
-Seuls les 8-K réellement classifiés y entrent : un "non_evalue" (quota Mistral
-épuisé, clé absente, réponse hors format) n'est PAS mémorisé, sinon un incident
-passager gèlerait définitivement un trou dans les données.
+classification non plus. Chaque 8-K classé -- par Gemini, ou par règles à
+défaut -- est mémorisé (clé : symbole + numéro d'accession) dans un cache
+JSONL persistant, et n'est jamais ré-analysé -- ni son texte re-téléchargé
+auprès de la SEC. Un verdict par règles d'un 8-K récent repart au modèle dès
+qu'une clé est disponible (voir load_llm_cache).
 
 Ce cache est indépendant de --resume : --resume reprend un run interrompu (au
 grain du ticker), le cache survit à TOUS les runs (au grain du document). Un
@@ -45,12 +53,12 @@ d'appels déjà effectués. --no-llm-cache force la ré-analyse.
 
 Prérequis :
     pip install requests beautifulsoup4
-    export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
-                                      sec_filings_text.fournisseur_llm -- sans
-    clé, chaque 8-K est téléchargé et classé PAR RÈGLES à partir de son texte,
-    cf. classify_8k_par_regles ; le modèle les reprend quand une clé arrive)
-    export MISTRAL_REQUESTS_PER_SECOND="1"   (facultatif : débit sortant vers le
-    LLM, Gemini ou Mistral, voir sec_filings_text.MISTRAL_RATE_LIMITER)
+    GEMINI_API_KEY=ta_cle dans .env (modèle : .env.example). Sans clé, chaque
+    8-K est téléchargé et classé PAR RÈGLES à partir de son texte (cf.
+    classify_8k_par_regles) ; le modèle reprend les récents quand une clé
+    arrive. Facultatifs, dans .env aussi : GEMINI_MODEL (modèle),
+    GEMINI_THINKING_LEVEL (réflexion) et GEMINI_REQUESTS_PER_SECOND (débit),
+    voir sec_filings_text.
 
 Usage :
     python 04c_recuperation_8k.py
@@ -83,15 +91,30 @@ logger = logging.getLogger("recuperation_8k")
 CHECKPOINT_EVERY = 10
 ITEM_CODE_PATTERN = re.compile(r"Item\s+\d+\.\d+", re.IGNORECASE)
 
-# Cache persistant des 8-K DÉJÀ classifiés par Mistral (voir le docstring).
-# JSONL append-only : écrit ligne par ligne au fil du run, donc utilisable même
+# Cache persistant des 8-K DÉJÀ classifiés (voir le docstring). JSONL
+# append-only : écrit ligne par ligne au fil du run, donc utilisable même
 # après un Ctrl-C ou une coupure -- un JSON réécrit en bloc en fin de run
 # perdrait tout le travail d'un run interrompu, exactement le cas qu'il s'agit
 # d'éviter.
-LLM_CACHE_FILENAME = "cache_8k_mistral.jsonl"
+LLM_CACHE_FILENAME = "cache_8k.jsonl"
+# Son nom du temps de Mistral, l'ancien fournisseur : renommé au premier
+# chargement (voir migrer_ancien_cache).
+ANCIEN_LLM_CACHE_FILENAME = "cache_8k_mistral.jsonl"
 # Classifications qui ne valent PAS mémorisation : ce sont des non-réponses
 # (quota épuisé, clé absente, format illisible), pas des verdicts.
 NON_CACHEABLE_CATEGORIES = frozenset({None, "", "non_evalue"})
+
+# Qui a rendu un verdict (colonne `classification_source`).
+SOURCE_GEMINI = "gemini"
+SOURCE_REGLES = "regles_document"
+# Seules ces sources sont servies par la mémoire. Une entrée sans source, ou
+# d'une autre source, date d'avant Gemini -- de Mistral : elle est écartée
+# (effacée de la mémoire au chargement) et le 8-K reclassé comme un neuf, par
+# Gemini s'il est récent, par règles sinon. Constaté dans la mémoire du dépôt :
+# 1 647 verdicts de Mistral, 77 % jugés matériels, dont une catégorie inventée
+# (« aut_materiel ») ; les garder aurait laissé dix entreprises jugées
+# autrement que le reste de l'univers.
+SOURCES_RECONNUES = frozenset({SOURCE_GEMINI, SOURCE_REGLES})
 
 # Au-delà de cette part d'entreprises en échec RÉSEAU, le run échoue
 # bruyamment sans rien écrire. Un material_events_8k.parquet incomplet est
@@ -106,28 +129,48 @@ CATEGORIES = (
     "procedure_judiciaire", "fusion_acquisition", "autre_materiel", "non_materiel",
 )
 
-PROMPT_TEMPLATE = """Tu es un analyste financier. Voici le texte d'un 8-K \
-déposé par {symbol} le {filed_date} (codes Item détectés dans le document : \
-{item_codes}). Analyse UNIQUEMENT ce texte (ignore tout ce que tu pourrais \
-savoir par ailleurs sur cette entreprise après cette date).
+# La CONSIGNE donnée à Gemini (instruction système). Le document part à côté,
+# et le format de la réponse dans SCHEMA_REPONSE : la consigne ne répète ni
+# les champs ni un exemple de JSON -- Google le déconseille, la qualité baisse.
+CONSIGNE_TEMPLATE = """Tu es un analyste financier. Le document fourni est le \
+texte d'un 8-K déposé par {symbol} le {filed_date} (codes Item détectés dans le \
+document : {item_codes}). Analyse UNIQUEMENT ce document : ignore tout ce que tu \
+pourrais savoir par ailleurs sur cette entreprise, en particulier après cette date.
 
-Texte du document :
-{text}
+Dis si l'événement qu'il annonce est matériel pour une thèse de valorisation, \
+c'est-à-dire susceptible de changer significativement la valeur intrinsèque ou \
+le risque perçu de l'entreprise. Classe-le dans la catégorie qui le décrit le \
+mieux, et résume-le en une phrase courte, en français."""
 
-Cet événement est-il matériel pour une thèse de valorisation (susceptible de \
-changer significativement la valeur intrinsèque ou le risque perçu de \
-l'entreprise) ? Classifie-le dans UNE seule catégorie parmi : {categories}.
+# Le FORMAT de la réponse. Gemini génère sous sa contrainte : une catégorie de
+# la liste, un vrai booléen, une phrase -- et rien d'autre. Les descriptions
+# guident le modèle champ par champ.
+SCHEMA_REPONSE = {
+    "type": "object",
+    "properties": {
+        "category": {
+            "type": "string",
+            "enum": list(CATEGORIES),
+            "description": "Catégorie de l'événement annoncé ; non_materiel pour un dépôt de routine.",
+        },
+        "materiality": {
+            "type": "boolean",
+            "description": "Vrai si l'événement peut changer significativement la valeur "
+                           "intrinsèque ou le risque perçu de l'entreprise.",
+        },
+        "summary": {
+            "type": "string",
+            "description": "L'événement en une phrase courte, en français.",
+        },
+    },
+    "required": ["category", "materiality", "summary"],
+    "propertyOrdering": ["category", "materiality", "summary"],
+}
 
-Réponds UNIQUEMENT avec un JSON valide au format :
-{{"category": "une des catégories ci-dessus", "materiality": true ou false, \
-"summary": "résumé en une phrase courte"}}
-"""
 
-
-def build_prompt(symbol: str, filed_date: str, item_codes: List[str], text: str) -> str:
-    return PROMPT_TEMPLATE.format(
+def build_consigne(symbol: str, filed_date: str, item_codes: List[str]) -> str:
+    return CONSIGNE_TEMPLATE.format(
         symbol=symbol, filed_date=filed_date, item_codes=", ".join(item_codes) or "aucun détecté",
-        text=text, categories=", ".join(CATEGORIES),
     )
 
 
@@ -156,8 +199,8 @@ def compute_search_windows(ttm: pd.DataFrame, symbol: str, today: datetime) -> L
 # ----------------------------------------------------------------------------
 # Classification SANS modèle, à partir du texte du document
 # ----------------------------------------------------------------------------
-# POURQUOI. Sans MISTRAL_API_KEY, `classify_8k` renvoyait `non_evalue` et jetait
-# le texte qu'il venait de télécharger. Mesuré sur l'archive du dépôt : 99 147
+# POURQUOI. Sans clé d'API, `classify_8k` renvoyait `non_evalue` et jetait le
+# texte qu'il venait de télécharger. Mesuré sur l'archive du dépôt : 99 147
 # dépôts, `category` à `non_evalue` sur 100% des lignes, `materiality` et
 # `summary` vides partout. Le filtre d'événements matériels -- l'une des deux
 # protections anti-value-trap du moteur -- ne s'appliquait donc à RIEN, en
@@ -284,7 +327,7 @@ def classify_8k_par_regles(item_codes: List[str], text: str) -> dict:
     if categorie is None:
         return {
             "item_codes": item_codes, "category": "non_materiel", "materiality": False,
-            "summary": None, "classification_source": "regles_document",
+            "summary": None, "classification_source": SOURCE_REGLES,
         }
 
     resume = None
@@ -295,7 +338,7 @@ def classify_8k_par_regles(item_codes: List[str], text: str) -> dict:
 
     return {
         "item_codes": item_codes, "category": categorie, "materiality": True,
-        "summary": resume, "classification_source": "regles_document",
+        "summary": resume, "classification_source": SOURCE_REGLES,
     }
 
 
@@ -328,25 +371,56 @@ def classify_8k(symbol: str, filed_date: str, text: str, llm: bool = True) -> di
     item_codes = extract_item_codes(text)
     if not llm:
         return classify_8k_par_regles(item_codes, text)
-    prompt = build_prompt(symbol, filed_date, item_codes, text)
-    result = sft.analyser_texte_llm(prompt)
+    # Le document, la consigne et le format partent séparément ; la réponse
+    # revient conforme à SCHEMA_REPONSE, ou pas du tout (None).
+    result = sft.analyser_document(
+        document=text, consigne=build_consigne(symbol, filed_date, item_codes), schema=SCHEMA_REPONSE)
     if result is None or "category" not in result:
         return classify_8k_par_regles(item_codes, text)
-    # Le fournisseur qui a réellement répondu ("gemini" ou "mistral"), pas un
-    # libellé figé : c'est la trace qui permet de comparer les verdicts.
     return {
         "item_codes": item_codes, "category": result.get("category"),
         "materiality": result.get("materiality"), "summary": result.get("summary"),
-        "classification_source": sft.fournisseur_llm() or "llm",
+        "classification_source": SOURCE_GEMINI,
     }
 
 
 # ----------------------------------------------------------------------------
-# Mémoire des 8-K déjà classifiés (cache_8k_mistral.jsonl)
+# Mémoire des 8-K déjà classifiés (cache_8k.jsonl)
 # ----------------------------------------------------------------------------
 
 def llm_cache_path(output_dir: Path) -> Path:
     return output_dir / LLM_CACHE_FILENAME
+
+
+def migrer_ancien_cache(output_dir: Path) -> None:
+    """Renomme la mémoire de son ancien nom (ANCIEN_LLM_CACHE_FILENAME) vers le
+    nouveau. Si les deux existent, l'ancienne passe DEVANT la nouvelle dans un
+    seul fichier : la « dernière écriture gagnante » de load_llm_cache donne
+    alors raison aux verdicts les plus récents. Rien n'est perdu ; les verdicts
+    de Mistral qu'elle contient sont écartés ensuite, par load_llm_cache."""
+    ancien = output_dir / ANCIEN_LLM_CACHE_FILENAME
+    if not ancien.exists():
+        return
+    nouveau = llm_cache_path(output_dir)
+    if nouveau.exists():
+        contenu = ancien.read_bytes()
+        if contenu and not contenu.endswith(b"\n"):
+            contenu += b"\n"
+        tmp = nouveau.with_suffix(".jsonl.tmp")
+        tmp.write_bytes(contenu + nouveau.read_bytes())
+        ecriture_atomique.remplacer(tmp, nouveau)
+        try:
+            ancien.unlink()
+        except OSError as exc:
+            # Verrou passager (antivirus, synchronisation) : l'ancien fichier
+            # sera refusionné au prochain lancement, sans effet sur ce que
+            # rend la mémoire -- la dernière écriture gagne toujours.
+            logger.warning("%s non supprimé (%s) : il sera refusionné au prochain lancement.",
+                           ancien, exc)
+            return
+    else:
+        ecriture_atomique.remplacer(ancien, nouveau)
+    logger.info("Mémoire des classifications renommée : %s -> %s.", ancien.name, nouveau.name)
 
 
 def cache_key(symbol: str, accession_number: str) -> str:
@@ -356,7 +430,7 @@ def cache_key(symbol: str, accession_number: str) -> str:
 def is_cacheable(classification: dict) -> bool:
     """Vrai seulement si un verdict exploitable a été rendu. Mémoriser un
     "non_evalue" reviendrait à graver dans le marbre l'échec du jour (quota
-    Mistral atteint) : le 8-K ne serait plus jamais reproposé à l'analyse.
+    atteint) : le 8-K ne serait plus jamais reproposé à l'analyse.
 
     Un verdict PAR RÈGLES est mémorisé comme les autres -- il est déterministe,
     et c'est le téléchargement du document qu'on évite de repayer, pas le
@@ -379,7 +453,7 @@ def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
     dernier_regles: Dict[str, int] = {}
     for i, entree in enumerate(entrees):
         cle = cache_key(entree["symbol"], entree["accession_number"])
-        if entree.get("classification_source") == "regles_document":
+        if entree.get("classification_source") == SOURCE_REGLES:
             dernier_regles[cle] = i
         else:
             dernier_modele[cle] = i
@@ -396,40 +470,47 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
     -- une entrée manquante coûte un appel au modèle, un cache illisible en
     coûte des milliers.
 
-    SANS DOUBLONS : à chaque chargement, les lignes illisibles et les verdicts
-    remplacés (cf. entrees_a_conserver) sont retirés du fichier, réécrit d'un
-    bloc. Le fichier ne fait qu'ajouter des lignes en cours de run -- c'est ce
-    qui protège un appel payé d'un Ctrl-C --, il est donc compacté ici, au
-    seul moment où rien d'autre n'y écrit.
+    SANS DOUBLONS : à chaque chargement, les lignes illisibles, les verdicts
+    remplacés (cf. entrees_a_conserver) et ceux d'avant Gemini (cf.
+    SOURCES_RECONNUES) sont retirés du fichier, réécrit d'un bloc. Le fichier
+    ne fait qu'ajouter des lignes en cours de run -- c'est ce qui protège un
+    appel payé d'un Ctrl-C --, il est donc compacté ici, au seul moment où
+    rien d'autre n'y écrit.
 
     Les verdicts rendus PAR RÈGLES (`classification_source == "regles_document"`)
     sont ignorés dès qu'une clé d'API est disponible : ils ont été produits
     faute de mieux, et les garder empêcherait le modèle de reprendre la main
     le jour où la clé arrive -- un repli qui se transformerait en plafond."""
+    migrer_ancien_cache(output_dir)
     path = llm_cache_path(output_dir)
     if not path.exists():
         return {}
     lignes, illisibles = reprise_jsonl.lire_lignes(path)
     entrees = [e for e in lignes if e.get("symbol") and e.get("accession_number")]
     ignorees = illisibles + len(lignes) - len(entrees)
-    conservees = entrees_a_conserver(entrees)
-    doublons = len(entrees) - len(conservees)
+    reconnues = [e for e in entrees if e.get("classification_source") in SOURCES_RECONNUES]
+    ecartees = len(entrees) - len(reconnues)
+    conservees = entrees_a_conserver(reconnues)
+    doublons = len(reconnues) - len(conservees)
     if ignorees:
         logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
-    if doublons or ignorees:
+    if ecartees:
+        logger.info(
+            "%d verdict(s) d'avant Gemini (Mistral) écarté(s) de %s : ces 8-K sont reclassés comme "
+            "des neufs -- par Gemini les récents quand une clé est disponible, par règles sinon.",
+            ecartees, path)
+    if doublons or ignorees or ecartees:
         reprise_jsonl.reecrire(path, conservees)
         logger.info(
-            "Mémoire des classifications nettoyée : %d doublon(s) et %d ligne(s) illisible(s) "
-            "retirés de %s.", doublons, ignorees, path)
+            "Mémoire des classifications nettoyée : %d doublon(s), %d ligne(s) illisible(s) et "
+            "%d verdict(s) d'avant Gemini retirés de %s.", doublons, ignorees, ecartees, path)
 
-    # Gemini OU Mistral : une seule des deux clés suffit à rendre la main au
-    # modèle (voir sft.fournisseur_llm).
     llm_disponible = sft.llm_disponible()
     cache: Dict[str, dict] = {}
     par_regles = set()
     for entree in conservees:
         cle = cache_key(entree["symbol"], entree["accession_number"])
-        if (llm_disponible and entree.get("classification_source") == "regles_document"
+        if (llm_disponible and entree.get("classification_source") == SOURCE_REGLES
                 and llm_pour(entree.get("filed_date"), limite_llm)):
             # Seul un 8-K RÉCENT repart au modèle : un ancien, classé par
             # règles, reste servi par le cache (cf. config.LLM_8K_FENETRE_JOURS).
@@ -451,7 +532,7 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
 
 
 def append_llm_cache(output_dir: Path, entry: dict) -> None:
-    """Écriture IMMÉDIATE, une ligne par 8-K classifié. L'appel Mistral vient
+    """Écriture IMMÉDIATE, une ligne par 8-K classifié. L'appel à Gemini vient
     d'être payé : il ne doit pas être reperdu par un Ctrl-C dix secondes plus
     tard."""
     path = llm_cache_path(output_dir)
@@ -505,7 +586,7 @@ def process_ticker_8k(
             seen_accessions.add(filing["accession_number"])
 
             # Déjà classifié lors d'un run précédent : ni téléchargement SEC,
-            # ni appel Mistral. Le test vient AVANT fetch_filing_text, sinon
+            # ni appel à Gemini. Le test vient AVANT fetch_filing_text, sinon
             # l'économie se limiterait au LLM.
             if llm_cache is not None:
                 connu = llm_cache.get(cache_key(symbol, filing["accession_number"]))
@@ -607,8 +688,8 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--no-llm-cache", action="store_true",
-        help="Ignore " + LLM_CACHE_FILENAME + " et re-soumet à Mistral des 8-K déjà classifiés "
-             "(à réserver à un changement de prompt ou de modèle : chaque appel est payant).",
+        help="Ignore " + LLM_CACHE_FILENAME + " et re-soumet à Gemini des 8-K déjà classifiés "
+             "(à réserver à un changement de consigne ou de modèle : chaque appel est payant).",
     )
     parser.add_argument(
         "--llm-depuis-jours", type=int, default=config.LLM_8K_FENETRE_JOURS,
@@ -636,9 +717,9 @@ def main() -> None:
         # d'AVANT la classification par règles : il faisait croire à un run
         # inutile alors que chaque 8-K est bel et bien lu et classé.
         logger.info(
-            "Aucune clé LLM (%s ou %s) : chaque 8-K est téléchargé et classé PAR RÈGLES à partir "
-            "de son texte. Pour que le modèle classe les 8-K récents : %s",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
+            "Aucune clé Gemini (%s) : chaque 8-K est téléchargé et classé PAR RÈGLES à partir "
+            "de son texte. Pour que Gemini classe les 8-K récents : %s",
+            sft.GEMINI_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info(
@@ -648,7 +729,7 @@ def main() -> None:
             "de tout l'historique" if limite_llm is None else
             f"des 8-K déposés depuis le {limite_llm} ({args.llm_depuis_jours} jours) -- les plus "
             "anciens sont classés par règles",
-            sft.MISTRAL_RATE_LIMITER.interval, sft.MISTRAL_REQUESTS_PER_SECOND_ENV,
+            sft.GEMINI_RATE_LIMITER.interval, sft.GEMINI_REQUESTS_PER_SECOND_ENV,
         )
 
     if not config.FINANCIALS_TTM_FILE.exists():
@@ -689,7 +770,7 @@ def main() -> None:
     llm_cache: Optional[Dict[str, dict]] = None
     if args.no_llm_cache:
         logger.warning(
-            "--no-llm-cache : les 8-K déjà classifiés seront re-téléchargés et re-soumis à Mistral."
+            "--no-llm-cache : les 8-K déjà classifiés seront re-téléchargés et re-soumis à Gemini."
         )
     else:
         llm_cache = load_llm_cache(args.output_dir, limite_llm)

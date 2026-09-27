@@ -39,6 +39,7 @@ Prérequis :
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -71,7 +72,7 @@ SUBMISSIONS_CACHE_DIR = config.DIR_FINANCIALS / "sec_submissions"
 SUBMISSIONS_CACHE_TTL_SECONDS = 24 * 3600
 _submissions_memory_cache: Dict[str, List[Dict]] = {}
 
-# Budget de texte transmis au LLM (voir analyser_texte_mistral) : un 10-K
+# Budget de texte transmis au LLM (voir analyser_document) : un 10-K
 # peut faire 100+ pages, très au-delà du contexte utile/payant pour une
 # classification. Ce budget est désormais dépensé sur les SECTIONS
 # pertinentes, plus sur le début du document (voir fetch_filing_text).
@@ -103,21 +104,34 @@ _SECTION_PATTERNS = [
 _PARSER: Optional[str] = None
 
 # --------------------------------------------------------------------------- #
-# Fournisseur du LLM : Gemini (Google) ou Mistral
+# Le LLM : Gemini (Google), API generateContent
 # --------------------------------------------------------------------------- #
-# 04c, 07b et 02 ne parlent qu'à analyser_texte_llm : le fournisseur se choisit
-# ici, par variables d'environnement, sans toucher aux scripts.
+# 04c, 07b et 02 ne parlent qu'à analyser_document et analyser_texte_llm : le
+# modèle se règle ici, par variables d'environnement, sans toucher aux scripts.
 #
-#   GEMINI_API_KEY définie   -> Gemini (prioritaire)
-#   sinon MISTRAL_API_KEY    -> Mistral (comportement historique)
-#   LLM_PROVIDER=gemini|mistral force le choix quand les deux clés existent.
+# UNE REQUÊTE, TROIS ZONES. Pour soumettre un document avec une consigne et le
+# format de la réponse, generateContent sépare les trois -- corps identique à
+# celui qu'envoie le SDK officiel google-genai 2.25 (voir
+# tests/test_appel_gemini.py::test_le_corps_est_celui_du_sdk_officiel) :
+#
+#   systemInstruction          la CONSIGNE : rôle, tâche, critères ;
+#   contents                   le DOCUMENT, tel quel ;
+#   generationConfig           le FORMAT : responseMimeType "application/json"
+#     .responseJsonSchema      et le schéma JSON de la réponse.
+#
+# Avec un schéma, Gemini génère SOUS CONTRAINTE : il ne peut produire qu'un
+# JSON conforme -- champs obligatoires présents, valeur d'un `enum` prise dans
+# la liste, vrai booléen pour un booléen. Le mode JSON seul, sans schéma, ne
+# garantissait que du JSON : la mémoire des 8-K de 04c contenait ainsi une
+# catégorie inventée (« aut_materiel »), acceptée telle quelle. Le schéma ne
+# se répète PAS dans la consigne, exemple de JSON compris : Google le
+# déconseille, la qualité de la réponse baisse. La réponse est revérifiée ici
+# (_ecart_au_schema) : une réponse hors format n'est jamais rendue.
 #
 # Les CLÉS ne s'écrivent jamais dans ce fichier : les constantes *_ENV
 # ci-dessous sont les NOMS des variables d'environnement où les lire. Y coller
 # une clé revient à chercher une variable qui porterait ce nom -- elle
 # n'existe pas, et le LLM est alors jugé indisponible.
-LLM_PROVIDER_ENV = "LLM_PROVIDER"
-
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_MODEL_ENV = "GEMINI_MODEL"
 # Constaté le 2026-09-25 : gemini-2.5-flash répond 404 à une clé récente
@@ -125,48 +139,59 @@ GEMINI_MODEL_ENV = "GEMINI_MODEL"
 # Un autre modèle se choisit par GEMINI_MODEL, sans toucher à ce fichier.
 GEMINI_DEFAULT_MODEL = "gemini-3.8-flash"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-# Les modèles Gemini « à réflexion » décomptent leurs jetons de réflexion de
-# maxOutputTokens : avec le budget de 500 jetons prévu pour une réponse JSON
-# courte, la réflexion peut tout consommer et la réponse revenir vide. On la
-# coupe sur les modèles flash de la génération 2.5 (budget 0 accepté), et on
-# réserve une marge sur les autres, où elle ne se désactive pas toujours.
-GEMINI_THINKING_HEADROOM_TOKENS = 2048
 
-MISTRAL_API_KEY_ENV = "MISTRAL_API_KEY"
-MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
-MISTRAL_MODEL = "mistral-large-latest"
-# Reprises RÉSEAU (dont les 429). Trois ne suffisaient pas : avec le backoff
-# ci-dessous elles épuisaient la patience du script en ~15 secondes, alors
-# qu'une fenêtre de quota Mistral se compte en dizaines de secondes. Le
-# 04c_recuperation_8k.py abandonnait donc la classification (category=
-# "non_evalue") dès la première rafale de 429, sur des milliers de documents.
-MISTRAL_MAX_RETRIES = 6
-# Reprises sur réponse NON PARSABLE (distinct des reprises réseau ci-dessus) :
-# une seule. L'ancienne version n'en faisait aucune (abandon immédiat), mais
-# insister sur un modèle qui vient de répondre hors format coûte des appels
-# payants pour un gain marginal.
-MISTRAL_MAX_PARSE_RETRIES = 2
-MISTRAL_RETRY_DELAY = 2
-MISTRAL_MAX_RETRY_DELAY = 90.0
-MISTRAL_TEMPERATURE = 0.1
+# RÉFLEXION. Les modèles Gemini réfléchissent avant de répondre, et leurs jetons
+# de réflexion se décomptent de maxOutputTokens : non réglée, la réflexion peut
+# consommer tout le budget, et la réponse revenir vide ou coupée
+# (finishReason=MAX_TOKENS) -- un verdict perdu. Depuis la génération 3, elle
+# se règle par NIVEAU ; "low" suffit pour classer un document court, vite et à
+# peu de frais. Les modèles 2.x ne connaissent que le budget en jetons (coupé à
+# 0 sur les 2.5-flash) et refuseraient un niveau.
+GEMINI_THINKING_LEVEL_ENV = "GEMINI_THINKING_LEVEL"
+GEMINI_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+GEMINI_DEFAULT_THINKING_LEVEL = "low"
+# Marge de jetons laissée à la réflexion, en plus du budget de la réponse. Un
+# plafond, pas une dépense : seuls les jetons réellement produits sont facturés.
+GEMINI_THINKING_HEADROOM_TOKENS = 8192
+# Google demande de retirer `temperature` (et top_p, top_k) des requêtes aux
+# modèles 3.8 : aucun de ces réglages n'est envoyé.
 
-# Codes HTTP qui justifient un réessai. Tout le reste (401 clé invalide, 403
-# compte suspendu, 422 prompt refusé) est DÉFINITIF : réessayer trois fois ne
-# fait que retarder l'inévitable en brûlant des appels.
-MISTRAL_RETRYABLE_STATUS = frozenset((408, 409, 425, 429, 500, 502, 503, 504))
+# Reprises RÉSEAU (dont les 429 et les 503). Trois ne suffisaient pas : avec le
+# backoff ci-dessous elles épuisaient la patience du script en ~15 secondes,
+# alors qu'une fenêtre de quota se compte en dizaines de secondes. Le
+# 04c_recuperation_8k.py abandonnait donc la classification dès la première
+# rafale de 429, sur des milliers de documents.
+GEMINI_MAX_RETRIES = 6
+# Reprises sur réponse HORS FORMAT -- JSON illisible, ou non conforme au schéma
+# -- distinctes des reprises réseau ci-dessus : une seule. Insister sur un
+# modèle qui vient de répondre hors format coûte des appels pour un gain
+# marginal.
+GEMINI_MAX_PARSE_RETRIES = 2
+GEMINI_RETRY_DELAY = 2
+GEMINI_MAX_RETRY_DELAY = 90.0
+# Attente d'une réponse. Large : un modèle qui réfléchit répond en quelques
+# secondes, parfois beaucoup plus sous charge, et une attente coupée trop tôt
+# renvoie la même requête en entier.
+GEMINI_TIMEOUT_S = 120
 
-# Débit sortant vers Mistral. Le vrai correctif du 429 n'est pas de mieux
+# Codes HTTP qui justifient un réessai. Tout le reste (400 requête invalide,
+# 401/403 clé refusée, 404 modèle inconnu) est DÉFINITIF : réessayer ne fait
+# que retarder l'inévitable en brûlant des appels.
+GEMINI_RETRYABLE_STATUS = frozenset((408, 409, 425, 429, 500, 502, 503, 504))
+
+# Débit sortant vers Gemini. Le vrai correctif du 429 n'est pas de mieux
 # réessayer : c'est de ne pas dépasser le quota. Sans limiteur, 04c enchaînait
 # ses appels aussi vite que le réseau le permettait et se faisait jeter dès le
-# premier ticker. 1 requête/seconde tient dans le quota de tous les plans
-# Mistral ; ajustable via MISTRAL_REQUESTS_PER_SECOND pour un plan plus large.
-MISTRAL_REQUESTS_PER_SECOND_ENV = "MISTRAL_REQUESTS_PER_SECOND"
-MISTRAL_DEFAULT_REQUESTS_PER_SECOND = 1.0
+# premier ticker. 1 requête/seconde par défaut ; GEMINI_REQUESTS_PER_SECOND
+# l'ajuste au quota de l'offre (plus bas sur le palier gratuit, plus haut sur
+# une offre payante).
+GEMINI_REQUESTS_PER_SECOND_ENV = "GEMINI_REQUESTS_PER_SECOND"
+GEMINI_DEFAULT_REQUESTS_PER_SECOND = 1.0
 # Plafond de l'auto-freinage : au-delà, ce n'est plus une rafale à lisser mais
 # un quota épuisé, et il vaut mieux échouer visiblement que ramper.
-MISTRAL_MAX_INTERVAL = 30.0
+GEMINI_MAX_INTERVAL = 30.0
 # Succès consécutifs avant de resserrer l'intervalle élargi par un 429.
-MISTRAL_SUCCESSES_BEFORE_SPEEDUP = 20
+GEMINI_SUCCESSES_BEFORE_SPEEDUP = 20
 
 # Délimiteurs de bloc de code Markdown, que les modèles ajoutent volontiers
 # autour d'un JSON ("```json\n{...}\n```") -- l'ancienne exigence
@@ -608,16 +633,17 @@ class AdaptiveRateLimiter:
 
     Même principe que sec_http.RateLimiter (attente sous verrou, donc débit
     global borné quel que soit le nombre de threads), avec une différence :
-    l'intervalle n'est pas figé. Le quota Mistral dépend du plan du compte et
-    n'est annoncé nulle part -- le seul moyen de le connaître est de s'y
-    cogner. Chaque 429 DOUBLE donc l'intervalle (jusqu'à `max_interval`), et
-    une série de succès le ramène progressivement vers sa valeur nominale.
+    l'intervalle n'est pas figé. Le quota Gemini dépend de l'offre du compte
+    (palier gratuit ou payant) et du modèle, que le script ne connaît pas --
+    le seul moyen de le connaître est de s'y cogner. Chaque 429 DOUBLE donc
+    l'intervalle (jusqu'à `max_interval`), et une série de succès le ramène
+    progressivement vers sa valeur nominale.
 
     Sans ça, réessayer après un 429 ne fait que déplacer le problème : la
     requête suivante repart au même rythme et se fait refuser de nouveau."""
 
-    def __init__(self, rate_per_second: float, max_interval: float = MISTRAL_MAX_INTERVAL,
-                 successes_before_speedup: int = MISTRAL_SUCCESSES_BEFORE_SPEEDUP):
+    def __init__(self, rate_per_second: float, max_interval: float = GEMINI_MAX_INTERVAL,
+                 successes_before_speedup: int = GEMINI_SUCCESSES_BEFORE_SPEEDUP):
         self._base_interval = 1.0 / rate_per_second if rate_per_second > 0 else 0.0
         self._interval = self._base_interval
         self._max_interval = max_interval
@@ -661,33 +687,34 @@ class AdaptiveRateLimiter:
                 self._interval = max(self._interval / 2, self._base_interval)
 
 
-def _mistral_rate_per_second() -> float:
-    brut = os.environ.get(MISTRAL_REQUESTS_PER_SECOND_ENV, "").strip()
+def _gemini_rate_per_second() -> float:
+    brut = os.environ.get(GEMINI_REQUESTS_PER_SECOND_ENV, "").strip()
     if not brut:
-        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+        return GEMINI_DEFAULT_REQUESTS_PER_SECOND
     try:
         valeur = float(brut)
     except ValueError:
         logger.warning("%s='%s' illisible, valeur par défaut (%s req/s).",
-                       MISTRAL_REQUESTS_PER_SECOND_ENV, brut, MISTRAL_DEFAULT_REQUESTS_PER_SECOND)
-        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+                       GEMINI_REQUESTS_PER_SECOND_ENV, brut, GEMINI_DEFAULT_REQUESTS_PER_SECOND)
+        return GEMINI_DEFAULT_REQUESTS_PER_SECOND
     if valeur <= 0:
         logger.warning("%s doit être > 0 (reçu %s), valeur par défaut (%s req/s).",
-                       MISTRAL_REQUESTS_PER_SECOND_ENV, valeur, MISTRAL_DEFAULT_REQUESTS_PER_SECOND)
-        return MISTRAL_DEFAULT_REQUESTS_PER_SECOND
+                       GEMINI_REQUESTS_PER_SECOND_ENV, valeur, GEMINI_DEFAULT_REQUESTS_PER_SECOND)
+        return GEMINI_DEFAULT_REQUESTS_PER_SECOND
     return valeur
 
 
-# Limiteur GLOBAL au processus, partagé par 04c et 07b : deux modules qui
-# appelleraient Mistral en parallèle avec chacun le sien doubleraient le débit
+# Limiteur GLOBAL au processus, partagé par 04c, 07b et 02 : deux modules qui
+# appelleraient Gemini en parallèle avec chacun le sien doubleraient le débit
 # réel, donc le taux de 429.
-MISTRAL_RATE_LIMITER = AdaptiveRateLimiter(_mistral_rate_per_second())
+GEMINI_RATE_LIMITER = AdaptiveRateLimiter(_gemini_rate_per_second())
 
 
 def _retry_after_seconds(response: Optional["requests.Response"]) -> Optional[float]:
-    """Valeur de l'en-tête Retry-After, en secondes. L'en-tête admet deux
-    formes (un nombre de secondes ou une date HTTP) et Mistral utilise la
-    première ; la seconde est gérée pour ne pas dépendre de ce détail."""
+    """Valeur de l'en-tête HTTP standard Retry-After, en secondes. Gemini
+    annonce plutôt son délai dans le corps (voir _retry_delay_from_body), mais
+    une passerelle ou un proxy peut poser l'en-tête. Il admet deux formes : un
+    nombre de secondes ou une date HTTP."""
     if response is None:
         return None
     brut = (getattr(response, "headers", None) or {}).get("Retry-After")
@@ -732,42 +759,22 @@ def _retry_delay_from_body(response: Optional["requests.Response"]) -> Optional[
     return None
 
 
-def _mistral_retry_delay(response: Optional["requests.Response"], attempt: int) -> float:
-    """Retry-After s'il est fourni (le serveur sait mieux que nous), sinon
-    backoff exponentiel plafonné avec jitter -- le jitter évite que plusieurs
-    appelants repartis en même temps ne se resynchronisent sur le quota."""
+def _gemini_retry_delay(response: Optional["requests.Response"], attempt: int) -> float:
+    """Le délai annoncé par le serveur s'il y en a un (il sait mieux que nous),
+    sinon backoff exponentiel plafonné avec jitter -- le jitter évite que
+    plusieurs appelants repartis en même temps ne se resynchronisent sur le
+    quota."""
     retry_after = _retry_after_seconds(response)
     if retry_after is None:
         retry_after = _retry_delay_from_body(response)
     if retry_after is not None:
-        return min(retry_after + random.uniform(0, 1), MISTRAL_MAX_RETRY_DELAY)
-    return min(MISTRAL_RETRY_DELAY * (2 ** attempt), MISTRAL_MAX_RETRY_DELAY) + random.uniform(0, 1)
-
-
-def fournisseur_llm() -> Optional[str]:
-    """Fournisseur du LLM à utiliser : "gemini", "mistral", ou None si aucune
-    clé n'est disponible (voir l'en-tête « Fournisseur du LLM »).
-
-    LLM_PROVIDER force le choix ; il ne crée pas de clé pour autant : forcer
-    "gemini" sans GEMINI_API_KEY rend None plutôt que de basculer en silence
-    sur l'autre fournisseur, et le journal dit alors pourquoi."""
-    force = os.environ.get(LLM_PROVIDER_ENV, "").strip().lower()
-    cles = {"gemini": GEMINI_API_KEY_ENV, "mistral": MISTRAL_API_KEY_ENV}
-    if force:
-        if force not in cles:
-            logger.warning("%s='%s' inconnu (attendu : gemini ou mistral) : choix automatique.",
-                           LLM_PROVIDER_ENV, force)
-        else:
-            return force if os.environ.get(cles[force]) else None
-    for nom in ("gemini", "mistral"):
-        if os.environ.get(cles[nom]):
-            return nom
-    return None
+        return min(retry_after + random.uniform(0, 1), GEMINI_MAX_RETRY_DELAY)
+    return min(GEMINI_RETRY_DELAY * (2 ** attempt), GEMINI_MAX_RETRY_DELAY) + random.uniform(0, 1)
 
 
 def llm_disponible() -> bool:
-    """Vrai si une clé d'API permet d'appeler un LLM (Gemini ou Mistral)."""
-    return fournisseur_llm() is not None
+    """Vrai si une clé Gemini est disponible. Une clé vide compte comme absente."""
+    return bool(os.environ.get(GEMINI_API_KEY_ENV, "").strip())
 
 
 def aide_cle_absente() -> str:
@@ -775,11 +782,10 @@ def aide_cle_absente() -> str:
     clé manquante, mais une clé posée là où ce processus ne la voit pas."""
     import env_local
 
-    noms = (GEMINI_API_KEY_ENV, MISTRAL_API_KEY_ENV)
-    if any(not re.fullmatch(r"[A-Z][A-Z0-9_]*", nom) for nom in noms):
-        return ("sec_filings_text.py a été modifié : GEMINI_API_KEY_ENV et MISTRAL_API_KEY_ENV "
-                "doivent contenir le NOM d'une variable ('GEMINI_API_KEY'), pas la clé. Restaure "
-                "le fichier (git checkout -- sec_filings_text.py) et mets la clé dans .env.")
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", GEMINI_API_KEY_ENV):
+        return ("sec_filings_text.py a été modifié : GEMINI_API_KEY_ENV doit contenir le NOM "
+                "d'une variable ('GEMINI_API_KEY'), pas la clé. Restaure le fichier "
+                "(git checkout -- sec_filings_text.py) et mets la clé dans .env.")
     return (f"Ajoute la ligne {GEMINI_API_KEY_ENV}=ta_cle au fichier {env_local.FICHIER} (lu par "
             f"tous les scripts, jamais poussé sur git), ou, sous PowerShell, "
             f"$env:{GEMINI_API_KEY_ENV} = \"ta_cle\" dans CE terminal. Après setx, seul un "
@@ -787,80 +793,147 @@ def aide_cle_absente() -> str:
 
 
 def description_llm() -> str:
-    """Libellé pour les journaux : fournisseur et modèle, ou comment en activer un."""
-    fournisseur = fournisseur_llm()
-    if fournisseur == "gemini":
-        return f"Gemini ({_gemini_model()})"
-    if fournisseur == "mistral":
-        return f"Mistral ({MISTRAL_MODEL})"
-    return f"aucun LLM ({GEMINI_API_KEY_ENV} ou {MISTRAL_API_KEY_ENV} à définir)"
+    """Libellé pour les journaux : modèle et réflexion, ou comment activer Gemini."""
+    if not llm_disponible():
+        return f"aucun LLM ({GEMINI_API_KEY_ENV} à définir)"
+    model = _gemini_model()
+    if _generation_2(model):
+        return f"Gemini ({model})"
+    return f"Gemini ({model}, réflexion {_niveau_reflexion()})"
 
 
 def _gemini_model() -> str:
-    return os.environ.get(GEMINI_MODEL_ENV, "").strip() or GEMINI_DEFAULT_MODEL
+    """Modèle de GEMINI_MODEL, sans le préfixe "models/" que Google écrit dans
+    ses messages et listes -- recopié tel quel, il donnait une URL invalide."""
+    nom = os.environ.get(GEMINI_MODEL_ENV, "").strip().removeprefix("models/")
+    return nom or GEMINI_DEFAULT_MODEL
 
 
-def _requete_gemini(prompt: str, max_tokens: int, api_key: str) -> Tuple[str, dict, dict]:
-    """(url, en-têtes, corps) d'un appel generateContent de l'API Gemini."""
+def _generation_2(model: str) -> bool:
+    """Modèle 2.x : réflexion réglée par budget de jetons, pas par niveau."""
+    return model.startswith("gemini-2.")
+
+
+def _niveau_reflexion() -> str:
+    """Niveau de réflexion demandé par GEMINI_THINKING_LEVEL, "low" par défaut."""
+    return _niveau_valide(os.environ.get(GEMINI_THINKING_LEVEL_ENV, "").strip().lower())
+
+
+@functools.lru_cache(maxsize=None)
+def _niveau_valide(brut: str) -> str:
+    """En cache : une valeur inconnue n'est signalée qu'une fois par run, pas à
+    chaque document."""
+    if not brut:
+        return GEMINI_DEFAULT_THINKING_LEVEL
+    if brut not in GEMINI_THINKING_LEVELS:
+        logger.warning("%s='%s' inconnu (attendu : %s) : niveau %s.", GEMINI_THINKING_LEVEL_ENV,
+                       brut, ", ".join(GEMINI_THINKING_LEVELS), GEMINI_DEFAULT_THINKING_LEVEL)
+        return GEMINI_DEFAULT_THINKING_LEVEL
+    return brut
+
+
+def _requete_gemini(
+    texte: str, max_tokens: int, api_key: str,
+    consigne: Optional[str] = None, schema: Optional[dict] = None,
+) -> Tuple[str, dict, dict]:
+    """(url, en-têtes, corps) d'un appel generateContent : `texte` (le document)
+    dans contents, `consigne` dans systemInstruction, `schema` dans
+    generationConfig -- voir « Le LLM » plus haut."""
     model = _gemini_model()
-    generation = {
-        "temperature": MISTRAL_TEMPERATURE,
-        # Mode JSON natif, l'équivalent du response_format de Mistral.
-        "responseMimeType": "application/json",
-    }
-    if model.startswith("gemini-2.5-flash"):
+    # Mode JSON : la réponse est un JSON, sans bloc de code ni phrase autour.
+    generation: dict = {"responseMimeType": "application/json"}
+    if schema is not None:
+        generation["responseJsonSchema"] = schema
+    if not _generation_2(model):
+        generation["maxOutputTokens"] = max_tokens + GEMINI_THINKING_HEADROOM_TOKENS
+        # Clé et valeur telles que les envoie le SDK officiel : le nom de champ
+        # du protocole (l'API l'accepte comme sa forme thinkingLevel) et
+        # l'énumération en majuscules.
+        generation["thinkingConfig"] = {"thinking_level": _niveau_reflexion().upper()}
+    elif model.startswith("gemini-2.5-flash"):
         generation["maxOutputTokens"] = max_tokens
         generation["thinkingConfig"] = {"thinkingBudget": 0}
     else:
         generation["maxOutputTokens"] = max_tokens + GEMINI_THINKING_HEADROOM_TOKENS
+    corps: dict = {"contents": [{"role": "user", "parts": [{"text": texte}]}]}
+    if consigne:
+        # Rôle "user" sur l'instruction système, comme le SDK officiel.
+        corps["systemInstruction"] = {"role": "user", "parts": [{"text": consigne}]}
+    corps["generationConfig"] = generation
     return (
         GEMINI_URL.format(model=model),
         # Clé dans un en-tête plutôt que dans l'URL (?key=...) : une URL finit
         # dans les messages d'erreur de requests, donc dans les journaux.
-        {"x-goog-api-key": api_key, "Content-Type": "application/json"},
-        {"contents": [{"role": "user", "parts": [{"text": prompt}]}], "generationConfig": generation},
-    )
-
-
-def _requete_mistral(prompt: str, max_tokens: int, api_key: str) -> Tuple[str, dict, dict]:
-    """(url, en-têtes, corps) d'un appel chat/completions de l'API Mistral."""
-    return (
-        MISTRAL_URL,
-        {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        {
-            "model": MISTRAL_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": MISTRAL_TEMPERATURE,
-            "max_tokens": max_tokens,
-            # Mode JSON natif de l'API : le modèle ne peut plus encadrer sa
-            # réponse d'un bloc de code ni la préfixer d'une phrase. C'est la
-            # correction à la racine ; _parse_json_reponse reste en garde-fou.
-            "response_format": {"type": "json_object"},
-        },
+        {"x-goog-api-key": api_key.strip(), "Content-Type": "application/json"},
+        corps,
     )
 
 
 def _contenu_gemini(data: dict) -> str:
-    """Texte de la réponse Gemini. KeyError si la réponse n'en porte pas --
-    prompt bloqué (promptFeedback), ou réponse tronquée sans texte --, traité
-    par l'appelant comme une enveloppe inexploitable. Le message dit lequel :
-    finishReason=MAX_TOKENS signale une réflexion qui a mangé tout le budget
-    (voir GEMINI_THINKING_HEADROOM_TOKENS)."""
+    """Texte de la réponse Gemini. KeyError si la réponse n'en porte pas, ou
+    une réponse coupée -- traité par l'appelant comme une enveloppe
+    inexploitable. Le message dit laquelle : prompt bloqué (promptFeedback),
+    ou finishReason=MAX_TOKENS, une réflexion qui a mangé tout le budget (voir
+    GEMINI_THINKING_HEADROOM_TOKENS) -- un JSON coupé ne se relit pas."""
     if not isinstance(data, dict):
         raise TypeError(f"réponse inattendue ({type(data).__name__})")
     candidats = data.get("candidates") or []
     if not candidats:
         bloque = (data.get("promptFeedback") or {}).get("blockReason")
         raise KeyError(f"aucune réponse, prompt bloqué ({bloque})" if bloque else "aucune réponse")
+    fin = candidats[0].get("finishReason")
     parts = (candidats[0].get("content") or {}).get("parts") or []
+    # Les parties de réflexion (thought) ne sont pas la réponse.
     texte = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought"))
+    if fin == "MAX_TOKENS":
+        raise KeyError("réponse coupée par la limite de jetons (finishReason=MAX_TOKENS) : "
+                       f"baisse {GEMINI_THINKING_LEVEL_ENV} ou relève GEMINI_THINKING_HEADROOM_TOKENS")
     if not texte:
-        raise KeyError(f"réponse sans texte (finishReason={candidats[0].get('finishReason')})")
+        raise KeyError(f"réponse sans texte (finishReason={fin})")
     return texte
 
 
-def _contenu_mistral(data: dict) -> str:
-    return data["choices"][0]["message"]["content"]
+# Types JSON d'un schéma et leur équivalent Python. bool est un int pour
+# Python : il est exclu à part des types numériques (voir _ecart_au_schema).
+_TYPES_JSON = {
+    "object": dict, "array": list, "string": str, "boolean": bool,
+    "integer": int, "number": (int, float), "null": type(None),
+}
+
+
+def _ecart_au_schema(valeur, schema: dict, chemin: str = "réponse") -> Optional[str]:
+    """Premier écart entre une valeur JSON et son schéma, None si conforme.
+
+    Garde-fou, pas validateur complet : il vérifie ce que la génération sous
+    contrainte promet et que les appelants exploitent -- type, champs
+    obligatoires, propriétés, liste de valeurs (enum), éléments d'un tableau.
+    Les autres mots-clés (minimum, format...) ne sont pas contrôlés."""
+    if not isinstance(schema, dict):
+        return None
+    attendu = schema.get("type")
+    if isinstance(attendu, str):
+        attendu = attendu.lower()          # "STRING" (forme OpenAPI) vaut "string"
+        python = _TYPES_JSON.get(attendu)
+        if python is not None and (not isinstance(valeur, python)
+                                   or (isinstance(valeur, bool) and attendu in ("integer", "number"))):
+            return f"{chemin} : {attendu} attendu, reçu {valeur!r:.80}"
+    if "enum" in schema and valeur not in schema["enum"]:
+        return f"{chemin} : {valeur!r:.80} hors de la liste autorisée"
+    if isinstance(valeur, dict):
+        for cle in schema.get("required") or ():
+            if cle not in valeur:
+                return f"{chemin} : champ obligatoire « {cle} » absent"
+        for cle, sous_schema in (schema.get("properties") or {}).items():
+            if cle in valeur:
+                ecart = _ecart_au_schema(valeur[cle], sous_schema, f"{chemin}.{cle}")
+                if ecart:
+                    return ecart
+    if isinstance(valeur, list) and isinstance(schema.get("items"), dict):
+        for rang, element in enumerate(valeur):
+            ecart = _ecart_au_schema(element, schema["items"], f"{chemin}[{rang}]")
+            if ecart:
+                return ecart
+    return None
 
 
 def _extrait_erreur(response: Optional["requests.Response"]) -> str:
@@ -888,7 +961,7 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
 # --------------------------------------------------------------------------- #
 # Disjoncteur du modèle
 # --------------------------------------------------------------------------- #
-# POURQUOI. Une analyse sans réponse épuise ses MISTRAL_MAX_RETRIES tentatives
+# POURQUOI. Une analyse sans réponse épuise ses GEMINI_MAX_RETRIES tentatives
 # avant de rendre None : une bonne minute sur un 503 (attentes de 2, 4, 8, 16
 # et 32 s), davantage sur un 429. C'est la bonne patience pour un incident
 # passager. Face à une panne qui DURE, elle se paie sur chaque document --
@@ -898,27 +971,30 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
 #
 # PAUSE. Après LLM_ECHECS_AVANT_PAUSE analyses de suite sans réponse (429, 5xx
 # ou réseau jusqu'à la dernière tentative), le modèle est mis en pause :
-# analyser_texte_llm rend None sans appel, et chaque appelant fait ce qu'il
-# fait déjà sans modèle (04c classe par règles, verdicts que le modèle reprend
-# au run suivant ; 07b journalise non_evalue). La première analyse après la
-# pause sert de test : une réponse rouvre tout, un nouvel échec relance une
-# pause deux fois plus longue, jusqu'à LLM_PAUSE_MAX_S. Toute réponse du
-# fournisseur, même un refus propre à un document, remet le compte à zéro.
+# analyser_document et analyser_texte_llm rendent None sans appel, et chaque
+# appelant fait ce qu'il fait déjà sans modèle (04c classe par règles, verdicts
+# que le modèle reprend au run suivant ; 07b journalise non_evalue). La
+# première analyse après la pause sert de test : une réponse rouvre tout, un
+# nouvel échec relance une pause deux fois plus longue, jusqu'à
+# LLM_PAUSE_MAX_S. Toute réponse de Gemini, même un refus propre à un
+# document, remet le compte à zéro.
 #
 # COUPURE. Un refus qui vise la CONFIGURATION (clé invalide, modèle inconnu ou
-# retiré, accès refusé) coupe le modèle pour tout le run, dès le premier : la
-# réponse serait la même pour chaque document, et l'ancien comportement -- un
-# appel et une ligne d'erreur par document -- noyait la cause sous des
-# milliers de lignes identiques.
+# retiré, accès refusé, réglage refusé par le modèle) coupe le modèle pour tout
+# le run, dès le premier : la réponse serait la même pour chaque document, et
+# l'ancien comportement -- un appel et une ligne d'erreur par document --
+# noyait la cause sous des milliers de lignes identiques.
 LLM_ECHECS_AVANT_PAUSE = 3
 LLM_PAUSE_INITIALE_S = 15 * 60.0
 LLM_PAUSE_MAX_S = 2 * 3600.0
 # 401 clé invalide, 402 paiement requis, 403 accès refusé, 404 modèle inconnu
-# ou retiré. Un 400 ne vise la configuration que s'il le dit (Gemini répond
-# 400 à une clé invalide ou depuis un pays non couvert) ; sinon il vise la
-# requête, donc ce document-là.
+# ou retiré. Un 400 ne vise la configuration que s'il le dit : Gemini répond
+# 400 à une clé invalide, depuis un pays non couvert, ou à un réglage que le
+# modèle ne connaît pas (niveau de réflexion, schéma, champ inconnu de la
+# requête) ; sinon il vise la requête, donc ce document-là.
 LLM_STATUTS_CONFIGURATION = frozenset((401, 402, 403, 404))
-_MOTIFS_400_CONFIGURATION = ("api key", "api_key", "location is not supported", "billing")
+_MOTIFS_400_CONFIGURATION = ("api key", "api_key", "location is not supported", "billing",
+                             "thinking", "schema", "unknown name", "invalid json payload")
 # « ... Please update your code to use models/gemini-3.8-flash ... »
 _MODELE_PROPOSE = re.compile(r"\buse\s+(?:models/)?(gemini-[\w.\-]+)", re.IGNORECASE)
 
@@ -1012,10 +1088,10 @@ def _refus_de_configuration(statut: int, message: str) -> bool:
     return statut == 400 and any(motif in message.lower() for motif in _MOTIFS_400_CONFIGURATION)
 
 
-def _aide_configuration(fournisseur: str, statut: int, message: str) -> str:
+def _aide_configuration(statut: int, message: str) -> str:
     """Quoi changer. Sur un modèle retiré, Google nomme son successeur : on le
     reprend tel quel."""
-    if fournisseur == "gemini" and statut == 404:
+    if statut == 404:
         propose = _MODELE_PROPOSE.search(message)
         if propose:
             modele = propose.group(1).rstrip(".")
@@ -1023,20 +1099,24 @@ def _aide_configuration(fournisseur: str, statut: int, message: str) -> str:
         return (f"Le modèle {_gemini_model()} n'existe pas ou n'est pas ouvert à cette clé : choisis-en "
                 f"un autre avec {GEMINI_MODEL_ENV} dans .env (python diagnostic_llm.py --modeles "
                 "liste ceux de ta clé).")
+    if statut == 400 and "thinking" in message.lower():
+        return (f"Le modèle {_gemini_model()} ne règle pas sa réflexion par niveau "
+                f"({GEMINI_THINKING_LEVEL_ENV}) : choisis un modèle Gemini 3 ou plus récent avec "
+                f"{GEMINI_MODEL_ENV} dans .env.")
     return "python diagnostic_llm.py teste la clé et le modèle en quelques secondes."
 
 
-def _le_modele_repond(nom: str) -> None:
-    """Le fournisseur a répondu : compte remis à zéro, pause levée."""
+def _le_modele_repond() -> None:
+    """Gemini a répondu : compte remis à zéro, pause levée."""
     global _echecs_consecutifs, _pause_jusqu_a, _duree_pause
     if _pause_jusqu_a is not None:
-        logger.info("%s répond de nouveau : fin de la pause, le modèle reprend la main.", nom)
+        logger.info("Gemini répond de nouveau : fin de la pause, le modèle reprend la main.")
     _echecs_consecutifs = 0
     _pause_jusqu_a = None
     _duree_pause = LLM_PAUSE_INITIALE_S
 
 
-def _sans_reponse(nom: str, fournisseur: str, derniere_erreur: Optional[Exception], test_de_reprise: bool) -> None:
+def _sans_reponse(derniere_erreur: Optional[Exception], test_de_reprise: bool) -> None:
     """Une analyse vient d'épuiser ses réessais : pause au troisième échec de
     suite, ou dès le premier si c'était l'essai qui suit une pause."""
     global _echecs_consecutifs, _pause_jusqu_a, _duree_pause
@@ -1044,8 +1124,8 @@ def _sans_reponse(nom: str, fournisseur: str, derniere_erreur: Optional[Exceptio
     _echecs_consecutifs += 1
     raison = _raison_echec(derniere_erreur)
     if not test_de_reprise and _echecs_consecutifs < LLM_ECHECS_AVANT_PAUSE:
-        logger.warning("%s sans réponse après %d tentatives (%s) : ce document est traité sans le modèle.",
-                       nom, MISTRAL_MAX_RETRIES, raison)
+        logger.warning("Gemini sans réponse après %d tentatives (%s) : ce document est traité sans le modèle.",
+                       GEMINI_MAX_RETRIES, raison)
         return
 
     duree = _duree_pause
@@ -1056,67 +1136,77 @@ def _sans_reponse(nom: str, fournisseur: str, derniere_erreur: Optional[Exceptio
                 "modèle les reprendra au prochain run)")
     statut = getattr(getattr(derniere_erreur, "response", None), "status_code", None)
     if test_de_reprise:
-        logger.warning("Toujours aucune réponse de %s (%s) : nouvelle pause de %s, %s.",
-                       nom, raison, _duree_lisible(duree), sans_lui)
+        logger.warning("Toujours aucune réponse de Gemini (%s) : nouvelle pause de %s, %s.",
+                       raison, _duree_lisible(duree), sans_lui)
     elif statut == 429:
         logger.error(
-            "Quota %s épuisé : %d analyses de suite refusées (429) malgré %d tentatives chacune (%s). "
+            "Quota Gemini épuisé : %d analyses de suite refusées (429) malgré %d tentatives chacune (%s). "
             "Modèle en pause %s puis réessayé ; %s. Un quota quotidien ne revient que le lendemain ; "
             "sur une offre payante, relève %s.",
-            nom, _echecs_consecutifs, MISTRAL_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
-            MISTRAL_REQUESTS_PER_SECOND_ENV)
+            _echecs_consecutifs, GEMINI_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
+            GEMINI_REQUESTS_PER_SECOND_ENV)
     else:
-        autre_modele = (f" Si ça dure, essaie un autre modèle : {GEMINI_MODEL_ENV}=... dans .env "
-                        "(python diagnostic_llm.py --modeles liste ceux de ta clé)."
-                        if fournisseur == "gemini" else "")
         logger.error(
-            "%s ne répond plus : %d analyses de suite sans réponse malgré %d tentatives chacune "
-            "(dernière erreur : %s). La panne est chez le fournisseur, pas dans le code. Modèle en "
-            "pause %s puis réessayé ; %s.%s",
-            nom, _echecs_consecutifs, MISTRAL_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
-            autre_modele)
+            "Gemini ne répond plus : %d analyses de suite sans réponse malgré %d tentatives chacune "
+            "(dernière erreur : %s). La panne est chez Google ou sur le réseau, pas dans le code. "
+            "Modèle en pause %s puis réessayé ; %s. Si ça dure, essaie un autre modèle : %s=... dans "
+            ".env (python diagnostic_llm.py --modeles liste ceux de ta clé).",
+            _echecs_consecutifs, GEMINI_MAX_RETRIES, raison, _duree_lisible(duree), sans_lui,
+            GEMINI_MODEL_ENV)
+
+
+def analyser_document(document: str, consigne: str, schema: dict, max_tokens: int = 500) -> Optional[dict]:
+    """Soumet à Gemini un DOCUMENT, une CONSIGNE et le FORMAT de la réponse --
+    un schéma JSON --, et rend la réponse : un dict conforme au schéma.
+
+    Les trois partent séparément (voir « Le LLM ») : Gemini génère sous la
+    contrainte du schéma, et la réponse est revérifiée ici -- une réponse hors
+    format n'est jamais rendue. `max_tokens` est le budget de la RÉPONSE ; la
+    marge de réflexion s'y ajoute.
+
+    None si aucune clé n'est définie, après épuisement des tentatives, ou
+    pendant une pause du disjoncteur (voir « Disjoncteur du modèle ») :
+    l'appelant doit traiter ce cas comme « pas de verdict », jamais planter."""
+    return _analyser(document, max_tokens, consigne, schema)
 
 
 def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
-    """Appelle le LLM configuré (Gemini ou Mistral, voir fournisseur_llm) avec
-    un prompt demandant une réponse JSON stricte -- retries avec backoff
-    exponentiel, la réponse DOIT être un objet JSON valide.
-    Généraliste (pas de schéma imposé ici) : chaque appelant (07b, 04c, 02)
-    construit son propre prompt et valide les clés qu'il attend dans le dict
-    retourné. None si aucune clé n'est définie, après épuisement des
-    tentatives, ou pendant une pause du disjoncteur (voir « Disjoncteur du
-    modèle ») -- l'appelant doit traiter ce cas comme "pas de verdict", jamais
-    planter.
+    """Un prompt unique, consigne et document mêlés, et une réponse en objet
+    JSON sans schéma imposé : la forme de 07b et de 02, qui valident eux-mêmes
+    les clés qu'ils attendent. Mêmes réessais, débit et disjoncteur
+    qu'analyser_document, et même None quand il n'y a pas de verdict."""
+    return _analyser(prompt, max_tokens)
 
-    Les appels passent par MISTRAL_RATE_LIMITER (voir AdaptiveRateLimiter),
-    commun aux deux fournisseurs : espacés en amont pour ne pas provoquer de
-    429, et espacés DAVANTAGE dès qu'un 429 survient malgré tout."""
+
+def _analyser(texte: str, max_tokens: int, consigne: Optional[str] = None,
+              schema: Optional[dict] = None) -> Optional[dict]:
+    """L'appel lui-même : réessais avec backoff sur les incidents de réseau et
+    de quota, une reprise sur réponse hors format, disjoncteur.
+
+    Les appels passent par GEMINI_RATE_LIMITER (voir AdaptiveRateLimiter) :
+    espacés en amont pour ne pas provoquer de 429, et espacés DAVANTAGE dès
+    qu'un 429 survient malgré tout."""
     global _coupure
-    fournisseur = fournisseur_llm()
-    if fournisseur is None:
+    if not llm_disponible():
         return None
     if _coupure is not None or llm_en_pause():
         _compter("ecartes")
         return None
-    if fournisseur == "gemini":
-        url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
-        extraire, nom = _contenu_gemini, "Gemini"
-    else:
-        url, headers, payload = _requete_mistral(prompt, max_tokens, os.environ[MISTRAL_API_KEY_ENV])
-        extraire, nom = _contenu_mistral, "Mistral"
+    url, headers, payload = _requete_gemini(
+        texte, max_tokens, os.environ[GEMINI_API_KEY_ENV], consigne=consigne, schema=schema)
     test_de_reprise = _pause_jusqu_a is not None     # pause écoulée : cette analyse la teste
     if test_de_reprise:
-        logger.info("Fin de la pause : nouvel essai de %s.", nom)
+        logger.info("Fin de la pause : nouvel essai de Gemini.")
 
     parse_failures = 0
     network_failures = 0
     derniere_erreur: Optional[Exception] = None
 
-    while network_failures < MISTRAL_MAX_RETRIES:
-        MISTRAL_RATE_LIMITER.acquire()
+    while network_failures < GEMINI_MAX_RETRIES:
+        GEMINI_RATE_LIMITER.acquire()
         resp = None
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=45)
+            resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT_S)
             statut = getattr(resp, "status_code", None)
             if statut is not None and statut >= 400:
                 raise requests.exceptions.HTTPError(f"HTTP {statut}", response=resp)
@@ -1124,111 +1214,114 @@ def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
                 # Referme la série « tentative k/6 sans réponse » : sans cette
                 # ligne, rien ne disait que le document avait fini par passer,
                 # et une surcharge absorbée se lisait comme un échec.
-                logger.info("%s a répondu à la tentative %d/%d.", nom, network_failures + 1, MISTRAL_MAX_RETRIES)
-            _le_modele_repond(nom)
-            content = extraire(resp.json())
+                logger.info("Gemini a répondu à la tentative %d/%d.", network_failures + 1, GEMINI_MAX_RETRIES)
+            _le_modele_repond()
+            content = _contenu_gemini(resp.json())
         except requests.exceptions.RequestException as e:
             statut = getattr(getattr(e, "response", None), "status_code", None)
-            if statut is not None and statut not in MISTRAL_RETRYABLE_STATUS:
+            if statut is not None and statut not in GEMINI_RETRYABLE_STATUS:
                 message = _extrait_erreur(getattr(e, "response", None))
                 if _refus_de_configuration(statut, message):
                     _coupure = f"HTTP {statut}"
                     _compter("ecartes")
                     logger.error(
-                        "%s refuse la configuration (HTTP %s) : %s -- plus aucun appel au modèle "
+                        "Gemini refuse la configuration (HTTP %s) : %s -- plus aucun appel au modèle "
                         "jusqu'à la fin de ce run, les documents restants sont traités sans lui. %s",
-                        nom, statut, message or e, _aide_configuration(fournisseur, statut, message))
+                        statut, message or e, _aide_configuration(statut, message))
                     return None
-                # 400 ou 422 propre à CE document : la réponse ne changera pas.
-                logger.error("Appel %s refusé définitivement (HTTP %s), aucun réessai : %s",
-                             nom, statut, message or e)
-                _le_modele_repond(nom)
+                # 400 propre à CE document : la réponse ne changera pas.
+                logger.error("Appel Gemini refusé définitivement (HTTP %s), aucun réessai : %s",
+                             statut, message or e)
+                _le_modele_repond()
                 _compter("inexploitables")
                 return None
 
             network_failures += 1
             derniere_erreur = e
-            if network_failures >= MISTRAL_MAX_RETRIES:
+            if network_failures >= GEMINI_MAX_RETRIES:
                 break
 
-            delay = _mistral_retry_delay(resp, network_failures - 1)
+            delay = _gemini_retry_delay(resp, network_failures - 1)
             if statut == 429:
-                intervalle = MISTRAL_RATE_LIMITER.penalize(pause=delay)
+                intervalle = GEMINI_RATE_LIMITER.penalize(pause=delay)
                 logger.warning(
-                    "Quota %s atteint (429, tentative %d/%d). Débit ramené à un appel "
+                    "Quota Gemini atteint (429, tentative %d/%d). Débit ramené à un appel "
                     "toutes les %.1fs ; nouvel essai dans %.1fs...",
-                    nom, network_failures, MISTRAL_MAX_RETRIES, intervalle, delay,
+                    network_failures, GEMINI_MAX_RETRIES, intervalle, delay,
                 )
             else:
                 # Surcharge (503), erreur serveur ou coupure réseau : un
-                # incident du fournisseur, que les réessais absorbent le plus
+                # incident chez Google, que les réessais absorbent le plus
                 # souvent. En INFO et avec ses mots : l'ancien « Tentative
                 # échouée: HTTP 503 » en WARNING se lisait comme une panne du code.
-                logger.info("%s : tentative %d/%d sans réponse (%s). Nouvel essai dans %.1fs.",
-                            nom, network_failures, MISTRAL_MAX_RETRIES, _raison_echec(e), delay)
+                logger.info("Gemini : tentative %d/%d sans réponse (%s). Nouvel essai dans %.1fs.",
+                            network_failures, GEMINI_MAX_RETRIES, _raison_echec(e), delay)
             time.sleep(delay)
             continue
         except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
-            logger.error("Réponse %s inexploitable : %s", nom, _message(e))
+            logger.error("Réponse Gemini inexploitable : %s", _message(e))
             _compter("inexploitables")
             return None
 
-        MISTRAL_RATE_LIMITER.reward()
+        GEMINI_RATE_LIMITER.reward()
         parsed = _parse_json_reponse(content)
-        if parsed is not None:
+        if parsed is None:
+            ecart = "JSON illisible"
+        else:
+            ecart = _ecart_au_schema(parsed, schema) if schema is not None else None
+        if ecart is None:
             _compter("verdicts")
             return parsed
 
-        # Réponse non parsable : UNE seule reprise, pas trois. L'ancienne
-        # version abandonnait immédiatement (return None sans réessai), mais
-        # insister davantage sur un modèle qui vient de répondre hors format
-        # coûte trois appels payants pour un gain marginal.
+        # Réponse hors format : UNE seule reprise. Insister davantage sur un
+        # modèle qui vient de répondre hors format coûte des appels pour un
+        # gain marginal.
         parse_failures += 1
-        if parse_failures >= MISTRAL_MAX_PARSE_RETRIES:
-            logger.warning("Réponse %s non exploitable après %d essais : %s", nom, parse_failures, str(content)[:200])
+        if parse_failures >= GEMINI_MAX_PARSE_RETRIES:
+            logger.warning("Réponse Gemini hors format après %d essais (%s) : %s",
+                           parse_failures, ecart, str(content)[:200])
             _compter("inexploitables")
             return None
-        logger.warning("Réponse %s non parsable, une nouvelle tentative : %s", nom, str(content)[:200])
+        logger.warning("Réponse Gemini hors format (%s), une nouvelle tentative : %s",
+                       ecart, str(content)[:200])
 
-    _sans_reponse(nom, fournisseur, derniere_erreur, test_de_reprise)
+    _sans_reponse(derniere_erreur, test_de_reprise)
     return None
 
 
 class EssaiLLM(NamedTuple):
     """Résultat d'essai_unique_llm."""
     statut: Optional[int]      # code HTTP, None sans réponse du tout
-    ok: bool                   # une réponse avec du texte
+    ok: bool                   # une réponse exploitable (conforme au schéma s'il y en a un)
     texte: str                 # la réponse, ou la raison de l'échec
     duree_s: float
 
 
-def essai_unique_llm(prompt: str, max_tokens: int = 64) -> EssaiLLM:
-    """UNE requête au fournisseur configuré -- la même que celle de
-    analyser_texte_llm, sans réessai, limiteur ni disjoncteur -- pour
-    diagnostic_llm.py, qui doit montrer la réponse brute."""
-    fournisseur = fournisseur_llm()
-    if fournisseur is None:
+def essai_unique_llm(texte: str, max_tokens: int = 64, consigne: Optional[str] = None,
+                     schema: Optional[dict] = None) -> EssaiLLM:
+    """UNE requête à Gemini -- la même que celle d'analyser_document, sans
+    réessai, limiteur ni disjoncteur -- pour diagnostic_llm.py, qui doit
+    montrer la réponse brute. Avec un schéma, une réponse qui ne s'y conforme
+    pas compte comme un échec : 04c ne s'en servirait pas."""
+    if not llm_disponible():
         return EssaiLLM(None, False, "aucune clé", 0.0)
-    if fournisseur == "gemini":
-        url, headers, payload = _requete_gemini(prompt, max_tokens, os.environ[GEMINI_API_KEY_ENV])
-        extraire = _contenu_gemini
-    else:
-        url, headers, payload = _requete_mistral(prompt, max_tokens, os.environ[MISTRAL_API_KEY_ENV])
-        extraire = _contenu_mistral
+    url, headers, payload = _requete_gemini(
+        texte, max_tokens, os.environ[GEMINI_API_KEY_ENV], consigne=consigne, schema=schema)
     debut = time.monotonic()
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=45)
+        resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT_S)
     except requests.exceptions.RequestException as e:
         return EssaiLLM(None, False, _raison_echec(e), time.monotonic() - debut)
     duree = time.monotonic() - debut
     if resp.status_code >= 400:
         return EssaiLLM(resp.status_code, False, _extrait_erreur(resp), duree)
     try:
-        return EssaiLLM(resp.status_code, True, extraire(resp.json()), duree)
+        contenu = _contenu_gemini(resp.json())
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
         return EssaiLLM(resp.status_code, False, f"réponse inexploitable : {_message(e)}", duree)
-
-
-# Nom historique, conservé pour les appelants qui ne sont pas encore passés à
-# analyser_texte_llm : il suit le même choix de fournisseur.
-analyser_texte_mistral = analyser_texte_llm
+    if schema is not None:
+        parsed = _parse_json_reponse(contenu)
+        ecart = "JSON illisible" if parsed is None else _ecart_au_schema(parsed, schema)
+        if ecart:
+            return EssaiLLM(resp.status_code, False, f"réponse hors format ({ecart}) : {contenu}", duree)
+    return EssaiLLM(resp.status_code, True, contenu, duree)

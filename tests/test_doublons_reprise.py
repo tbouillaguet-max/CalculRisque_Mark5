@@ -89,9 +89,12 @@ def _verdict(sym, acc, source, n=0):
 
 def _reference(entrees, llm):
     """La sémantique de load_llm_cache AVANT nettoyage : dernière écriture
-    gagnante, verdicts par règles ignorés quand un modèle est disponible."""
+    gagnante, verdicts d'avant Gemini (Mistral, ou sans source) ignorés,
+    verdicts par règles ignorés quand un modèle est disponible."""
     cache = {}
     for e in entrees:
+        if e.get("classification_source") not in ("gemini", "regles_document"):
+            continue
         if llm and e["classification_source"] == "regles_document":
             continue
         cache[_04c.cache_key(e["symbol"], e["accession_number"])] = e
@@ -109,9 +112,11 @@ def test_la_memoire_des_8k_est_nettoyee_sans_rien_changer_a_ce_qu_elle_rend(tmp_
         _verdict("A", "1", "gemini", 2),          # ré-analyse (--no-llm-cache) : remplace
         _verdict("B", "1", "regles_document"),
         _verdict("B", "1", "gemini"),             # repris par le modèle quand la clé est arrivée
-        _verdict("C", "1", "mistral"),
+        _verdict("C", "1", "gemini"),
         _verdict("C", "1", "regles_document"),    # ré-analyse SANS clé : plus récent que le modèle
         _verdict("D", "1", "regles_document"),
+        _verdict("M", "1", "mistral"),            # verdict de l'ancien fournisseur : écarté
+        {"symbol": "M", "accession_number": "2", "category": "autre_materiel"},   # idem, d'avant la colonne source
     ]
     chemin = _04c.llm_cache_path(tmp_path)
     _ecrire(chemin, entrees + [{"symbol": "E"}], fin='{"symbol": "F", "acc')
@@ -121,7 +126,7 @@ def test_la_memoire_des_8k_est_nettoyee_sans_rien_changer_a_ce_qu_elle_rend(tmp_
     nettoye, illisibles = reprise_jsonl.lire_lignes(chemin)
     assert illisibles == 0
     assert [(e["symbol"], e["classification_source"]) for e in nettoye] == [
-        ("A", "gemini"), ("B", "gemini"), ("C", "mistral"), ("C", "regles_document"),
+        ("A", "gemini"), ("B", "gemini"), ("C", "gemini"), ("C", "regles_document"),
         ("D", "regles_document")]
 
     # Le verdict du modèle de C a survécu : avec une clé, c'est lui qui sert.
@@ -139,8 +144,8 @@ def test_une_memoire_sans_doublon_n_est_pas_reecrite(tmp_path, monkeypatch):
 @pytest.mark.parametrize("graine", range(20))
 def test_le_nettoyage_preserve_la_memoire_dans_les_deux_modes(tmp_path, monkeypatch, graine):
     """Sur des historiques tirés au hasard -- ré-analyses, reprises par le
-    modèle, retours aux règles --, la mémoire rendue après nettoyage est
-    celle d'avant, avec comme sans clé d'API."""
+    modèle, retours aux règles, verdicts de Mistral --, la mémoire rendue
+    après nettoyage est celle d'avant, avec comme sans clé d'API."""
     tirage = random.Random(graine)
     entrees = [
         _verdict(tirage.choice("ABCD"), tirage.choice("12"),

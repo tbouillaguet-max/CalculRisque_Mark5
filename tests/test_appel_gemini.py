@@ -1,4 +1,11 @@
-"""Appel du LLM par Gemini, et choix du fournisseur (sec_filings_text)."""
+"""Appel de Gemini (sec_filings_text) : un document, une consigne et un format de réponse.
+
+Ce que ces tests protègent : les trois partent SÉPARÉMENT (contents,
+systemInstruction, generationConfig.responseJsonSchema), la requête a la forme
+de celle du SDK officiel, et une réponse hors format n'est jamais rendue -- le
+mode JSON seul, sans schéma, laissait passer une catégorie inventée
+(« aut_materiel »).
+"""
 
 from __future__ import annotations
 
@@ -16,7 +23,8 @@ class _ReponseGemini:
         self.status_code = status_code
         self.headers = {}
         self._corps = corps if corps is not None else {
-            "candidates": [{"content": {"role": "model", "parts": [{"text": texte}]}}],
+            "candidates": [{"content": {"role": "model", "parts": [{"text": texte}]},
+                            "finishReason": "STOP"}],
         }
         self.text = str(self._corps)
 
@@ -28,7 +36,7 @@ class _ReponseGemini:
 def gemini(monkeypatch):
     monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "cle-gemini-de-test")
     monkeypatch.setattr(sft.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(sft, "MISTRAL_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
+    monkeypatch.setattr(sft, "GEMINI_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
 
     appels = []
 
@@ -45,71 +53,130 @@ def gemini(monkeypatch):
     return poser
 
 
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "category": {"type": "string", "enum": ["a", "b"], "description": "Catégorie."},
+        "materiality": {"type": "boolean"},
+    },
+    "required": ["category", "materiality"],
+}
+
+# Corps relevé en interceptant, hors ligne, la requête du SDK officiel
+# google-genai 2.25.0 : client.models.generate_content(model="gemini-3.8-flash",
+# contents="LE DOCUMENT", config=GenerateContentConfig(system_instruction=
+# "LA CONSIGNE", response_mime_type="application/json", response_json_schema=
+# SCHEMA, max_output_tokens=500 + 8192, thinking_config=ThinkingConfig(
+# thinking_level="low"))).
+CORPS_SDK = {
+    "contents": [{"parts": [{"text": "LE DOCUMENT"}], "role": "user"}],
+    "systemInstruction": {"parts": [{"text": "LA CONSIGNE"}], "role": "user"},
+    "generationConfig": {
+        "maxOutputTokens": 8692,
+        "responseMimeType": "application/json",
+        "responseJsonSchema": SCHEMA,
+        "thinkingConfig": {"thinking_level": "LOW"},
+    },
+}
+
+
 # --------------------------------------------------------------------------- #
-# Choix du fournisseur
+# Clé
 # --------------------------------------------------------------------------- #
 
-def test_sans_aucune_cle_pas_de_fournisseur():
-    assert sft.fournisseur_llm() is None
+def test_sans_cle_pas_de_llm():
+    assert not sft.llm_disponible()
+    assert sft.description_llm() == "aucun LLM (GEMINI_API_KEY à définir)"
+
+
+@pytest.mark.parametrize("valeur", ["", "   "])
+def test_une_cle_vide_compte_comme_absente(monkeypatch, valeur):
+    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, valeur)
     assert not sft.llm_disponible()
 
 
-def test_mistral_seul(monkeypatch):
-    monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "m")
-    assert sft.fournisseur_llm() == "mistral"
-
-
-def test_gemini_prioritaire_quand_les_deux_cles_existent(monkeypatch):
-    monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "m")
-    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "g")
-    assert sft.fournisseur_llm() == "gemini"
-
-
-def test_llm_provider_force_le_choix(monkeypatch):
-    monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "m")
-    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "g")
-    monkeypatch.setenv(sft.LLM_PROVIDER_ENV, "mistral")
-    assert sft.fournisseur_llm() == "mistral"
-
-
-def test_forcer_un_fournisseur_sans_sa_cle_ne_bascule_pas_sur_l_autre(monkeypatch):
-    """Forcer gemini sans clé Gemini doit se voir, pas partir en silence chez
-    Mistral (qui facture, et peut refuser)."""
-    monkeypatch.setenv(sft.MISTRAL_API_KEY_ENV, "m")
-    monkeypatch.setenv(sft.LLM_PROVIDER_ENV, "gemini")
-    assert sft.fournisseur_llm() is None
-
-
-def test_une_cle_vide_compte_comme_absente(monkeypatch):
-    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "")
-    assert sft.fournisseur_llm() is None
+def test_la_cle_est_nettoyee_de_ses_espaces(gemini, monkeypatch):
+    """Une clé recopiée avec un espace ou un retour à la ligne partait telle
+    quelle dans l'en-tête, et Gemini répondait « API key not valid »."""
+    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "  cle-propre\n")
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p")
+    assert appels[0]["headers"]["x-goog-api-key"] == "cle-propre"
 
 
 # --------------------------------------------------------------------------- #
-# Requête et réponse Gemini
+# Requête : un document, une consigne, un format
 # --------------------------------------------------------------------------- #
 
-def test_requete_gemini(gemini):
+def test_le_corps_est_celui_du_sdk_officiel(gemini):
+    appels = gemini(['{"category": "a", "materiality": true}'])
+    assert sft.analyser_document("LE DOCUMENT", "LA CONSIGNE", SCHEMA) == {"category": "a", "materiality": True}
+    assert appels[0]["url"] == sft.GEMINI_URL.format(model=sft.GEMINI_DEFAULT_MODEL)
+    assert appels[0]["json"] == CORPS_SDK
+
+
+def test_document_consigne_et_format_partent_separement(gemini):
+    appels = gemini(['{"category": "b", "materiality": false}'])
+    sft.analyser_document("LE DOCUMENT", "LA CONSIGNE", SCHEMA)
+    corps = appels[0]["json"]
+    assert corps["contents"][0]["parts"] == [{"text": "LE DOCUMENT"}]
+    assert corps["systemInstruction"]["parts"] == [{"text": "LA CONSIGNE"}]
+    assert corps["generationConfig"]["responseJsonSchema"] == SCHEMA
+    assert "LA CONSIGNE" not in str(corps["contents"]) and "LE DOCUMENT" not in str(corps["systemInstruction"])
+
+
+def test_requete_d_un_prompt_unique(gemini):
+    """La forme de 07b et 02 : pas de consigne séparée, pas de schéma."""
     appels = gemini(['{"category": "non_materiel"}'])
     assert sft.analyser_texte_llm("mon prompt", max_tokens=321) == {"category": "non_materiel"}
 
     appel = appels[0]
-    assert appel["url"] == sft.GEMINI_URL.format(model=sft.GEMINI_DEFAULT_MODEL)
     # Clé dans l'en-tête, jamais dans l'URL (qui finit dans les journaux).
     assert appel["headers"]["x-goog-api-key"] == "cle-gemini-de-test"
     assert "cle-gemini-de-test" not in appel["url"]
     assert appel["json"]["contents"][0]["parts"][0]["text"] == "mon prompt"
+    assert "systemInstruction" not in appel["json"]
     generation = appel["json"]["generationConfig"]
     assert generation["responseMimeType"] == "application/json"
-    # Le modèle par défaut n'est plus un 2.5-flash : sa réflexion ne se coupe
-    # pas par un budget nul, elle reçoit une marge de jetons.
-    assert "thinkingConfig" not in generation
+    assert "responseJsonSchema" not in generation
     assert generation["maxOutputTokens"] == 321 + sft.GEMINI_THINKING_HEADROOM_TOKENS
+
+
+def test_aucun_reglage_retire_par_google_n_est_envoye(gemini):
+    """Google demande de retirer temperature, top_p et top_k des requêtes aux
+    modèles 3.8 ; l'ancien code envoyait temperature=0.1."""
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p")
+    generation = appels[0]["json"]["generationConfig"]
+    assert not {"temperature", "topP", "topK"} & set(generation)
+
+
+@pytest.mark.parametrize("valeur, envoye", [
+    (None, "LOW"), ("high", "HIGH"), ("MINIMAL", "MINIMAL"), (" medium ", "MEDIUM"),
+])
+def test_le_niveau_de_reflexion_se_regle(gemini, monkeypatch, valeur, envoye):
+    if valeur is not None:
+        monkeypatch.setenv(sft.GEMINI_THINKING_LEVEL_ENV, valeur)
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p")
+    assert appels[0]["json"]["generationConfig"]["thinkingConfig"] == {"thinking_level": envoye}
+
+
+def test_un_niveau_inconnu_revient_au_defaut_et_se_signale(gemini, monkeypatch, caplog):
+    sft._niveau_valide.cache_clear()
+    monkeypatch.setenv(sft.GEMINI_THINKING_LEVEL_ENV, "turbo-inconnu")
+    appels = gemini(['{"ok": true}', '{"ok": true}'])
+    with caplog.at_level("WARNING", logger="sec_filings_text"):
+        sft.analyser_texte_llm("p")
+        sft.analyser_texte_llm("p")
+    assert appels[1]["json"]["generationConfig"]["thinkingConfig"] == {"thinking_level": "LOW"}
+    assert caplog.text.count("turbo-inconnu") == 1, "signalé une fois par run, pas à chaque document"
 
 
 def test_gemini_2_5_flash_garde_sa_reflexion_coupee(gemini, monkeypatch):
     """Toujours choisissable par GEMINI_MODEL (clé ancienne) : réflexion à
-    budget nul, tout le budget de jetons va à la réponse."""
+    budget nul, tout le budget de jetons va à la réponse, et pas de niveau de
+    réflexion, que la génération 2 refuserait."""
     monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-2.5-flash")
     appels = gemini(['{"ok": true}'])
     sft.analyser_texte_llm("p", max_tokens=321)
@@ -118,9 +185,7 @@ def test_gemini_2_5_flash_garde_sa_reflexion_coupee(gemini, monkeypatch):
     assert generation["thinkingConfig"] == {"thinkingBudget": 0}
 
 
-def test_modele_choisi_par_variable_d_environnement(gemini, monkeypatch):
-    """Un modèle dont la réflexion ne se coupe pas reçoit une marge de jetons,
-    sans quoi elle consommerait tout le budget de la réponse."""
+def test_un_autre_modele_2_x_recoit_une_marge_sans_niveau(gemini, monkeypatch):
     monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-2.5-pro")
     appels = gemini(['{"ok": true}'])
     sft.analyser_texte_llm("p", max_tokens=500)
@@ -130,11 +195,51 @@ def test_modele_choisi_par_variable_d_environnement(gemini, monkeypatch):
     assert generation["maxOutputTokens"] == 500 + sft.GEMINI_THINKING_HEADROOM_TOKENS
 
 
+def test_le_prefixe_models_recopie_de_google_est_tolere(gemini, monkeypatch):
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "models/gemini-3.8-flash")
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p")
+    assert appels[0]["url"] == sft.GEMINI_URL.format(model="gemini-3.8-flash")
+
+
+def test_modele_choisi_par_variable_d_environnement(gemini, monkeypatch):
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-3.1-pro-preview")
+    appels = gemini(['{"ok": true}'])
+    sft.analyser_texte_llm("p")
+    assert "/models/gemini-3.1-pro-preview:generateContent" in appels[0]["url"]
+    assert appels[0]["json"]["generationConfig"]["thinkingConfig"] == {"thinking_level": "LOW"}
+    assert sft.description_llm() == "Gemini (gemini-3.1-pro-preview, réflexion low)"
+
+
+# --------------------------------------------------------------------------- #
+# Réponse : conforme au format, ou rien
+# --------------------------------------------------------------------------- #
+
+def test_une_reponse_hors_liste_est_redemandee(gemini):
+    appels = gemini(['{"category": "aut_materiel", "materiality": true}', '{"category": "a", "materiality": true}'])
+    assert sft.analyser_document("d", "c", SCHEMA) == {"category": "a", "materiality": True}
+    assert len(appels) == 2
+
+
+@pytest.mark.parametrize("reponse", [
+    '{"category": "aut_materiel", "materiality": true}',      # catégorie inventée
+    '{"category": "a", "materiality": "false"}',              # booléen écrit en texte
+    '{"category": "a"}',                                      # champ obligatoire absent
+    '["a", true]',                                            # pas un objet
+])
+def test_une_reponse_hors_format_n_est_jamais_rendue(gemini, caplog, reponse):
+    appels = gemini([reponse, reponse, reponse])
+    with caplog.at_level("WARNING", logger="sec_filings_text"):
+        assert sft.analyser_document("d", "c", SCHEMA) is None
+    assert len(appels) == sft.GEMINI_MAX_PARSE_RETRIES, "une reprise, pas davantage"
+    assert "hors format" in caplog.text
+
+
 def test_les_parties_de_reflexion_sont_ignorees(gemini):
     corps = {"candidates": [{"content": {"parts": [
         {"text": "je réfléchis...", "thought": True},
-        {"text": '{"verdict": "coherent"}'},
-    ]}}]}
+        {"text": '{"verdict": "coherent"}', "thoughtSignature": "c2lnbmF0dXJl"},
+    ]}, "finishReason": "STOP"}]}
     gemini([_ReponseGemini(corps=corps)])
     assert sft.analyser_texte_llm("p") == {"verdict": "coherent"}
 
@@ -148,6 +253,17 @@ def test_prompt_bloque_ne_plante_pas(gemini):
 def test_reponse_tronquee_sans_texte_ne_plante_pas(gemini):
     gemini([_ReponseGemini(corps={"candidates": [{"finishReason": "MAX_TOKENS", "content": {}}]})])
     assert sft.analyser_texte_llm("p") is None
+
+
+def test_une_reponse_coupee_par_la_limite_de_jetons_se_dit(gemini, caplog):
+    """Un JSON coupé ne se relit pas : le journal doit dire pourquoi, et quoi
+    régler, plutôt que « non parsable »."""
+    corps = {"candidates": [{"finishReason": "MAX_TOKENS",
+                             "content": {"parts": [{"text": '{"category": "a", "materi'}]}}]}
+    gemini([_ReponseGemini(corps=corps)])
+    with caplog.at_level("ERROR", logger="sec_filings_text"):
+        assert sft.analyser_document("d", "c", SCHEMA) is None
+    assert "MAX_TOKENS" in caplog.text and sft.GEMINI_THINKING_LEVEL_ENV in caplog.text
 
 
 def test_le_message_d_erreur_de_l_api_est_journalise(gemini, caplog):
@@ -182,8 +298,27 @@ def test_erreur_reseau_reessayee(gemini):
     assert len(appels) == 2
 
 
-def test_l_ancien_nom_suit_le_fournisseur(gemini):
-    """analyser_texte_mistral reste appelable et passe lui aussi par Gemini."""
-    appels = gemini(['{"ok": true}'])
-    assert sft.analyser_texte_mistral("p") == {"ok": True}
-    assert "generativelanguage.googleapis.com" in appels[0]["url"]
+# --------------------------------------------------------------------------- #
+# Vérification contre le schéma
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("valeur, schema", [
+    ({"a": True}, {"type": "object", "properties": {"a": {"type": "boolean"}}, "required": ["a"]}),
+    ({"n": 3}, {"type": "OBJECT", "properties": {"n": {"type": "INTEGER"}}}),    # forme OpenAPI
+    ([{"x": "b"}], {"type": "array", "items": {"type": "object", "properties": {"x": {"enum": ["a", "b"]}}}}),
+    ({"autre": 1}, {"type": "object", "properties": {"a": {"type": "string"}}}),  # champ facultatif absent
+    (2.5, {"type": "number"}),
+])
+def test_une_valeur_conforme_passe(valeur, schema):
+    assert sft._ecart_au_schema(valeur, schema) is None
+
+
+@pytest.mark.parametrize("valeur, schema, attendu", [
+    ({"a": 1}, {"type": "object", "properties": {"a": {"type": "boolean"}}}, "réponse.a : boolean attendu"),
+    ({"n": True}, {"type": "object", "properties": {"n": {"type": "integer"}}}, "réponse.n : integer attendu"),
+    ({}, {"type": "object", "required": ["a"]}, "champ obligatoire « a » absent"),
+    ("c", {"type": "string", "enum": ["a", "b"]}, "hors de la liste autorisée"),
+    ([{"x": "c"}], {"type": "array", "items": {"properties": {"x": {"enum": ["a"]}}}}, "réponse[0].x"),
+])
+def test_le_premier_ecart_est_nomme(valeur, schema, attendu):
+    assert attendu in sft._ecart_au_schema(valeur, schema)

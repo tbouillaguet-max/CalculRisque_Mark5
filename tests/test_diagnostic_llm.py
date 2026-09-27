@@ -42,7 +42,7 @@ def gemini(monkeypatch):
         file = list(reponses)
 
         def faux_post(url, headers=None, json=None, timeout=None):
-            appels.append({"url": url, "headers": headers})
+            appels.append({"url": url, "headers": headers, "json": json})
             item = file.pop(0)
             if isinstance(item, Exception):
                 raise item
@@ -121,3 +121,29 @@ def test_la_liste_des_modeles(gemini, monkeypatch, capsys):
     assert "<-- utilisé" in sortie
     assert vus[0]["headers"]["x-goog-api-key"] == CLE
     assert CLE not in vus[0]["url"] and CLE not in str(vus[0]["params"])
+
+
+def test_la_requete_de_test_a_la_forme_de_celles_de_04c(gemini):
+    """Document, consigne et schéma séparés, même modèle, même réflexion : un
+    modèle qui refuserait le schéma ou le niveau de réflexion se voit ici, pas
+    au milieu d'un run de 04c."""
+    appels = gemini([200])
+    diag.main(["--essais", "1"])
+    corps = appels[0]["json"]
+    assert corps["contents"][0]["parts"][0]["text"] == diag.DOCUMENT_TEST
+    assert corps["systemInstruction"]["parts"][0]["text"] == diag.CONSIGNE_TEST
+    assert corps["generationConfig"]["responseJsonSchema"] == diag.SCHEMA_TEST
+    assert corps["generationConfig"]["thinkingConfig"] == {"thinking_level": "LOW"}
+
+
+def test_une_reponse_hors_format_est_un_echec(gemini, capsys):
+    gemini([_Reponse(corps={"candidates": [{"content": {"parts": [{"text": '{"ok": "oui"}'}]}}]})])
+    assert diag.main(["--essais", "1"]) == 1
+    sortie = capsys.readouterr().out
+    assert "hors format" in sortie and "réponse.ok : boolean attendu" in sortie
+
+
+def test_l_origine_du_niveau_de_reflexion_s_affiche(gemini, capsys, monkeypatch):
+    gemini([200])
+    diag.main(["--essais", "1"])
+    assert "GEMINI_THINKING_LEVEL" in capsys.readouterr().out

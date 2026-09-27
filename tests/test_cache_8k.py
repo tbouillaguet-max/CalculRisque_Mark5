@@ -1,4 +1,4 @@
-"""Mémoire des 8-K déjà classifiés par Mistral (04c_recuperation_8k.py).
+"""Mémoire des 8-K déjà classifiés (04c_recuperation_8k.py).
 
 Un 8-K est un document figé : une fois classifié avec succès, il ne doit plus
 jamais être re-téléchargé ni re-soumis au LLM.
@@ -21,6 +21,7 @@ FILING = {
 VERDICT = {
     "item_codes": ["Item 5.02"], "category": "depart_dirigeant",
     "materiality": True, "summary": "Départ du directeur financier.",
+    "classification_source": "gemini",
 }
 
 
@@ -39,13 +40,13 @@ def sec(monkeypatch):
         compteurs["telechargements"] += 1
         return ("Item 5.02 Departure of Officers.", "brut")
 
-    def faux_classify(prompt, max_tokens=500):
+    def faux_classify(document, consigne, schema, max_tokens=500):
         compteurs["classifications"] += 1
         return {"category": "depart_dirigeant", "materiality": True,
                 "summary": "Départ du directeur financier."}
 
     monkeypatch.setattr(sft, "fetch_filing_text", faux_fetch)
-    monkeypatch.setattr(sft, "analyser_texte_llm", faux_classify)
+    monkeypatch.setattr(sft, "analyser_document", faux_classify)
     return compteurs
 
 
@@ -70,9 +71,9 @@ def test_un_8k_deja_classifie_n_est_ni_retelecharge_ni_reanalyse(sec, tmp_path):
 
 
 def test_un_verdict_manquant_n_est_pas_memorise(sec, tmp_path, monkeypatch):
-    """Quota Mistral épuisé -> category="non_evalue". Le mémoriser gèlerait
-    définitivement le trou : ce 8-K ne serait plus jamais reproposé."""
-    monkeypatch.setattr(module_04c.sft, "analyser_texte_llm", lambda *a, **k: None)
+    """Pas de verdict du modèle (quota épuisé, clé absente) : le 8-K est
+    classé par règles, et ce verdict-là, déterministe, est mémorisé."""
+    monkeypatch.setattr(module_04c.sft, "analyser_document", lambda *a, **k: None)
 
     cache = {}
     rows, _ = module_04c.process_ticker_8k(
@@ -145,3 +146,78 @@ def test_la_derniere_ecriture_gagne(tmp_path):
 ])
 def test_seuls_les_verdicts_reels_sont_memorisables(categorie, memorisable):
     assert module_04c.is_cacheable({"category": categorie}) is memorisable
+
+
+# --------------------------------------------------------------------------- #
+# Les verdicts de Mistral, l'ancien fournisseur
+# --------------------------------------------------------------------------- #
+
+def _entree(symbole, accession, **champs):
+    return {"symbol": symbole, **FILING, "accession_number": accession, **VERDICT, **champs}
+
+
+def test_les_verdicts_de_mistral_sont_ecartes_et_effaces(tmp_path):
+    """Écartés à la demande : 1 647 verdicts de Mistral dans la mémoire du
+    dépôt, 77 % jugés matériels, dont une catégorie inventée. Une entrée sans
+    source date d'avant la colonne classification_source, donc de Mistral."""
+    mistral_sans_source = _entree("ADBE", "1", category="aut_materiel")
+    del mistral_sans_source["classification_source"]
+    path = module_04c.llm_cache_path(tmp_path)
+    path.write_text("".join(json.dumps(e) + "\n" for e in [
+        mistral_sans_source,
+        _entree("MMM", "2", classification_source="mistral"),
+        _entree("ABT", "3"),
+        _entree("AMD", "4", classification_source="regles_document"),
+    ]), encoding="utf-8")
+
+    cache = module_04c.load_llm_cache(tmp_path)
+
+    assert set(cache) == {"ABT:3", "AMD:4"}
+    relues = [json.loads(ligne) for ligne in path.read_text(encoding="utf-8").splitlines()]
+    assert [e["accession_number"] for e in relues] == ["3", "4"], "effacés du fichier, pas seulement ignorés"
+
+
+def test_un_8k_classe_par_mistral_est_reclasse(sec, tmp_path, monkeypatch):
+    """Le 8-K de Mistral repasse par le téléchargement et la classification,
+    comme un neuf -- ici par Gemini, qui répond."""
+    monkeypatch.setenv(module_04c.sft.GEMINI_API_KEY_ENV, "une-cle")
+    ancien = {"symbol": "MMM", **FILING, **VERDICT, "classification_source": "mistral",
+              "category": "aut_materiel"}
+    module_04c.llm_cache_path(tmp_path).write_text(json.dumps(ancien) + "\n", encoding="utf-8")
+
+    cache = module_04c.load_llm_cache(tmp_path)
+    rows, hits = module_04c.process_ticker_8k(
+        "MMM", "0000066740", [("2023-01-01", "2023-12-31")], cache, tmp_path)
+
+    assert hits == 0
+    assert sec == {"telechargements": 1, "classifications": 1}
+    assert rows[0]["category"] == "depart_dirigeant"
+    assert rows[0]["classification_source"] == "gemini"
+
+
+def test_l_ancienne_memoire_est_renommee(tmp_path):
+    ancien = tmp_path / module_04c.ANCIEN_LLM_CACHE_FILENAME
+    ancien.write_text(json.dumps(_entree("MMM", "1")) + "\n", encoding="utf-8")
+
+    cache = module_04c.load_llm_cache(tmp_path)
+
+    assert not ancien.exists()
+    assert module_04c.llm_cache_path(tmp_path).exists()
+    assert set(cache) == {"MMM:1"}
+
+
+def test_les_deux_memoires_sont_fusionnees_la_plus_recente_gagne(tmp_path):
+    """Un run de l'ancienne version après un run de la nouvelle : rien n'est
+    perdu, et le verdict le plus récent -- celui du nouveau fichier -- gagne."""
+    ancien = tmp_path / module_04c.ANCIEN_LLM_CACHE_FILENAME
+    ancien.write_text(json.dumps(_entree("MMM", "1", category="non_materiel"))   # sans \n final
+                      , encoding="utf-8")
+    nouveau = module_04c.llm_cache_path(tmp_path)
+    nouveau.write_text(json.dumps(_entree("MMM", "1", category="rachat_actions")) + "\n"
+                       + json.dumps(_entree("IBM", "2")) + "\n", encoding="utf-8")
+
+    cache = module_04c.load_llm_cache(tmp_path)
+
+    assert not ancien.exists()
+    assert cache["MMM:1"]["category"] == "rachat_actions"
+    assert set(cache) == {"MMM:1", "IBM:2"}
