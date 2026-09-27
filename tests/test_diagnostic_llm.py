@@ -61,11 +61,32 @@ def test_sans_cle_rien_ne_part_et_l_aide_s_affiche(capsys, monkeypatch):
 
 def test_un_modele_qui_repond(gemini, capsys):
     gemini([200, 200, 200])
-    assert diag.main([]) == 0
+    assert diag.main(["--essais", "3"]) == 0
     sortie = capsys.readouterr().out
     assert sortie.count(": OK en") == 3
     assert "Le modèle répond" in sortie
     assert CLE not in sortie, "la clé ne doit jamais s'afficher"
+
+
+def test_chaque_modele_de_la_liste_est_essaye_une_fois(gemini, capsys, monkeypatch):
+    """Un run passe d'un modèle au suivant quand le quota du jour du premier
+    est épuisé : le diagnostic dit d'avance lesquels répondent, pour une seule
+    requête chacun."""
+    monkeypatch.delenv(sft.GEMINI_MODEL_ENV)
+    appels = gemini([200, (429, "Quota exceeded"), 200])
+    assert diag.main([]) == 0
+    assert [a["url"].rsplit("/", 1)[-1] for a in appels] == [
+        f"{modele}:generateContent" for modele in sft.GEMINI_DEFAULT_MODELS]
+    sortie = capsys.readouterr().out
+    assert f"2/{len(sft.GEMINI_DEFAULT_MODELS)} modèle(s) répondent" in sortie
+    assert "Quota atteint (429)" in sortie
+
+
+def test_aucun_modele_ne_repond(gemini, capsys, monkeypatch):
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "modele-a, modele-b")
+    gemini([(503, "The model is overloaded."), (503, "The model is overloaded.")])
+    assert diag.main([]) == 1
+    assert "0/2 modèle(s) répondent." in capsys.readouterr().out
 
 
 def test_un_modele_surcharge_se_voit_avec_les_mots_de_google(gemini, capsys):
@@ -102,6 +123,7 @@ def test_une_coupure_reseau_ne_plante_pas(gemini, capsys):
 
 
 def test_la_liste_des_modeles(gemini, monkeypatch, capsys):
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-3.8-flash-lite,gemini-3.8-flash")
     vus = []
 
     def faux_get(url, headers=None, params=None, timeout=None):
@@ -118,7 +140,11 @@ def test_la_liste_des_modeles(gemini, monkeypatch, capsys):
     sortie = capsys.readouterr().out
     assert "2 modèle(s)" in sortie
     assert "gemini-3.8-flash-lite" in sortie and "text-embedding-9" not in sortie
-    assert "<-- utilisé" in sortie
+    # Le rang de chaque modèle dans la liste configurée : le premier sert
+    # d'abord, le second prend le relais.
+    lignes = {ligne.split()[0]: ligne for ligne in sortie.splitlines() if "<-- utilisé" in ligne}
+    assert lignes["gemini-3.8-flash-lite"].endswith("(1/2)")
+    assert lignes["gemini-3.8-flash"].endswith("(2/2)")
     assert vus[0]["headers"]["x-goog-api-key"] == CLE
     assert CLE not in vus[0]["url"] and CLE not in str(vus[0]["params"])
 
@@ -133,7 +159,7 @@ def test_la_requete_de_test_a_la_forme_de_celles_de_04c(gemini):
     assert corps["contents"][0]["parts"][0]["text"] == diag.DOCUMENT_TEST
     assert corps["systemInstruction"]["parts"][0]["text"] == diag.CONSIGNE_TEST
     assert corps["generationConfig"]["responseJsonSchema"] == diag.SCHEMA_TEST
-    assert corps["generationConfig"]["thinkingConfig"] == {"thinking_level": "LOW"}
+    assert corps["generationConfig"]["thinkingConfig"] == {"thinking_level": "MINIMAL"}
 
 
 def test_une_reponse_hors_format_est_un_echec(gemini, capsys):

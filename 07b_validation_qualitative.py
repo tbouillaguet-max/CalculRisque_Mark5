@@ -22,14 +22,24 @@ verdict produit pour une période N est donc exactement ce qu'un lecteur du
 10-K/10-Q de l'époque aurait pu établir à l'époque -- aucune connaissance
 d'événements survenus depuis n'est jamais transmise au modèle.
 
-Document, consigne et format séparés
-------------------------------------
-L'extrait du filing, la consigne (CONSIGNE_TEMPLATE) et le format de la
-réponse (SCHEMA_REPONSE, un schéma JSON) partent séparément
-(sec_filings_text.analyser_document). Gemini génère sous la contrainte du
-schéma : un verdict parmi coherent, a_surveiller et contradictoire -- ceux que
-lit le filtre qualitatif du backtest --, une phrase de justification et une
-liste courte de risques ; la réponse est revérifiée avant d'être gardée.
+Au moindre coût en requêtes et en jetons
+----------------------------------------
+Au palier gratuit de Gemini, c'est le nombre de REQUÊTES par jour qui borne
+un run. Trois économies :
+  - une MÉMOIRE des verdicts (cache_qualitative.jsonl) : un filing est figé, et
+    un verdict rendu pour lui -- et pour le même sens d'écart de valorisation
+    -- sert à tous les runs suivants, sans requête ni téléchargement. Avant,
+    chaque run renvoyait toutes les périodes à Gemini (2 182 dans le dépôt) ;
+  - des LOTS (classer_en_attente) : jusqu'à PERIODES_PAR_REQUETE périodes par
+    requête, toutes déposées le même jour -- aucun filing plus récent n'éclaire
+    le jugement d'un plus ancien ;
+  - un extrait plus court (MAX_CARACTERES_MODELE).
+Chaque lot réunit les extraits, une consigne (CONSIGNE_TEMPLATE) et le format
+de la réponse (SCHEMA_VERDICT, un schéma JSON, un verdict par période) :
+Gemini ne peut répondre qu'un verdict parmi coherent, a_surveiller et
+contradictoire -- ceux que lit le filtre qualitatif du backtest --, une phrase
+de justification et au plus cinq risques cités ; la réponse est revérifiée
+avant d'être gardée.
 
 Ce module ne crée volontairement PAS de mécanisme générique séparé : la
 logique de recherche/téléchargement/extraction de texte SEC et l'appel LLM
@@ -40,13 +50,15 @@ la détection d'événements matériels).
 Prérequis :
     pip install requests beautifulsoup4
     GEMINI_API_KEY=ta_cle dans .env (modèle : .env.example) -- sans cette
-    variable, le script journalise chaque ligne comme "non_evalue" et
-    n'appelle jamais le modèle, plutôt que de planter
+    variable, le script sert les verdicts déjà en mémoire, journalise les
+    autres périodes comme "non_evalue_pas_de_cle_api" et n'appelle jamais le
+    modèle, plutôt que de planter
 
 Usage :
     python 07b_validation_qualitative.py
     python 07b_validation_qualitative.py --limit 10
     python 07b_validation_qualitative.py --resume
+    python 07b_validation_qualitative.py --no-llm-cache    # rejuger, mémoire ignorée
 """
 
 from __future__ import annotations
@@ -54,9 +66,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
@@ -75,68 +88,52 @@ FORM_BY_PERIOD_TYPE = {"FY": ("10-K",), "TTM": ("10-Q", "10-K")}  # TTM peut êt
 # modèle ne pourrait jamais les rendre et le filtre ne filtrerait plus rien.
 VERDICTS = ("coherent", "a_surveiller", "contradictoire")
 
+# Périodes par requête, toutes déposées le MÊME jour (voir classer_en_attente).
+# Un extrait fait jusqu'à MAX_CARACTERES_MODELE caractères : cinq tiennent
+# largement dans le quota de jetons par minute du palier gratuit.
+PERIODES_PAR_REQUETE = 5
+# Extrait transmis à Gemini par période (sections de risque, ou début du
+# document), au lieu des 15 000 caractères d'avant.
+MAX_CARACTERES_MODELE = 8_000
+# Budget de RÉPONSE par période : un verdict, une phrase, cinq risques courts.
+JETONS_PAR_VERDICT = 200
+MEMOIRE_FILENAME = "cache_qualitative.jsonl"
+
 # Ce que contient l'extrait transmis, selon sec_filings_text.fetch_filing_text.
 # L'ancien prompt annonçait toujours « le début du document », y compris quand
 # le texte était fait des sections de risque.
 _CONTENU_EXTRAIT = {
-    "sections": "les sections repérées dans le document (facteurs de risque, procédures "
-                "judiciaires, analyse de la direction), chacune précédée de son intitulé entre crochets",
-    "debut_document": "le début du document",
+    "sections": "sections facteurs de risque, procédures judiciaires et analyse de la direction, "
+                "intitulés entre crochets",
+    "debut_document": "début du document",
 }
 
-# La CONSIGNE donnée à Gemini (instruction système). Le document part à côté,
-# et le format de la réponse dans SCHEMA_REPONSE : la consigne ne répète ni
-# les champs ni un exemple de JSON -- Google le déconseille, la qualité baisse.
-CONSIGNE_TEMPLATE = """Tu es un analyste financier. Le document fourni est un \
-extrait du {form} déposé par {symbol} le {filed_date} : {contenu}. À cette même \
-date, un modèle quantitatif (DCF/multiples) calcule un écart de valorisation de \
-{gap_pct:.1f} % (positif : entreprise jugée sous-évaluée ; négatif : jugée \
-survalorisée).
+# La CONSIGNE donnée à Gemini (instruction système), une fois par lot. Les
+# extraits partent à côté, et le format de la réponse dans SCHEMA_VERDICT : la
+# consigne ne répète ni les champs ni un exemple de JSON -- Google le
+# déconseille, la qualité baisse.
+CONSIGNE_TEMPLATE = """Tu es un analyste financier. Tu reçois des extraits de 10-K ou de 10-Q déposés le {filed_date}, chacun entre des balises <document id="...">, précédé de l'entreprise, de la forme, de ce que contient l'extrait et de l'écart de valorisation qu'un modèle quantitatif (DCF/multiples) calcule à cette date (positif : entreprise jugée sous-évaluée ; négatif : jugée survalorisée). Juge chaque document séparément, uniquement à partir de son propre texte : ignore les autres documents du lot et tout ce que tu pourrais savoir par ailleurs, en particulier après cette date.
 
-Analyse UNIQUEMENT ce document : ignore tout ce que tu pourrais savoir par \
-ailleurs sur cette entreprise, en particulier après cette date. Dis si la \
-situation qu'il décrit est cohérente avec cet écart de valorisation, ou s'il \
-signale des risques ou des événements qui pourraient le remettre en cause \
-(dépréciation d'actifs, procédure judiciaire matérielle, révision de guidance, \
-doute sur la continuité d'exploitation...). Justifie ton verdict en une phrase \
-courte, en français, et relève les principaux risques que le document cite."""
+Pour chacun, rends un verdict : coherent si rien dans le document ne remet l'écart en cause, a_surveiller s'il signale des risques à suivre, contradictoire s'il le contredit (dépréciation d'actifs, procédure judiciaire matérielle, révision de guidance, doute sur la continuité d'exploitation...). Justifie-le en une phrase courte, en français, et relève les principaux risques que le document cite, en quelques mots chacun."""
 
-# Le FORMAT de la réponse. Gemini génère sous sa contrainte : un verdict de la
-# liste, une phrase, une liste courte -- et rien d'autre. Les descriptions
-# guident le modèle champ par champ.
-SCHEMA_REPONSE = {
+# Le FORMAT de la réponse pour UNE période ; sec_filings_text.analyser_documents
+# en exige un par document du lot. Gemini génère sous sa contrainte : un
+# verdict de la liste, une phrase, au plus cinq risques -- et rien d'autre.
+# Sans description : répétée pour chaque période du lot, elle coûterait des
+# jetons à chaque requête, et la consigne dit déjà ce que chaque champ attend.
+SCHEMA_VERDICT = {
     "type": "object",
     "properties": {
-        "verdict": {
-            "type": "string",
-            "enum": list(VERDICTS),
-            "description": "coherent : rien dans le document ne remet l'écart en cause ; "
-                           "a_surveiller : des risques à suivre ; contradictoire : le document "
-                           "contredit l'écart de valorisation.",
-        },
-        "justification": {
-            "type": "string",
-            "description": "Le verdict justifié en une phrase courte, en français.",
-        },
-        "risques_cites": {
-            "type": "array",
-            "items": {"type": "string"},
-            "maxItems": 5,
-            "description": "Les principaux risques que le document cite, en quelques mots "
-                           "chacun ; liste vide si aucun n'est notable.",
-        },
+        "verdict": {"type": "string", "enum": list(VERDICTS)},
+        "justification": {"type": "string"},
+        "risques_cites": {"type": "array", "items": {"type": "string"}, "maxItems": 5},
     },
     "required": ["verdict", "justification", "risques_cites"],
-    "propertyOrdering": ["verdict", "justification", "risques_cites"],
 }
 
 
-def build_consigne(symbol: str, form: str, filed_date: str, gap_pct: float,
-                   extraction_mode: Optional[str] = None) -> str:
-    return CONSIGNE_TEMPLATE.format(
-        symbol=symbol, form=form, filed_date=filed_date, gap_pct=gap_pct,
-        contenu=_CONTENU_EXTRAIT.get(extraction_mode, "un extrait du document"),
-    )
+def build_consigne(filed_date: str) -> str:
+    return CONSIGNE_TEMPLATE.format(filed_date=filed_date)
 
 
 def load_signal_periods(limit: Optional[int] = None) -> pd.DataFrame:
@@ -172,60 +169,166 @@ def load_signal_periods(limit: Optional[int] = None) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def evaluate_period(row: pd.Series) -> dict:
-    symbol, cik = row["symbol"], str(row["cik"])
+# ----------------------------------------------------------------------------
+# Mémoire des verdicts (cache_qualitative.jsonl)
+# ----------------------------------------------------------------------------
+
+def memoire_path(output_dir: Path) -> Path:
+    return output_dir / MEMOIRE_FILENAME
+
+
+def cle_memoire(accession_number: str, gap_pct: float) -> str:
+    """Un verdict vaut pour UN filing et le SENS de l'écart de valorisation :
+    le texte d'un filing ne change plus, mais le verdict juge sa cohérence avec
+    l'écart -- une sous-évaluation et une survalorisation ne se jugent pas
+    pareil. L'ampleur de l'écart, qui bouge à chaque recalcul, ne compte pas :
+    la prendre en compte renverrait chaque période à Gemini à chaque run."""
+    return f"{accession_number}|{'positif' if gap_pct >= 0 else 'negatif'}"
+
+
+def charger_memoire(output_dir: Path) -> Dict[str, dict]:
+    """Verdicts déjà rendus, par cle_memoire -- la dernière écriture gagne.
+    Tolérante aux lignes tronquées par un run interrompu."""
+    lignes, illisibles = reprise_jsonl.lire_lignes(memoire_path(output_dir))
+    if illisibles:
+        logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", illisibles, memoire_path(output_dir))
+    memoire = {ligne["cle"]: ligne for ligne in lignes
+               if ligne.get("cle") and ligne.get("verdict") in VERDICTS}
+    logger.info("Mémoire des verdicts : %d filing(s) déjà jugé(s) dans %s.", len(memoire), memoire_path(output_dir))
+    return memoire
+
+
+def memoriser(output_dir: Path, entree: dict) -> None:
+    """Écriture IMMÉDIATE : la requête vient d'être payée."""
+    with memoire_path(output_dir).open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entree, default=str, ensure_ascii=False) + "\n")
+
+
+# ----------------------------------------------------------------------------
+# Une période : verdict immédiat, ou mise en attente de son lot
+# ----------------------------------------------------------------------------
+
+@dataclass
+class PeriodeEnAttente:
+    """Une période dont le filing est téléchargé, qui attend son lot pour Gemini."""
+    row: pd.Series
+    filing: dict           # form, accession_number, extraction_mode...
+    texte: str
+
+
+def _sans_verdict(verdict: str, justification: str, filing: Optional[dict] = None) -> dict:
+    resultat = {"verdict": verdict, "justification": justification, "risques_cites": None}
+    if filing is not None:
+        resultat.update(accession_number=filing["accession_number"], form=filing["form"],
+                        extraction_mode=filing.get("extraction_mode"))
+    return resultat
+
+
+def preparer_periode(row: pd.Series, memoire: Optional[Dict[str, dict]] = None
+                     ) -> Tuple[Optional[dict], Optional[PeriodeEnAttente]]:
+    """(verdict, None) quand la période se règle sans requête -- filing
+    introuvable, pas de clé, verdict déjà en mémoire --, sinon
+    (None, période en attente) avec l'extrait de son filing, téléchargé.
+
+    La mémoire est lue AVANT le téléchargement : un filing déjà jugé ne coûte
+    ni requête Gemini, ni requête SEC pour son document. Elle sert aussi sans
+    clé : un verdict déjà rendu reste valable."""
+    cik = str(row["cik"])
     period_type = row.get("period_type") or "FY"
     filed_date = str(row["filed_date"])[:10]
     forms = FORM_BY_PERIOD_TYPE.get(period_type, ("10-K", "10-Q"))
 
-    filing = sft.get_filing_text_asof(cik, filed_date, forms=forms)
+    filing = sft.find_filing_asof(cik, filed_date, forms=forms)
     if filing is None:
         # Distingué de "pas de clé API" ci-dessous : les deux produisaient le
         # même "non_evalue", si bien qu'un trou de couverture SEC et une
         # absence de configuration se lisaient pareil dans le parquet de
         # sortie -- impossible de savoir laquelle des deux corriger.
+        return _sans_verdict("non_evalue_filing_introuvable",
+                             "Aucun 10-K/10-Q trouvé à cette date de dépôt exacte."), None
+
+    connu = memoire.get(cle_memoire(filing["accession_number"], float(row["gap_pct"]))) if memoire else None
+    if connu is not None:
         return {
-            "verdict": "non_evalue_filing_introuvable",
-            "justification": "Aucun 10-K/10-Q trouvé à cette date de dépôt exacte.",
-            "risques_cites": None,
-        }
+            "verdict": connu["verdict"], "justification": connu.get("justification"),
+            "risques_cites": connu.get("risques_cites"), "accession_number": filing["accession_number"],
+            "form": filing["form"], "extraction_mode": connu.get("extraction_mode"),
+            "modele": connu.get("modele"), "from_cache": True,
+        }, None
 
     if not sft.llm_disponible():
-        return {
-            "verdict": "non_evalue_pas_de_cle_api",
-            "justification": f"{sft.GEMINI_API_KEY_ENV} non définie : aucun appel au modèle.",
-            "risques_cites": None,
-            "accession_number": filing["accession_number"],
-            "form": filing["form"],
-            "extraction_mode": filing.get("extraction_mode"),
-        }
+        return _sans_verdict("non_evalue_pas_de_cle_api",
+                             f"{sft.GEMINI_API_KEY_ENV} non définie : aucun appel au modèle.", filing), None
 
-    # L'extrait, la consigne et le format partent séparément ; la réponse
-    # revient conforme à SCHEMA_REPONSE, ou pas du tout (None).
-    consigne = build_consigne(symbol, filing["form"], filed_date, float(row["gap_pct"]),
-                              filing.get("extraction_mode"))
-    result = sft.analyser_document(document=filing["text"], consigne=consigne, schema=SCHEMA_REPONSE)
-    if result is None or "verdict" not in result:
-        return {
-            "verdict": "non_evalue_reponse_invalide",
-            "justification": "Réponse de Gemini indisponible, ou hors du format demandé.",
-            "risques_cites": None,
-            "accession_number": filing["accession_number"],
-            "form": filing["form"],
-            "extraction_mode": filing.get("extraction_mode"),
-        }
+    url = sft.filing_document_url(cik, filing["accession_number"], filing["primary_document"])
+    extrait = sft.fetch_filing_text(url, max_chars=MAX_CARACTERES_MODELE, form=filing.get("form"))
+    if extrait is None:
+        return _sans_verdict("non_evalue_filing_introuvable",
+                             "Document du filing impossible à télécharger.", filing), None
+    texte, extraction_mode = extrait
+    return None, PeriodeEnAttente(row=row, filing={**filing, "extraction_mode": extraction_mode}, texte=texte)
 
-    return {
-        "verdict": result.get("verdict"),
-        "justification": result.get("justification"),
-        "risques_cites": json.dumps(result.get("risques_cites"), ensure_ascii=False) if result.get("risques_cites") is not None else None,
-        "accession_number": filing["accession_number"],
-        "form": filing["form"],
-        # Qualité de l'extraction, remontée jusqu'au parquet : un verdict
-        # rendu sur le début du document ne porte pas sur la même chose qu'un
-        # verdict rendu sur les Items 1A/3/7 (cf. sec_filings_text.MAX_TEXT_CHARS).
-        "extraction_mode": filing.get("extraction_mode"),
-    }
+
+def _document_pour_le_modele(attente: PeriodeEnAttente) -> str:
+    contenu = _CONTENU_EXTRAIT.get(attente.filing.get("extraction_mode"), "extrait du document")
+    return (f"Entreprise : {attente.row['symbol']}. Forme : {attente.filing['form']}. Extrait : {contenu}. "
+            f"Écart de valorisation : {float(attente.row['gap_pct']):+.1f} %.\n{attente.texte}")
+
+
+def classer_en_attente(
+    en_attente: List[PeriodeEnAttente], memoire: Optional[Dict[str, dict]] = None,
+    output_dir: Optional[Path] = None, par_requete: int = PERIODES_PAR_REQUETE,
+) -> Iterator[Tuple[PeriodeEnAttente, dict]]:
+    """Soumet à Gemini les périodes en attente, par lots d'au plus
+    `par_requete` filings déposés le MÊME JOUR -- jamais un filing plus récent
+    à côté d'un plus ancien, qu'il pourrait éclairer (anticipation) --, les
+    dates les plus récentes d'abord. Rend (période, verdict) au fil des lots ;
+    chaque verdict du modèle est mémorisé aussitôt. Une période sans réponse
+    -- son lot entier, ou elle seule quand elle fait échouer le lot (voir
+    sec_filings_text.analyser_documents) -- sort en non_evalue_reponse_invalide."""
+    par_date: Dict[str, List[PeriodeEnAttente]] = {}
+    for attente in en_attente:
+        par_date.setdefault(str(attente.row["filed_date"])[:10], []).append(attente)
+    lots = [
+        (date, par_date[date][debut:debut + par_requete])
+        for date in sorted(par_date, reverse=True)
+        for debut in range(0, len(par_date[date]), par_requete)
+    ]
+    if lots:
+        logger.info(
+            "Gemini : %d période(s) à juger, en %d requête(s) -- au plus %d filings déposés le "
+            "même jour par requête, les plus récents d'abord.", len(en_attente), len(lots), par_requete)
+
+    for date, lot in lots:
+        reponses = None
+        if not sft.llm_coupe_pour_ce_run():
+            documents = {f"d{rang}": _document_pour_le_modele(a) for rang, a in enumerate(lot, start=1)}
+            reponses = sft.analyser_documents(documents, build_consigne(date), SCHEMA_VERDICT,
+                                              max_tokens_par_document=JETONS_PAR_VERDICT)
+        for rang, attente in enumerate(lot, start=1):
+            verdict = reponses.get(f"d{rang}") if reponses else None
+            if verdict is None:
+                yield attente, _sans_verdict("non_evalue_reponse_invalide",
+                                             "Réponse de Gemini indisponible, ou hors du format demandé.",
+                                             attente.filing)
+                continue
+            resultat = {
+                "verdict": verdict["verdict"], "justification": verdict["justification"],
+                "risques_cites": json.dumps(verdict["risques_cites"], ensure_ascii=False),
+                "accession_number": attente.filing["accession_number"], "form": attente.filing["form"],
+                # Qualité de l'extraction, remontée jusqu'au parquet : un
+                # verdict rendu sur le début du document ne porte pas sur la
+                # même chose qu'un verdict rendu sur les Items 1A/3/7.
+                "extraction_mode": attente.filing.get("extraction_mode"),
+                "modele": sft.dernier_modele_utilise(), "from_cache": False,
+            }
+            if memoire is not None:
+                entree = {"cle": cle_memoire(attente.filing["accession_number"], float(attente.row["gap_pct"])),
+                          **resultat, "evaluated_at": datetime.now().isoformat(timespec="seconds")}
+                memoire[entree["cle"]] = entree
+                if output_dir is not None:
+                    memoriser(output_dir, entree)
+            yield attente, resultat
 
 
 # ----------------------------------------------------------------------------
@@ -278,14 +381,26 @@ def main() -> None:
     parser.add_argument("--output-dir", default=config.DIR_DCF, type=Path)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Ignore " + MEMOIRE_FILENAME + " et rejuge chaque période (à réserver à un changement "
+             "de consigne ou de modèle : chaque requête compte dans le quota).",
+    )
+    parser.add_argument(
+        "--par-requete", type=int, default=PERIODES_PAR_REQUETE,
+        help="Filings déposés le même jour envoyés à Gemini dans une seule requête (défaut: "
+             "%(default)s).",
+    )
     args = parser.parse_args()
+    if args.par_requete < 1:
+        parser.error("--par-requete doit valoir au moins 1.")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     if not sft.llm_disponible():
         logger.warning(
-            "Aucune clé Gemini (%s) : toutes les périodes seront journalisées comme "
-            "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
+            "Aucune clé Gemini (%s) : les périodes sans verdict en mémoire seront journalisées "
+            "comme 'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
             sft.GEMINI_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
@@ -310,7 +425,34 @@ def main() -> None:
     to_process = [row for _, row in periods.iterrows() if _key(row) not in processed_keys]
     logger.info("%d/%d périodes à évaluer (%d déjà traitées).", len(to_process), len(periods), len(processed_keys))
 
+    memoire: Optional[Dict[str, dict]] = None
+    if args.no_llm_cache:
+        logger.warning("--no-llm-cache : les périodes déjà jugées seront renvoyées à Gemini.")
+    else:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        memoire = charger_memoire(args.output_dir)
+
     since_checkpoint = 0
+
+    def ecrire(row: pd.Series, result: dict, traitee: bool = True) -> None:
+        nonlocal since_checkpoint
+        append_checkpoint(args.output_dir, {
+            "symbol": row["symbol"], "period_type": row.get("period_type"),
+            "fiscal_year": row.get("fiscal_year"), "fiscal_quarter": row.get("fiscal_quarter"),
+            "filed_date": row["filed_date"], "gap_pct": row["gap_pct"],
+            "evaluated_at": datetime.now().isoformat(timespec="seconds"),
+            **result,
+        })
+        # Une période sans verdict faute de réponse reste à faire : un
+        # --resume la redonnera à Gemini.
+        if traitee:
+            processed_keys.add(_key(row))
+        since_checkpoint += 1
+        if since_checkpoint >= CHECKPOINT_EVERY:
+            save_progress(args.output_dir, processed_keys)
+            since_checkpoint = 0
+
+    en_attente: List[PeriodeEnAttente] = []
     try:
         for i, row in enumerate(to_process, start=1):
             key = _key(row)
@@ -324,25 +466,18 @@ def main() -> None:
                 row["symbol"], row.get("period_type"), row.get("fiscal_year"), suffixe,
             )
             try:
-                result = evaluate_period(row)
+                result, attente = preparer_periode(row, memoire)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("  -> ECHEC pour %s : %s (période ignorée, on continue)", key, exc)
-                result = {"verdict": "non_evalue", "justification": str(exc), "risques_cites": None}
+                result, attente = {"verdict": "non_evalue", "justification": str(exc), "risques_cites": None}, None
+            if attente is not None:
+                en_attente.append(attente)
+            else:
+                ecrire(row, result)
 
-            checkpoint_row = {
-                "symbol": row["symbol"], "period_type": row.get("period_type"),
-                "fiscal_year": row.get("fiscal_year"), "fiscal_quarter": row.get("fiscal_quarter"),
-                "filed_date": row["filed_date"], "gap_pct": row["gap_pct"],
-                "evaluated_at": datetime.now().isoformat(timespec="seconds"),
-                **result,
-            }
-            append_checkpoint(args.output_dir, checkpoint_row)
-            processed_keys.add(key)
-
-            since_checkpoint += 1
-            if since_checkpoint >= CHECKPOINT_EVERY:
-                save_progress(args.output_dir, processed_keys)
-                since_checkpoint = 0
+        # Les périodes à juger partent ensemble, par lots de même date.
+        for attente, result in classer_en_attente(en_attente, memoire, args.output_dir, args.par_requete):
+            ecrire(attente.row, result, traitee=result["verdict"] in VERDICTS)
     finally:
         save_progress(args.output_dir, processed_keys)
 
@@ -355,6 +490,11 @@ def main() -> None:
         return
 
     df = pd.DataFrame(rows)
+    if "from_cache" in df.columns:
+        # Les lignes sans verdict n'ont pas la colonne : sans normalisation, le
+        # mélange bool/NaN part en colonne "object" et pyarrow refuse d'inférer
+        # un type.
+        df["from_cache"] = df["from_cache"].fillna(False).astype(bool)
     if args.limit:
         # Run PARTIEL : il ne remplace que ses propres périodes dans le fichier
         # complet, que le filtre qualitatif du backtest lit (cf. reprise_jsonl).

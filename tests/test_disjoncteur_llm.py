@@ -65,8 +65,12 @@ def horloge(monkeypatch):
 
 @pytest.fixture
 def gemini(monkeypatch):
-    """Pose une file de réponses : un code HTTP, (code, message), une exception."""
+    """Pose une file de réponses : un code HTTP, (code, message), une exception.
+
+    UN seul modèle configuré : ces tests portent sur la pause et la coupure ;
+    le passage d'un modèle au suivant a les siens (test_appel_gemini)."""
     monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "cle-de-test")
+    monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemini-3.8-flash")
     monkeypatch.setattr(sft.time, "sleep", lambda _s: None)
     monkeypatch.setattr(sft, "GEMINI_RATE_LIMITER", sft.AdaptiveRateLimiter(1000.0))
     appels = []
@@ -267,8 +271,12 @@ def test_04c_classe_par_regles_pendant_la_pause(gemini, horloge):
     et le verdict par règles sera repris par le modèle au run suivant."""
     appels = _mettre_en_pause(gemini)
     avant = len(appels)
-    verdict = _04c.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nimpairment charge")
-    assert verdict["classification_source"] == "regles_document"
+    texte = "Item 8.01 Other Events\nThe Company entered into an Agreement and Plan of Merger."
+    ligne = {"symbol": "AAPL", "cik": "320193", "filed_date": "2021-05-03", "accession_number": "A1",
+             **_04c.classify_8k_par_regles(_04c.extract_item_codes(texte), texte)}
+    classees = _04c.classer_en_attente([_04c.EnAttente(ligne=ligne, texte=texte)])
+    assert classees == []
+    assert ligne["classification_source"] == "regles_document"
     assert len(appels) == avant
 
 
@@ -279,7 +287,7 @@ def test_le_bilan_dit_ce_que_le_modele_a_fait(gemini, horloge):
     _analyser()
     _analyser()
     bilan = sft.bilan_llm()
-    assert bilan.startswith("Gemini (gemini-3.8-flash, réflexion low) -- 2 verdict(s)")
+    assert bilan.startswith("Gemini (gemini-3.8-flash, réflexion minimal) -- 2 verdict(s)")
     assert "3 analyse(s) sans réponse" in bilan
 
     sft.reinitialiser_disjoncteur_llm()

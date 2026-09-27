@@ -22,14 +22,25 @@ résumé agrégé ou une connaissance d'événements postérieurs -- même garan
 structurelle que 07b_validation_qualitative.py (sec_filings_text.py::
 fetch_filing_text ne télécharge qu'UN document à la fois).
 
-Classification par Gemini : document, consigne et format séparés
-----------------------------------------------------------------
-Le texte du 8-K, la consigne (CONSIGNE_TEMPLATE) et le format de la réponse
-(SCHEMA_REPONSE, un schéma JSON) partent séparément
-(sec_filings_text.analyser_document). Gemini génère sous la contrainte du
-schéma : il ne peut répondre qu'une des sept catégories, un booléen pour la
-matérialité et une phrase de résumé -- et la réponse est revérifiée avant
-d'être gardée.
+Classification par Gemini, au moindre coût en requêtes et en jetons
+------------------------------------------------------------------
+Au palier gratuit de Gemini, c'est le nombre de REQUÊTES par jour qui borne
+un run. Chaque 8-K est donc d'abord classé par règles (classify_8k_par_regles),
+et seuls vont ensuite à Gemini :
+  - les 8-K RÉCENTS (config.LLM_8K_FENETRE_JOURS) : un 8-K plus ancien ne
+    touche plus aucun signal actif ;
+  - dont les Items ne décident pas seuls (ITEMS_POUR_LE_MODELE : 1.01, 1.02,
+    5.02, 8.01) -- 2 884 des 6 327 8-K récents de l'archive du dépôt.
+Ils partent PAR LOTS (classer_en_attente) : jusqu'à DOCUMENTS_PAR_REQUETE 8-K
+par requête, tous déposés le même jour -- aucun 8-K plus récent n'éclaire le
+classement d'un plus ancien. Chaque lot réunit le texte des 8-K, allégé de la
+page de garde et des signatures (texte_pour_le_modele), une consigne
+(CONSIGNE_TEMPLATE) et le format de la réponse (SCHEMA_VERDICT, un schéma
+JSON, un verdict par 8-K) : Gemini ne peut répondre, pour chaque 8-K, qu'une
+des sept catégories, un booléen pour la matérialité et une phrase de résumé,
+et la réponse est revérifiée avant d'être gardée. Sans réponse pour un lot,
+ses 8-K gardent leur verdict par règles, que le modèle reprendra au run
+suivant.
 
 Pré-classification par regex (codes "Item X.XX", boilerplate standardisé du
 formulaire 8-K -- ex: Item 5.02 = départ/nomination de dirigeant, Item 8.01 =
@@ -43,8 +54,9 @@ Un 8-K est un document FIGÉ : son texte ne changera plus, donc sa
 classification non plus. Chaque 8-K classé -- par Gemini, ou par règles à
 défaut -- est mémorisé (clé : symbole + numéro d'accession) dans un cache
 JSONL persistant, et n'est jamais ré-analysé -- ni son texte re-téléchargé
-auprès de la SEC. Un verdict par règles d'un 8-K récent repart au modèle dès
-qu'une clé est disponible (voir load_llm_cache).
+auprès de la SEC. Un verdict par règles d'un 8-K récent que Gemini lirait
+repart au modèle dès qu'une clé est disponible (voir load_llm_cache).
+--vider-memoire efface cette mémoire pour tout reprendre à zéro.
 
 Ce cache est indépendant de --resume : --resume reprend un run interrompu (au
 grain du ticker), le cache survit à TOUS les runs (au grain du document). Un
@@ -66,6 +78,8 @@ Usage :
     python 04c_recuperation_8k.py --resume
     python 04c_recuperation_8k.py --ticker AAPL
     python 04c_recuperation_8k.py --no-llm-cache
+    python 04c_recuperation_8k.py --vider-memoire     # tout reclasser, 8-K retéléchargés
+    python 04c_recuperation_8k.py --par-requete 5
 """
 
 from __future__ import annotations
@@ -75,6 +89,7 @@ import json
 import logging
 import re
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -129,49 +144,55 @@ CATEGORIES = (
     "procedure_judiciaire", "fusion_acquisition", "autre_materiel", "non_materiel",
 )
 
-# La CONSIGNE donnée à Gemini (instruction système). Le document part à côté,
-# et le format de la réponse dans SCHEMA_REPONSE : la consigne ne répète ni
-# les champs ni un exemple de JSON -- Google le déconseille, la qualité baisse.
-CONSIGNE_TEMPLATE = """Tu es un analyste financier. Le document fourni est le \
-texte d'un 8-K déposé par {symbol} le {filed_date} (codes Item détectés dans le \
-document : {item_codes}). Analyse UNIQUEMENT ce document : ignore tout ce que tu \
-pourrais savoir par ailleurs sur cette entreprise, en particulier après cette date.
+# Items que Gemini lit : ceux dont SEUL le texte dit la portée -- un accord
+# (1.01, 1.02), un départ ou une nomination (5.02), un « autre événement »
+# (8.01). Tout autre 8-K est classé par règles, sans requête : les Items
+# administratifs (9.01, 5.07...) ne sont jamais matériels, ceux de
+# config.MATERIAL_8K_ITEM_CATEGORIES le sont par définition, et les résultats
+# (2.02) ou la Regulation FD (7.01) renvoient à une pièce jointe (Exhibit 99.1)
+# que 04c ne télécharge pas -- Gemini n'en verrait que la page de couverture.
+# Mesuré sur l'archive du dépôt, 400 derniers jours : 2 884 8-K sur 6 327.
+ITEMS_POUR_LE_MODELE = frozenset({"1.01", "1.02", "5.02", "8.01"})
 
-Dis si l'événement qu'il annonce est matériel pour une thèse de valorisation, \
-c'est-à-dire susceptible de changer significativement la valeur intrinsèque ou \
-le risque perçu de l'entreprise. Classe-le dans la catégorie qui le décrit le \
-mieux, et résume-le en une phrase courte, en français."""
+# 8-K par requête, tous déposés le MÊME jour (voir classer_en_attente). Sur
+# l'archive du dépôt, les 2 884 8-K à lire tombent sur 238 jours de dépôt :
+# 390 requêtes, au lieu de 2 884.
+DOCUMENTS_PAR_REQUETE = 10
 
-# Le FORMAT de la réponse. Gemini génère sous sa contrainte : une catégorie de
-# la liste, un vrai booléen, une phrase -- et rien d'autre. Les descriptions
-# guident le modèle champ par champ.
-SCHEMA_REPONSE = {
+# Texte transmis à Gemini par 8-K, page de garde et signatures retirées (voir
+# texte_pour_le_modele) : l'objet d'un 8-K tient en quelques paragraphes.
+MAX_CARACTERES_MODELE = 6_000
+
+# Budget de RÉPONSE par 8-K : une catégorie, un booléen, une phrase.
+JETONS_PAR_VERDICT = 120
+
+# La CONSIGNE donnée à Gemini (instruction système), une fois par lot. Les
+# 8-K partent à côté, et le format de la réponse dans SCHEMA_VERDICT : la
+# consigne ne répète ni les champs ni un exemple de JSON -- Google le
+# déconseille, la qualité baisse.
+CONSIGNE_TEMPLATE = """Tu es un analyste financier. Tu reçois des 8-K déposés le {filed_date}, chacun entre des balises <document id="...">, précédé de l'entreprise et des Items déclarés. Juge chaque document séparément, uniquement à partir de son propre texte : ignore les autres documents du lot et tout ce que tu pourrais savoir par ailleurs, en particulier après cette date.
+
+Pour chacun, dis si l'événement annoncé est matériel pour une thèse de valorisation, c'est-à-dire susceptible de changer significativement la valeur intrinsèque ou le risque perçu de l'entreprise ; classe-le dans la catégorie qui le décrit le mieux (non_materiel pour un dépôt de routine) ; résume-le en une phrase courte, en français."""
+
+# Le FORMAT de la réponse pour UN 8-K ; sec_filings_text.analyser_documents en
+# exige un par document du lot. Gemini génère sous sa contrainte : une
+# catégorie de la liste, un vrai booléen, une phrase -- et rien d'autre. Sans
+# description ni ordre imposé : répétés pour chaque 8-K du lot, ils coûteraient
+# des jetons à chaque requête, et la consigne dit déjà ce que chaque champ
+# attend.
+SCHEMA_VERDICT = {
     "type": "object",
     "properties": {
-        "category": {
-            "type": "string",
-            "enum": list(CATEGORIES),
-            "description": "Catégorie de l'événement annoncé ; non_materiel pour un dépôt de routine.",
-        },
-        "materiality": {
-            "type": "boolean",
-            "description": "Vrai si l'événement peut changer significativement la valeur "
-                           "intrinsèque ou le risque perçu de l'entreprise.",
-        },
-        "summary": {
-            "type": "string",
-            "description": "L'événement en une phrase courte, en français.",
-        },
+        "category": {"type": "string", "enum": list(CATEGORIES)},
+        "materiality": {"type": "boolean"},
+        "summary": {"type": "string"},
     },
     "required": ["category", "materiality", "summary"],
-    "propertyOrdering": ["category", "materiality", "summary"],
 }
 
 
-def build_consigne(symbol: str, filed_date: str, item_codes: List[str]) -> str:
-    return CONSIGNE_TEMPLATE.format(
-        symbol=symbol, filed_date=filed_date, item_codes=", ".join(item_codes) or "aucun détecté",
-    )
+def build_consigne(filed_date: str) -> str:
+    return CONSIGNE_TEMPLATE.format(filed_date=filed_date)
 
 
 def extract_item_codes(text: str) -> List[str]:
@@ -359,29 +380,109 @@ def llm_pour(filed_date, limite: Optional[str]) -> bool:
     return str(filed_date)[:10] >= limite
 
 
-def classify_8k(symbol: str, filed_date: str, text: str, llm: bool = True) -> dict:
-    """Classification d'un 8-K à partir de son texte.
+def passe_au_modele(item_codes: List[str]) -> bool:
+    """Ce 8-K va-t-il à Gemini ? Seulement s'il déclare un Item que seul le
+    texte peut trancher (ITEMS_POUR_LE_MODELE) et aucun Item matériel par
+    définition -- celui-là décide seul, sans requête."""
+    numeros = {_numero_item(c) for c in item_codes}
+    return bool(numeros & ITEMS_POUR_LE_MODELE) and not numeros & set(_ITEMS_MATERIELS)
 
-    Le modèle est prioritaire quand une clé est disponible ; à défaut, la
-    règle documentaire (`classify_8k_par_regles`) prend le relais plutôt que de
-    renvoyer `non_evalue` et de jeter le document. Voir le pavé plus haut.
 
-    `llm=False` : directement la règle, sans appel -- un 8-K trop ancien pour
-    toucher un signal encore vivant (cf. config.LLM_8K_FENETRE_JOURS)."""
-    item_codes = extract_item_codes(text)
-    if not llm:
-        return classify_8k_par_regles(item_codes, text)
-    # Le document, la consigne et le format partent séparément ; la réponse
-    # revient conforme à SCHEMA_REPONSE, ou pas du tout (None).
-    result = sft.analyser_document(
-        document=text, consigne=build_consigne(symbol, filed_date, item_codes), schema=SCHEMA_REPONSE)
-    if result is None or "category" not in result:
-        return classify_8k_par_regles(item_codes, text)
-    return {
-        "item_codes": item_codes, "category": result.get("category"),
-        "materiality": result.get("materiality"), "summary": result.get("summary"),
-        "classification_source": SOURCE_GEMINI,
-    }
+# Le bloc de signatures, qui ferme un 8-K : « SIGNATURE » ou « SIGNATURES »,
+# en capitales -- en minuscules, le mot court dans le texte courant.
+_SIGNATURES = re.compile(r"\bSIGNATURES?\b")
+
+
+def texte_pour_le_modele(text: str) -> str:
+    """Ce que Gemini lit d'un 8-K : du premier Item aux signatures, espaces
+    resserrés, au plus MAX_CARACTERES_MODELE caractères. La page de garde
+    (cases à cocher, adresse, titres cotés) et les signatures sont du
+    formulaire, identique d'un dépôt à l'autre : des jetons payés pour rien."""
+    debut = ITEM_CODE_PATTERN.search(text)
+    corps = text[debut.start():] if debut else text
+    fin = _SIGNATURES.search(corps)
+    if fin and fin.start() > 0:
+        corps = corps[:fin.start()]
+    return " ".join(corps.split())[:MAX_CARACTERES_MODELE]
+
+
+@dataclass
+class EnAttente:
+    """Un 8-K déjà classé par règles, qui attend son lot pour Gemini."""
+    ligne: dict      # la ligne par règles, déjà écrite (checkpoint, mémoire)
+    texte: str       # ce que Gemini en lira (texte_pour_le_modele)
+
+
+def _document_pour_le_modele(attente: EnAttente) -> str:
+    items = ", ".join(sorted({_numero_item(c) for c in attente.ligne.get("item_codes") or []} - {""}))
+    return f"Entreprise : {attente.ligne['symbol']}. Items déclarés : {items or 'aucun'}.\n{attente.texte}"
+
+
+def classer_en_attente(
+    en_attente: List[EnAttente], llm_cache: Optional[Dict[str, dict]] = None,
+    output_dir: Optional[Path] = None, par_requete: int = DOCUMENTS_PAR_REQUETE,
+) -> List[dict]:
+    """Soumet à Gemini les 8-K en attente, par lots d'au plus `par_requete`
+    8-K déposés le MÊME JOUR -- jamais un 8-K plus récent à côté d'un plus
+    ancien, qu'il pourrait éclairer (anticipation). Les dates les plus
+    récentes d'abord : si le quota du jour s'épuise en route, ce sont les
+    8-K les plus anciens qui attendent le prochain run.
+
+    Chaque verdict est écrit aussitôt (checkpoint, mémoire) : un Ctrl-C ne
+    perd pas une requête payée. Un 8-K sans réponse -- son lot entier, ou
+    lui seul quand il fait échouer le lot (voir
+    sec_filings_text.analyser_documents) -- garde son verdict par règles, déjà
+    écrit, que le modèle reprendra au run suivant. Rend les lignes classées
+    par Gemini."""
+    par_date: Dict[str, List[EnAttente]] = {}
+    for attente in en_attente:
+        par_date.setdefault(str(attente.ligne["filed_date"])[:10], []).append(attente)
+    lots = [
+        (date, par_date[date][debut:debut + par_requete])
+        for date in sorted(par_date, reverse=True)
+        for debut in range(0, len(par_date[date]), par_requete)
+    ]
+    if not lots:
+        return []
+    logger.info(
+        "Gemini : %d 8-K à lire, en %d requête(s) -- au plus %d 8-K déposés le même jour par "
+        "requête, les plus récents d'abord.", len(en_attente), len(lots), par_requete)
+
+    classees: List[dict] = []
+    for numero, (date, lot) in enumerate(lots, start=1):
+        if sft.llm_coupe_pour_ce_run():
+            logger.warning(
+                "Gemini coupé pour ce run : les %d 8-K restants gardent leur verdict par règles, "
+                "que le modèle reprendra au prochain run.", sum(len(l) for _, l in lots[numero - 1:]))
+            break
+        documents = {f"d{rang}": _document_pour_le_modele(a) for rang, a in enumerate(lot, start=1)}
+        reponses = sft.analyser_documents(documents, build_consigne(date), SCHEMA_VERDICT,
+                                          max_tokens_par_document=JETONS_PAR_VERDICT)
+        if reponses is None:
+            continue
+        lignes = []
+        for rang, attente in enumerate(lot, start=1):
+            verdict = reponses.get(f"d{rang}")
+            if verdict is None:
+                continue
+            ligne = {
+                **attente.ligne,
+                "category": verdict["category"], "materiality": verdict["materiality"],
+                "summary": verdict["summary"], "classification_source": SOURCE_GEMINI,
+                "modele": sft.dernier_modele_utilise(),
+                "fetch_timestamp": datetime.now().isoformat(timespec="seconds"), "from_cache": False,
+            }
+            lignes.append(ligne)
+            if llm_cache is not None:
+                llm_cache[cache_key(ligne["symbol"], ligne["accession_number"])] = ligne
+                if output_dir is not None:
+                    append_llm_cache(output_dir, ligne)
+        if output_dir is not None:
+            append_checkpoint(output_dir, lignes)
+        classees.extend(lignes)
+        if numero % 25 == 0:
+            logger.info("Gemini : %d/%d requêtes, %d 8-K classés.", numero, len(lots), len(classees))
+    return classees
 
 
 # ----------------------------------------------------------------------------
@@ -511,9 +612,12 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
     for entree in conservees:
         cle = cache_key(entree["symbol"], entree["accession_number"])
         if (llm_disponible and entree.get("classification_source") == SOURCE_REGLES
-                and llm_pour(entree.get("filed_date"), limite_llm)):
-            # Seul un 8-K RÉCENT repart au modèle : un ancien, classé par
-            # règles, reste servi par le cache (cf. config.LLM_8K_FENETRE_JOURS).
+                and llm_pour(entree.get("filed_date"), limite_llm)
+                and passe_au_modele(entree.get("item_codes") or [])):
+            # Seul un 8-K RÉCENT, et que Gemini lirait (voir passe_au_modele),
+            # repart au modèle : un ancien, ou un 8-K dont les Items décident
+            # seuls, classé par règles, reste servi par le cache (cf.
+            # config.LLM_8K_FENETRE_JOURS).
             par_regles.add(cle)
             continue
         # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
@@ -556,6 +660,7 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
         # lequel des deux chemins l'a produite, et le parquet deviendrait
         # ininterprétable dès qu'un run mélange les deux.
         "classification_source": entry.get("classification_source"),
+        "modele": entry.get("modele"),
         "fetch_timestamp": entry.get("fetch_timestamp"),
         "from_cache": True,
     }
@@ -564,11 +669,16 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
 def process_ticker_8k(
     symbol: str, cik: str, windows: List[tuple],
     llm_cache: Optional[Dict[str, dict]] = None, output_dir: Optional[Path] = None,
-    limite_llm: Optional[str] = None,
+    limite_llm: Optional[str] = None, en_attente: Optional[List[EnAttente]] = None,
 ) -> tuple:
     """Lignes 8-K du ticker, plus le nombre de classifications servies par le
     cache. `llm_cache` à None désactive complètement la mémoire (--no-llm-cache).
-    `limite_llm` : seuls les 8-K déposés à partir de cette date vont au modèle."""
+
+    Chaque 8-K est classé ici PAR RÈGLES. Ceux que Gemini doit lire -- déposés
+    à partir de `limite_llm`, et dont les Items ne décident pas seuls (voir
+    passe_au_modele) -- sont en plus ajoutés à `en_attente`, que
+    classer_en_attente soumet ensuite par lots de même date. `en_attente` à
+    None : aucun 8-K n'est mis en attente (pas de clé Gemini)."""
     rows = []
     cache_hits = 0
     seen_accessions = set()
@@ -610,13 +720,13 @@ def process_ticker_8k(
                 continue
             text, _extraction_mode = extracted
 
-            classification = classify_8k(
-                symbol, filing["filing_date"], text,
-                llm=llm_pour(filing["filing_date"], limite_llm))
+            item_codes = extract_item_codes(text)
+            classification = classify_8k_par_regles(item_codes, text)
             row = {
                 "symbol": symbol, "cik": cik, "filed_date": filing["filing_date"],
                 "accession_number": filing["accession_number"],
                 **classification,
+                "modele": None,
                 "fetch_timestamp": datetime.now().isoformat(timespec="seconds"),
                 "from_cache": False,
             }
@@ -626,6 +736,13 @@ def process_ticker_8k(
                 llm_cache[cache_key(symbol, filing["accession_number"])] = row
                 if output_dir is not None:
                     append_llm_cache(output_dir, row)
+
+            # Le verdict par règles reste écrit : si Gemini ne répond pas pour
+            # son lot, c'est lui qui sert, et le modèle le reprendra au run
+            # suivant (voir load_llm_cache).
+            if (en_attente is not None and llm_pour(filing["filing_date"], limite_llm)
+                    and passe_au_modele(item_codes)):
+                en_attente.append(EnAttente(ligne=row, texte=texte_pour_le_modele(text)))
     return rows, cache_hits
 
 
@@ -699,12 +816,26 @@ def main() -> None:
              "0 : tout l'historique.",
     )
     parser.add_argument(
+        "--par-requete", type=int, default=DOCUMENTS_PAR_REQUETE,
+        help="8-K déposés le même jour envoyés à Gemini dans une seule requête (défaut: "
+             "%(default)s). Plus haut : moins de requêtes, des requêtes plus longues.",
+    )
+    parser.add_argument(
+        "--vider-memoire", action="store_true",
+        help="Efface " + LLM_CACHE_FILENAME + " avant le run : chaque 8-K est retéléchargé à la "
+             "SEC et reclassé (règles, puis Gemini pour les récents à lire).",
+    )
+    parser.add_argument(
         "--max-failure-ratio", type=float, default=DEFAULT_MAX_FAILURE_RATIO,
         help="Part maximale d'entreprises en échec RÉSEAU tolérée avant d'abandonner le run "
              "sans rien écrire (défaut: %(default)s). Un material_events_8k.parquet incomplet "
              "désactive silencieusement le filtre d'événements matériels du backtest.",
     )
     args = parser.parse_args()
+    if args.vider_memoire and args.resume:
+        parser.error("--vider-memoire repart de zéro : incompatible avec --resume.")
+    if args.par_requete < 1:
+        parser.error("--par-requete doit valoir au moins 1.")
     limite_llm = date_limite_llm(datetime.now(), args.llm_depuis_jours)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -723,12 +854,13 @@ def main() -> None:
         )
     else:
         logger.info(
-            "Classification par %s %s. Débit : un appel toutes les %.2fs (%s pour l'ajuster "
+            "Classification par %s %s déclarant un Item %s, jusqu'à %d par requête ; tous les "
+            "autres sont classés par règles. Débit : un appel toutes les %.2fs (%s pour l'ajuster "
             "au quota de ton offre). Le débit se resserre automatiquement en cas de 429.",
             sft.description_llm(),
-            "de tout l'historique" if limite_llm is None else
-            f"des 8-K déposés depuis le {limite_llm} ({args.llm_depuis_jours} jours) -- les plus "
-            "anciens sont classés par règles",
+            "de tous les 8-K" if limite_llm is None else
+            f"des 8-K déposés depuis le {limite_llm} ({args.llm_depuis_jours} jours)",
+            "/".join(sorted(ITEMS_POUR_LE_MODELE)), args.par_requete,
             sft.GEMINI_RATE_LIMITER.interval, sft.GEMINI_REQUESTS_PER_SECOND_ENV,
         )
 
@@ -767,6 +899,12 @@ def main() -> None:
         _progress_path(args.output_dir).unlink(missing_ok=True)
         _checkpoint_path(args.output_dir).unlink(missing_ok=True)
 
+    if args.vider_memoire:
+        for chemin in (llm_cache_path(args.output_dir), args.output_dir / ANCIEN_LLM_CACHE_FILENAME):
+            if chemin.exists():
+                chemin.unlink()
+                logger.info("--vider-memoire : %s effacé, chaque 8-K sera retéléchargé et reclassé.", chemin)
+
     llm_cache: Optional[Dict[str, dict]] = None
     if args.no_llm_cache:
         logger.warning(
@@ -795,6 +933,10 @@ def main() -> None:
     cache_hit_count = 0
     since_checkpoint = 0
     interrompu = False
+    # Les 8-K que Gemini lira, soumis par lots de même date une fois tous les
+    # tickers parcourus (classer_en_attente). None sans clé : rien à attendre.
+    en_attente: Optional[List[EnAttente]] = [] if sft.llm_disponible() else None
+    classes_par_gemini = 0
     try:
         for i, symbol in enumerate(to_process, start=1):
             cik = cik_by_symbol[symbol]
@@ -802,7 +944,8 @@ def main() -> None:
             logger.info("[%d/%d] %s (CIK %s, %d fenêtre(s))...", i, len(to_process), symbol, cik, len(windows))
             hits = 0
             try:
-                rows, hits = process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir, limite_llm)
+                rows, hits = process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir, limite_llm,
+                                               en_attente)
             except KeyboardInterrupt:
                 # Ctrl-C pendant une attente de quota : sortie propre (le
                 # cache et le checkpoint sont déjà sur disque), pas une trace
@@ -841,11 +984,20 @@ def main() -> None:
     finally:
         save_progress(args.output_dir, processed_keys)
 
+    if en_attente and not interrompu:
+        try:
+            classes_par_gemini = len(classer_en_attente(en_attente, llm_cache, args.output_dir, args.par_requete))
+        except KeyboardInterrupt:
+            # Les lots déjà classés sont écrits ; les autres gardent leur
+            # verdict par règles, que le modèle reprendra au prochain run.
+            logger.warning("Interruption demandée pendant la classification par Gemini.")
+            interrompu = True
+
     logger.info(
         "Terminé. OK: %d | CIK introuvables: %d | Échecs réseau: %d | 8-K détectés: %d "
-        "(dont %d servis par la mémoire, %d nouvellement analysés)",
+        "(dont %d servis par la mémoire, %d nouvellement analysés, dont %d lus par Gemini)",
         ok_count, not_found_count, network_fail_count, event_count,
-        cache_hit_count, event_count - cache_hit_count,
+        cache_hit_count, event_count - cache_hit_count, classes_par_gemini,
     )
     if sft.llm_disponible():
         # Le modèle a-t-il vraiment travaillé ? Une ligne, plutôt que de le
