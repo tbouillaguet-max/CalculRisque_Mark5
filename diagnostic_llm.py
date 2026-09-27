@@ -13,11 +13,12 @@ brute du fournisseur arrive en quelques secondes : un modèle retiré (404) se
 corrige dans .env, un modèle surchargé (503) se constate avant de lancer un run
 de plusieurs heures -- et se compare d'un modèle à l'autre.
 
-La requête a la forme exacte de celles de 04c (sec_filings_text.analyser_document
-: un document, une consigne et un schéma de réponse, avec le même modèle et le
-même niveau de réflexion), sans leurs réessais ni leur disjoncteur. Une réponse
-qui ne respecte pas le schéma compte comme un échec. Chaque essai consomme un
-appel du quota, pour quelques dizaines de jetons. La clé n'est jamais affichée.
+La requête a la forme exacte de celles de 04c, 07b et 02
+(sec_filings_text.analyser_document : un document, une consigne et un schéma de
+réponse, avec le même modèle et le même niveau de réflexion), sans leurs
+réessais ni leur disjoncteur. Une réponse qui ne respecte pas le schéma compte
+comme un échec. Chaque essai consomme un appel du quota, pour quelques dizaines
+de jetons. La clé n'est jamais affichée.
 """
 
 from __future__ import annotations
@@ -154,7 +155,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return afficher_modeles(os.environ[sft.GEMINI_API_KEY_ENV].strip(), sft._gemini_model())
 
     essais = max(args.essais, 1)
-    print(f"\n{essais} requête(s) de test (document, consigne et schéma de réponse, comme 04c) :")
+    print(f"\n{essais} requête(s) de test (document, consigne et schéma de réponse, "
+          "comme 04c, 07b et 02) :")
     resultats = essayer(essais, args.pause)
     print("\n" + conclusion(resultats))
     return 0 if any(e.ok for e in resultats) else 1

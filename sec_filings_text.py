@@ -106,8 +106,8 @@ _PARSER: Optional[str] = None
 # --------------------------------------------------------------------------- #
 # Le LLM : Gemini (Google), API generateContent
 # --------------------------------------------------------------------------- #
-# 04c, 07b et 02 ne parlent qu'à analyser_document et analyser_texte_llm : le
-# modèle se règle ici, par variables d'environnement, sans toucher aux scripts.
+# 04c, 07b et 02 ne parlent qu'à analyser_document : le modèle se règle ici,
+# par variables d'environnement, sans toucher aux scripts.
 #
 # UNE REQUÊTE, TROIS ZONES. Pour soumettre un document avec une consigne et le
 # format de la réponse, generateContent sépare les trois -- corps identique à
@@ -833,17 +833,15 @@ def _niveau_valide(brut: str) -> str:
 
 
 def _requete_gemini(
-    texte: str, max_tokens: int, api_key: str,
-    consigne: Optional[str] = None, schema: Optional[dict] = None,
+    document: str, consigne: str, schema: dict, max_tokens: int, api_key: str,
 ) -> Tuple[str, dict, dict]:
-    """(url, en-têtes, corps) d'un appel generateContent : `texte` (le document)
-    dans contents, `consigne` dans systemInstruction, `schema` dans
+    """(url, en-têtes, corps) d'un appel generateContent : le document dans
+    contents, la consigne dans systemInstruction, le schéma dans
     generationConfig -- voir « Le LLM » plus haut."""
     model = _gemini_model()
-    # Mode JSON : la réponse est un JSON, sans bloc de code ni phrase autour.
-    generation: dict = {"responseMimeType": "application/json"}
-    if schema is not None:
-        generation["responseJsonSchema"] = schema
+    # Mode JSON sous la contrainte du schéma : la réponse est un JSON conforme,
+    # sans bloc de code ni phrase autour.
+    generation: dict = {"responseMimeType": "application/json", "responseJsonSchema": schema}
     if not _generation_2(model):
         generation["maxOutputTokens"] = max_tokens + GEMINI_THINKING_HEADROOM_TOKENS
         # Clé et valeur telles que les envoie le SDK officiel : le nom de champ
@@ -855,7 +853,7 @@ def _requete_gemini(
         generation["thinkingConfig"] = {"thinkingBudget": 0}
     else:
         generation["maxOutputTokens"] = max_tokens + GEMINI_THINKING_HEADROOM_TOKENS
-    corps: dict = {"contents": [{"role": "user", "parts": [{"text": texte}]}]}
+    corps: dict = {"contents": [{"role": "user", "parts": [{"text": document}]}]}
     if consigne:
         # Rôle "user" sur l'instruction système, comme le SDK officiel.
         corps["systemInstruction"] = {"role": "user", "parts": [{"text": consigne}]}
@@ -971,9 +969,9 @@ def _extrait_erreur(response: Optional["requests.Response"]) -> str:
 #
 # PAUSE. Après LLM_ECHECS_AVANT_PAUSE analyses de suite sans réponse (429, 5xx
 # ou réseau jusqu'à la dernière tentative), le modèle est mis en pause :
-# analyser_document et analyser_texte_llm rendent None sans appel, et chaque
-# appelant fait ce qu'il fait déjà sans modèle (04c classe par règles, verdicts
-# que le modèle reprend au run suivant ; 07b journalise non_evalue). La
+# analyser_document rend None sans appel, et chaque appelant fait ce qu'il
+# fait déjà sans modèle (04c classe par règles, verdicts que le modèle reprend
+# au run suivant ; 07b journalise non_evalue ; 02 laisse « indetermine »). La
 # première analyse après la pause sert de test : une réponse rouvre tout, un
 # nouvel échec relance une pause deux fois plus longue, jusqu'à
 # LLM_PAUSE_MAX_S. Toute réponse de Gemini, même un refus propre à un
@@ -1161,39 +1159,29 @@ def analyser_document(document: str, consigne: str, schema: dict, max_tokens: in
 
     Les trois partent séparément (voir « Le LLM ») : Gemini génère sous la
     contrainte du schéma, et la réponse est revérifiée ici -- une réponse hors
-    format n'est jamais rendue. `max_tokens` est le budget de la RÉPONSE ; la
-    marge de réflexion s'y ajoute.
+    format est redemandée une fois, puis abandonnée, jamais rendue.
+    `max_tokens` est le budget de la RÉPONSE ; la marge de réflexion s'y ajoute.
+
+    Réessais avec backoff sur les incidents de réseau et de quota ; les appels
+    passent par GEMINI_RATE_LIMITER (voir AdaptiveRateLimiter) : espacés en
+    amont pour ne pas provoquer de 429, et DAVANTAGE dès qu'un 429 survient
+    malgré tout.
 
     None si aucune clé n'est définie, après épuisement des tentatives, ou
     pendant une pause du disjoncteur (voir « Disjoncteur du modèle ») :
     l'appelant doit traiter ce cas comme « pas de verdict », jamais planter."""
-    return _analyser(document, max_tokens, consigne, schema)
-
-
-def analyser_texte_llm(prompt: str, max_tokens: int = 500) -> Optional[dict]:
-    """Un prompt unique, consigne et document mêlés, et une réponse en objet
-    JSON sans schéma imposé : la forme de 07b et de 02, qui valident eux-mêmes
-    les clés qu'ils attendent. Mêmes réessais, débit et disjoncteur
-    qu'analyser_document, et même None quand il n'y a pas de verdict."""
-    return _analyser(prompt, max_tokens)
-
-
-def _analyser(texte: str, max_tokens: int, consigne: Optional[str] = None,
-              schema: Optional[dict] = None) -> Optional[dict]:
-    """L'appel lui-même : réessais avec backoff sur les incidents de réseau et
-    de quota, une reprise sur réponse hors format, disjoncteur.
-
-    Les appels passent par GEMINI_RATE_LIMITER (voir AdaptiveRateLimiter) :
-    espacés en amont pour ne pas provoquer de 429, et espacés DAVANTAGE dès
-    qu'un 429 survient malgré tout."""
     global _coupure
     if not llm_disponible():
+        return None
+    if not document or not document.strip():
+        # Gemini refuserait un contenu vide (400) : un appel payé pour rien.
+        logger.warning("Document vide : rien à soumettre à Gemini.")
         return None
     if _coupure is not None or llm_en_pause():
         _compter("ecartes")
         return None
     url, headers, payload = _requete_gemini(
-        texte, max_tokens, os.environ[GEMINI_API_KEY_ENV], consigne=consigne, schema=schema)
+        document, consigne, schema, max_tokens, os.environ[GEMINI_API_KEY_ENV])
     test_de_reprise = _pause_jusqu_a is not None     # pause écoulée : cette analyse la teste
     if test_de_reprise:
         logger.info("Fin de la pause : nouvel essai de Gemini.")
@@ -1265,10 +1253,7 @@ def _analyser(texte: str, max_tokens: int, consigne: Optional[str] = None,
 
         GEMINI_RATE_LIMITER.reward()
         parsed = _parse_json_reponse(content)
-        if parsed is None:
-            ecart = "JSON illisible"
-        else:
-            ecart = _ecart_au_schema(parsed, schema) if schema is not None else None
+        ecart = "JSON illisible" if parsed is None else _ecart_au_schema(parsed, schema)
         if ecart is None:
             _compter("verdicts")
             return parsed
@@ -1292,21 +1277,20 @@ def _analyser(texte: str, max_tokens: int, consigne: Optional[str] = None,
 class EssaiLLM(NamedTuple):
     """Résultat d'essai_unique_llm."""
     statut: Optional[int]      # code HTTP, None sans réponse du tout
-    ok: bool                   # une réponse exploitable (conforme au schéma s'il y en a un)
+    ok: bool                   # une réponse conforme au schéma
     texte: str                 # la réponse, ou la raison de l'échec
     duree_s: float
 
 
-def essai_unique_llm(texte: str, max_tokens: int = 64, consigne: Optional[str] = None,
-                     schema: Optional[dict] = None) -> EssaiLLM:
+def essai_unique_llm(document: str, consigne: str, schema: dict, max_tokens: int = 64) -> EssaiLLM:
     """UNE requête à Gemini -- la même que celle d'analyser_document, sans
     réessai, limiteur ni disjoncteur -- pour diagnostic_llm.py, qui doit
-    montrer la réponse brute. Avec un schéma, une réponse qui ne s'y conforme
-    pas compte comme un échec : 04c ne s'en servirait pas."""
+    montrer la réponse brute. Une réponse qui ne respecte pas le schéma compte
+    comme un échec : aucun script ne s'en servirait."""
     if not llm_disponible():
         return EssaiLLM(None, False, "aucune clé", 0.0)
     url, headers, payload = _requete_gemini(
-        texte, max_tokens, os.environ[GEMINI_API_KEY_ENV], consigne=consigne, schema=schema)
+        document, consigne, schema, max_tokens, os.environ[GEMINI_API_KEY_ENV])
     debut = time.monotonic()
     try:
         resp = requests.post(url, headers=headers, json=payload, timeout=GEMINI_TIMEOUT_S)
@@ -1319,9 +1303,8 @@ def essai_unique_llm(texte: str, max_tokens: int = 64, consigne: Optional[str] =
         contenu = _contenu_gemini(resp.json())
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
         return EssaiLLM(resp.status_code, False, f"réponse inexploitable : {_message(e)}", duree)
-    if schema is not None:
-        parsed = _parse_json_reponse(contenu)
-        ecart = "JSON illisible" if parsed is None else _ecart_au_schema(parsed, schema)
-        if ecart:
-            return EssaiLLM(resp.status_code, False, f"réponse hors format ({ecart}) : {contenu}", duree)
+    parsed = _parse_json_reponse(contenu)
+    ecart = "JSON illisible" if parsed is None else _ecart_au_schema(parsed, schema)
+    if ecart:
+        return EssaiLLM(resp.status_code, False, f"réponse hors format ({ecart}) : {contenu}", duree)
     return EssaiLLM(resp.status_code, True, contenu, duree)

@@ -24,6 +24,15 @@ MODELE_RETIRE = ("This model models/gemini-2.5-flash is no longer available to n
                  "your code to use models/gemini-3.8-flash for the latest features and improvements.")
 
 
+# Un schéma qui accepte tout objet : ces tests portent sur le disjoncteur,
+# pas sur le format de la réponse.
+OBJET = {"type": "object"}
+
+
+def _analyser(max_tokens: int = 500):
+    return sft.analyser_document("document", "consigne", OBJET, max_tokens=max_tokens)
+
+
 class _Reponse:
     def __init__(self, status_code=200, message="", texte='{"category": "rachat_actions"}'):
         self.status_code = status_code
@@ -86,7 +95,7 @@ def _sans_reponse(statut=503, message=SURCHARGE):
 def _mettre_en_pause(gemini, statut=503, message=SURCHARGE, ensuite=()):
     appels = gemini(_sans_reponse(statut, message) * sft.LLM_ECHECS_AVANT_PAUSE + list(ensuite))
     for _ in range(sft.LLM_ECHECS_AVANT_PAUSE):
-        assert sft.analyser_texte_llm("p") is None
+        assert _analyser() is None
     return appels
 
 
@@ -102,7 +111,7 @@ def test_trois_analyses_sans_reponse_mettent_le_modele_en_pause(gemini, horloge,
     appels = _mettre_en_pause(gemini, statut, message)
     assert sft.llm_en_pause() and not sft.llm_coupe_pour_ce_run()
     avant = len(appels)
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert len(appels) == avant, "un appel est parti pendant la pause"
     assert annonce in caplog.text
     assert message in caplog.text, "la raison donnée par le fournisseur doit être journalisée"
@@ -112,30 +121,30 @@ def test_une_erreur_reseau_persistante_met_aussi_en_pause(gemini, horloge):
     coupure = requests.exceptions.ConnectionError("réseau coupé")
     gemini([coupure] * sft.GEMINI_MAX_RETRIES * sft.LLM_ECHECS_AVANT_PAUSE)
     for _ in range(sft.LLM_ECHECS_AVANT_PAUSE):
-        sft.analyser_texte_llm("p")
+        _analyser()
     assert sft.llm_en_pause()
 
 
 def test_deux_analyses_sans_reponse_ne_suffisent_pas(gemini, horloge):
     gemini(_sans_reponse() * 2 + [200])
-    sft.analyser_texte_llm("p")
-    sft.analyser_texte_llm("p")
+    _analyser()
+    _analyser()
     assert not sft.llm_en_pause()
-    assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+    assert _analyser() == {"category": "rachat_actions"}
 
 
 def test_un_pic_resorbe_pendant_les_reessais_ne_compte_pas(gemini, horloge):
     """429 ou 503, puis réponse : l'incident se résorbe pendant les réessais."""
     gemini([429, 429, 200, 503, 503, 200] * 3)
     for _ in range(6):
-        assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+        assert _analyser() == {"category": "rachat_actions"}
     assert not sft.llm_en_pause()
 
 
 def test_un_succes_remet_le_compte_a_zero(gemini, horloge):
     gemini(_sans_reponse() * 2 + [200] + _sans_reponse() * 2)
     for _ in range(5):
-        sft.analyser_texte_llm("p")
+        _analyser()
     assert not sft.llm_en_pause()
 
 
@@ -143,14 +152,14 @@ def test_la_pause_ecoulee_le_modele_est_reessaye_et_reprend(gemini, horloge, cap
     caplog.set_level("INFO", logger="sec_filings_text")
     appels = _mettre_en_pause(gemini, ensuite=[200, 200])
     horloge.avancer(sft.LLM_PAUSE_INITIALE_S - 1)
-    assert sft.analyser_texte_llm("p") is None, "la pause n'est pas écoulée"
+    assert _analyser() is None, "la pause n'est pas écoulée"
     horloge.avancer(1)
     avant = len(appels)
-    assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+    assert _analyser() == {"category": "rachat_actions"}
     assert len(appels) == avant + 1
     assert not sft.llm_en_pause()
     assert "répond de nouveau" in caplog.text
-    assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+    assert _analyser() == {"category": "rachat_actions"}
 
 
 def test_un_echec_apres_la_pause_la_double_jusqu_au_plafond(gemini, horloge):
@@ -158,12 +167,12 @@ def test_un_echec_apres_la_pause_la_double_jusqu_au_plafond(gemini, horloge):
     longue : 15 min, 30, 1 h, 2 h, puis 2 h."""
     gemini(_sans_reponse() * (sft.LLM_ECHECS_AVANT_PAUSE + 5))
     for _ in range(sft.LLM_ECHECS_AVANT_PAUSE):
-        sft.analyser_texte_llm("p")
+        _analyser()
     pauses = [sft.LLM_PAUSE_INITIALE_S]
     for _ in range(4):
         horloge.avancer(pauses[-1])
         assert not sft.llm_en_pause()
-        sft.analyser_texte_llm("p")                 # l'essai de reprise échoue
+        _analyser()                 # l'essai de reprise échoue
         assert sft.llm_en_pause()
         debut = horloge.t
         while sft.llm_en_pause():
@@ -177,7 +186,7 @@ def test_le_message_du_fournisseur_accompagne_chaque_reessai_sans_alarmer(gemini
     panne du code : journalisé en INFO, avec la raison donnée par Google."""
     gemini([(503, SURCHARGE), 200])
     with caplog.at_level("INFO", logger="sec_filings_text"):
-        assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+        assert _analyser() == {"category": "rachat_actions"}
     reessai = [r for r in caplog.records if "tentative 1/" in r.getMessage()]
     assert reessai and reessai[0].levelname == "INFO"
     assert SURCHARGE in reessai[0].getMessage()
@@ -189,7 +198,7 @@ def test_le_message_du_fournisseur_accompagne_chaque_reessai_sans_alarmer(gemini
 def test_une_reponse_du_premier_coup_ne_journalise_rien(gemini, horloge, caplog):
     gemini([200])
     with caplog.at_level("INFO", logger="sec_filings_text"):
-        sft.analyser_texte_llm("p")
+        _analyser()
     assert "a répondu" not in caplog.text
 
 
@@ -199,16 +208,16 @@ def test_une_reponse_du_premier_coup_ne_journalise_rien(gemini, horloge, caplog)
 
 def test_un_modele_retire_coupe_tout_de_suite_et_nomme_son_successeur(gemini, horloge, caplog):
     appels = gemini([(404, MODELE_RETIRE), 200])
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert sft.llm_coupe_pour_ce_run()
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert len(appels) == 1, "un modèle retiré ne revient pas d'un document à l'autre"
     assert "GEMINI_MODEL=gemini-3.8-flash" in caplog.text
 
 
 def test_un_404_sans_successeur_renvoie_a_la_liste_des_modeles(gemini, horloge, caplog):
     gemini([(404, "models/gemini-9 is not found for API version v1beta")])
-    sft.analyser_texte_llm("p")
+    _analyser()
     assert sft.llm_coupe_pour_ce_run()
     assert "diagnostic_llm.py --modeles" in caplog.text
 
@@ -217,13 +226,13 @@ def test_une_cle_invalide_coupe_mais_pas_un_refus_propre_au_document(gemini, hor
     """Gemini répond 400 à une clé invalide ; un 400 sur la taille d'un
     document, lui, ne dit rien des documents suivants."""
     gemini([(400, "The input token count exceeds the maximum number of tokens allowed."), 200])
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert not sft.llm_coupe_pour_ce_run()
-    assert sft.analyser_texte_llm("p") == {"category": "rachat_actions"}
+    assert _analyser() == {"category": "rachat_actions"}
 
     sft.reinitialiser_disjoncteur_llm()
     gemini([(400, "API key not valid. Please pass a valid API key.")])
-    sft.analyser_texte_llm("p")
+    _analyser()
     assert sft.llm_coupe_pour_ce_run()
 
 
@@ -236,16 +245,16 @@ def test_un_reglage_refuse_par_le_modele_coupe_tout_de_suite(gemini, horloge, ca
     """Un 400 sur le niveau de réflexion ou un champ de la requête vise le
     réglage, pas le document : la même réponse reviendrait pour chaque 8-K."""
     appels = gemini([(400, message), 200])
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert sft.llm_coupe_pour_ce_run()
-    assert sft.analyser_texte_llm("p") is None
+    assert _analyser() is None
     assert len(appels) == 1
 
 
 def test_un_niveau_de_reflexion_refuse_dit_quoi_changer(gemini, horloge, caplog, monkeypatch):
     monkeypatch.setenv(sft.GEMINI_MODEL_ENV, "gemma-4-31b-it")
     gemini([(400, "Thinking level is not supported for this model.")])
-    sft.analyser_texte_llm("p")
+    _analyser()
     assert "gemma-4-31b-it" in caplog.text and "Gemini 3" in caplog.text
 
 
@@ -267,14 +276,14 @@ def test_le_bilan_dit_ce_que_le_modele_a_fait(gemini, horloge):
     _mettre_en_pause(gemini, ensuite=[])
     gemini([200, 200])
     horloge.avancer(sft.LLM_PAUSE_INITIALE_S)
-    sft.analyser_texte_llm("p")
-    sft.analyser_texte_llm("p")
+    _analyser()
+    _analyser()
     bilan = sft.bilan_llm()
     assert bilan.startswith("Gemini (gemini-3.8-flash, réflexion low) -- 2 verdict(s)")
     assert "3 analyse(s) sans réponse" in bilan
 
     sft.reinitialiser_disjoncteur_llm()
     _mettre_en_pause(gemini)
-    sft.analyser_texte_llm("p")
-    sft.analyser_texte_llm("p")
+    _analyser()
+    _analyser()
     assert "2 document(s) traité(s) sans le modèle (1 pause(s))" in sft.bilan_llm()

@@ -10,6 +10,15 @@ import sec_filings_text as sft
 ATTENDU = {"verdict": "coherent", "justification": "rien à signaler"}
 
 
+# Un schéma qui accepte tout objet : ces tests portent sur le parsing et les
+# reprises, pas sur le format de la réponse.
+OBJET = {"type": "object"}
+
+
+def _analyser(max_tokens: int = 500):
+    return sft.analyser_document("document", "consigne", OBJET, max_tokens=max_tokens)
+
+
 # --------------------------------------------------------------------------- #
 # Parsing
 # --------------------------------------------------------------------------- #
@@ -85,23 +94,25 @@ def api(monkeypatch):
     return poser
 
 
-def test_le_mode_json_natif_est_demande(api):
+def test_le_mode_json_natif_est_demande_avec_son_schema(api):
     appels = api(['{"verdict": "coherent"}'])
-    sft.analyser_texte_llm("prompt")
-    assert appels[0]["generationConfig"]["responseMimeType"] == "application/json"
+    _analyser()
+    generation = appels[0]["generationConfig"]
+    assert generation["responseMimeType"] == "application/json"
+    assert generation["responseJsonSchema"] == OBJET
 
 
 def test_une_reprise_sur_reponse_non_parsable(api):
     """L'ancienne version abandonnait immédiatement ; on retente UNE fois."""
     appels = api(["pas du json", '{"verdict": "coherent"}'])
-    assert sft.analyser_texte_llm("prompt") == {"verdict": "coherent"}
+    assert _analyser() == {"verdict": "coherent"}
     assert len(appels) == 2
 
 
 def test_pas_plus_d_une_reprise_sur_reponse_non_parsable(api):
     """Insister sur un modèle hors format coûte des appels payants pour rien."""
     appels = api(["pas du json", "toujours pas", "encore moins"])
-    assert sft.analyser_texte_llm("prompt") is None
+    assert _analyser() is None
     assert len(appels) == 2
 
 
@@ -111,7 +122,7 @@ def test_les_erreurs_reseau_gardent_leurs_trois_tentatives(api):
         requests.exceptions.ConnectionError("encore"),
         '{"verdict": "coherent"}',
     ])
-    assert sft.analyser_texte_llm("prompt") == {"verdict": "coherent"}
+    assert _analyser() == {"verdict": "coherent"}
     assert len(appels) == 3
 
 
@@ -126,7 +137,7 @@ def test_un_429_est_reessaye_puis_finit_par_passer(api):
         _erreur_http(429), _erreur_http(429), _erreur_http(429), _erreur_http(429),
         '{"verdict": "coherent"}',
     ])
-    assert sft.analyser_texte_llm("prompt") == {"verdict": "coherent"}
+    assert _analyser() == {"verdict": "coherent"}
     assert len(appels) == 5
 
 
@@ -138,7 +149,7 @@ def test_un_429_ralentit_le_debit_sortant(api, monkeypatch):
     avant = limiteur.interval
 
     api([_erreur_http(429), '{"verdict": "coherent"}'])
-    sft.analyser_texte_llm("prompt")
+    _analyser()
 
     assert limiteur.interval > avant
 
@@ -150,7 +161,7 @@ def test_le_retry_after_du_serveur_est_respecte(api, monkeypatch):
     monkeypatch.setattr(sft.time, "sleep", attentes.append)
 
     api([_erreur_http(429, headers={"Retry-After": "30"}), '{"verdict": "coherent"}'])
-    assert sft.analyser_texte_llm("prompt") == {"verdict": "coherent"}
+    assert _analyser() == {"verdict": "coherent"}
     assert any(30 <= a <= 31 for a in attentes), attentes
 
 
@@ -158,7 +169,7 @@ def test_une_erreur_definitive_n_est_pas_reessayee(api):
     """Une clé invalide (401) ne deviendra pas valide à la troisième tentative :
     insister ne fait que retarder le diagnostic."""
     appels = api([_erreur_http(401), '{"verdict": "coherent"}'])
-    assert sft.analyser_texte_llm("prompt") is None
+    assert _analyser() is None
     assert len(appels) == 1
 
 
@@ -195,8 +206,15 @@ def test_sans_cle_api_aucun_appel(monkeypatch):
         raise AssertionError("aucun appel réseau ne doit être tenté sans clé")
 
     monkeypatch.setattr(sft.requests, "post", interdit)
-    assert sft.analyser_texte_llm("prompt") is None
-    assert sft.analyser_document("document", "consigne", {"type": "object"}) is None
+    assert _analyser() is None
+
+
+@pytest.mark.parametrize("document", ["", "   \n"])
+def test_un_document_vide_n_est_pas_soumis(monkeypatch, document):
+    """Gemini refuserait un contenu vide : aucun appel, pas de verdict."""
+    monkeypatch.setenv(sft.GEMINI_API_KEY_ENV, "cle-de-test")
+    monkeypatch.setattr(sft.requests, "post", lambda *a, **k: pytest.fail("appel pour un document vide"))
+    assert sft.analyser_document(document, "consigne", OBJET) is None
 
 
 def test_enveloppe_inattendue_ne_plante_pas(monkeypatch):
@@ -216,4 +234,4 @@ def test_enveloppe_inattendue_ne_plante_pas(monkeypatch):
     monkeypatch.setattr(
         sft.requests, "post", lambda url, headers=None, json=None, timeout=None: _SansCandidates(),
     )
-    assert sft.analyser_texte_llm("prompt") is None
+    assert _analyser() is None

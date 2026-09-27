@@ -671,21 +671,28 @@ de la variable à lire, pas la clé. Sous Windows, le plus simple est la ligne
 setx GEMINI_API_KEY "ta_cle"      # puis ouvrir un NOUVEAU terminal
 ```
 
-**Un document, une consigne, un format.** `04c` passe par
-`sec_filings_text.analyser_document(document, consigne, schema)`, qui envoie les
-trois séparément : la consigne en instruction système (`systemInstruction`), le
-texte du 8-K comme contenu (`contents`), et le format de la réponse comme schéma
-JSON (`generationConfig.responseJsonSchema`). Gemini génère alors sous la
-contrainte du schéma : il ne peut répondre qu'une des sept catégories, un vrai
-booléen pour la matérialité et une phrase de résumé. La réponse est revérifiée
-contre le schéma avant d'être gardée ; une réponse hors format est redemandée
-une fois, puis le 8-K est classé par règles. La consigne ne contient ni le
-format ni un exemple de JSON, comme Google le recommande. Avant ce schéma, le
-mode JSON seul garantissait du JSON, pas ses valeurs : la mémoire des 8-K
-contenait une catégorie inventée (`aut_materiel`). `02` et `07b` gardent un
-prompt unique sans schéma (`analyser_texte_llm`) et valident eux-mêmes les
-clés qu'ils attendent. Aucune requête n'envoie `temperature`, que Google demande
-de retirer pour les modèles 3.8.
+**Un document, une consigne, un format.** `04c`, `07b` et `02` passent tous
+les trois par `sec_filings_text.analyser_document(document, consigne, schema)`,
+qui envoie les trois séparément : la consigne en instruction système
+(`systemInstruction`), le document comme contenu (`contents`), et le format de
+la réponse comme schéma JSON (`generationConfig.responseJsonSchema`). Gemini
+génère alors sous la contrainte du schéma, et ne peut répondre que :
+
+| Script | Document | Format imposé |
+|---|---|---|
+| `04c` | texte du 8-K | une des sept catégories, un booléen de matérialité, une phrase de résumé |
+| `07b` | extrait du 10-K/10-Q | un verdict (`coherent`, `a_surveiller`, `contradictoire`), une phrase de justification, au plus cinq risques cités |
+| `02` | liste des entreprises du lot | pour chaque entreprise, un secteur de la liste ou `indetermine` |
+
+La réponse est revérifiée contre le schéma avant d'être gardée ; une réponse
+hors format est redemandée une fois, puis abandonnée : `04c` classe alors le
+8-K par règles, `07b` écrit `non_evalue_reponse_invalide`, `02` laisse le lot en
+`indetermine` pour le prochain run. Aucune consigne ne contient le format ni un
+exemple de JSON, comme Google le recommande. Avant ces schémas, le mode JSON
+seul garantissait du JSON, pas ses valeurs : la mémoire des 8-K contenait une
+catégorie inventée (`aut_materiel`), et `07b` ou `02` n'auraient pas vu un
+verdict hors liste ou un secteur inventé. Aucune requête n'envoie
+`temperature`, que Google demande de retirer pour les modèles 3.8.
 
 Au démarrage, `04c` et `07b` affichent le modèle retenu
 (`Classification par Gemini (gemini-3.8-flash, réflexion low)`). Un refus de
