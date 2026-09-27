@@ -759,11 +759,13 @@ différents, elles se regroupent peu —, puis seulement les nouvelles (toutes,
 lots de 5.
 
 **Les verdicts de Mistral sont écartés.** Le projet utilisait auparavant
-Mistral. Sa mémoire s'appelait `cache_8k_mistral.jsonl` : elle est renommée
-`cache_8k.jsonl` au premier lancement de `04c`, et les verdicts de Mistral
-qu'elle contient en sont retirés (1 647 dans la version du dépôt, sur dix
-entreprises, 77 % jugés matériels). Leurs 8-K sont reclassés comme des neufs :
-par Gemini les récents, par règles les anciens, comme le reste de l'univers.
+Mistral. Sa mémoire s'appelait `cache_8k_mistral.jsonl` (1 647 verdicts de
+Mistral sur dix entreprises, 77 % jugés matériels) : elle a été **vidée du
+dépôt le 2026-09-27**, et le run suivant de `04c` retélécharge chaque 8-K à
+la SEC pour le reclasser — par Gemini les récents à lire, par règles les
+autres. Une copie locale de l'ancienne mémoire est renommée `cache_8k.jsonl`
+au lancement de `04c`, sans ses verdicts de Mistral ; `--vider-memoire` efface
+l'une et l'autre.
 
 **Seuls les 8-K récents vont au modèle.** Un 8-K ne sert qu'à périmer un
 signal encore actionnable. Au-delà de la plus longue durée de vie d'un signal
