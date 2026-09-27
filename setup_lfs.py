@@ -304,7 +304,7 @@ def _avertir_quota(total_lfs: int, total_git: int, fichiers: list[Fichier]) -> N
 # Horodatage AAAAMMJJ dans un nom de fichier ou de dossier de run
 # (option_chains_20250115_120000.parquet, pipeline_runs/20250101_090000/...).
 # On exige un millésime plausible plutôt que "contient un chiffre", sans quoi
-# cache_8k_mistral.jsonl passerait pour un fichier daté à cause de son "8".
+# cache_8k.jsonl passerait pour un fichier daté à cause de son "8".
 _HORODATAGE = re.compile(r"(?:19|20)\d{6}")
 
 # Dossiers dont le contenu est AJOUTÉ run après run, jamais réécrit.

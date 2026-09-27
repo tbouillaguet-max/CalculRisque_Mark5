@@ -28,7 +28,7 @@ data/**/*.parquet filter=lfs diff=lfs merge=lfs -text
 # Classeurs Excel (07, 06) : binaires, non diffables.
 data/**/*.xlsx filter=lfs diff=lfs merge=lfs -text
 
-# JSONL append-only : mémoire des classifications 8-K (Mistral) et points de
+# JSONL append-only : mémoire des classifications 8-K (Gemini) et points de
 # reprise. Grossit sans limite au fil des runs.
 data/**/*.jsonl filter=lfs diff=lfs merge=lfs -text
 

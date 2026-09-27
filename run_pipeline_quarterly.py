@@ -6,7 +6,7 @@ Deux modes, mutuellement exclusifs :
 MODE LIVE (défaut, sans --as-of-date)
 ---------------------------------------
 Enchaîne les étapes en conditions réelles (nouveaux appels réseau SEC/IBKR/
-Mistral), dans l'ordre :
+Gemini), dans l'ordre :
     04b (10-Q + TTM) -> 04c (8-K entre trimestres) -> 05 (multiples) ->
     06 (multiples moyens) -> 06b (valorisation combinée) -> 07 (DCF) ->
     07b (validation qualitative) -> 08 (options, si le filtre d'écart de
@@ -19,7 +19,7 @@ argparse).
 -----------------------------------------
 Toutes les étapes ne se valent pas. 04b/05/06/06b/07 produisent la
 valorisation elle-même : leur échec rend tout ce qui suit incohérent, donc il
-arrête le pipeline. 04c/07b (verdicts LLM, nécessitent MISTRAL_API_KEY) et 08
+arrête le pipeline. 04c/07b (verdicts LLM, nécessitent GEMINI_API_KEY) et 08
 (chaînes d'options, nécessite IB Gateway) sont des ENRICHISSEMENTS : leur
 échec est journalisé et le pipeline continue, plutôt que de perdre une
 valorisation trimestrielle correcte parce qu'une clé d'API a expiré ou qu'IB

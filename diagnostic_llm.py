@@ -13,9 +13,12 @@ brute du fournisseur arrive en quelques secondes : un modèle retiré (404) se
 corrige dans .env, un modèle surchargé (503) se constate avant de lancer un run
 de plusieurs heures -- et se compare d'un modèle à l'autre.
 
-La requête est exactement celle de sec_filings_text.analyser_texte_llm, sans
-ses réessais ni son disjoncteur. Chaque essai consomme un appel du quota, pour
-quelques dizaines de jetons. La clé n'est jamais affichée.
+La requête a la forme exacte de celles de 04c, 07b et 02
+(sec_filings_text.analyser_document : un document, une consigne et un schéma de
+réponse, avec le même modèle et le même niveau de réflexion), sans leurs
+réessais ni leur disjoncteur. Une réponse qui ne respecte pas le schéma compte
+comme un échec. Chaque essai consomme un appel du quota, pour quelques dizaines
+de jetons. La clé n'est jamais affichée.
 """
 
 from __future__ import annotations
@@ -34,7 +37,14 @@ import env_local
 import sec_filings_text as sft
 
 GEMINI_MODELES_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-PROMPT_TEST = "Réponds uniquement par l'objet JSON {\"ok\": true}."
+# Une requête de test à trois zones, comme celles de 04c.
+DOCUMENT_TEST = "Document de test envoyé par diagnostic_llm.py."
+CONSIGNE_TEST = "Tu vérifies une connexion : indique si le document fourni t'est bien parvenu."
+SCHEMA_TEST = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean", "description": "Vrai si le document est bien parvenu."}},
+    "required": ["ok"],
+}
 
 
 def origine_de(nom: str) -> str:
@@ -82,7 +92,7 @@ def afficher_modeles(cle: str, courant: str) -> int:
 def essayer(essais: int, pause: float) -> List[sft.EssaiLLM]:
     resultats = []
     for i in range(1, essais + 1):
-        essai = sft.essai_unique_llm(PROMPT_TEST)
+        essai = sft.essai_unique_llm(DOCUMENT_TEST, consigne=CONSIGNE_TEST, schema=SCHEMA_TEST)
         etat = "OK" if essai.ok else (f"HTTP {essai.statut}" if essai.statut else "pas de réponse")
         print(f"  essai {i}/{essais} : {etat} en {essai.duree_s:.1f} s -- {' '.join(essai.texte.split())[:200]}")
         resultats.append(essai)
@@ -91,15 +101,15 @@ def essayer(essais: int, pause: float) -> List[sft.EssaiLLM]:
     return resultats
 
 
-def conclusion(resultats: List[sft.EssaiLLM], fournisseur: str) -> str:
+def conclusion(resultats: List[sft.EssaiLLM]) -> str:
     reussis = sum(essai.ok for essai in resultats)
     if reussis == len(resultats):
-        return "Le modèle répond : 04c, 07b et 02 peuvent s'en servir."
+        return "Le modèle répond, dans le format demandé : 04c, 07b et 02 peuvent s'en servir."
     refus = next((e for e in resultats if e.statut and e.statut >= 400
                   and sft._refus_de_configuration(e.statut, e.texte)), None)
     if refus:
         return (f"Refus de configuration (HTTP {refus.statut}) : même réponse pour chaque document. "
-                + sft._aide_configuration(fournisseur, refus.statut, refus.texte))
+                + sft._aide_configuration(refus.statut, refus.texte))
     statuts = Counter(e.statut for e in resultats if not e.ok)
     if statuts.get(429):
         return (f"{reussis}/{len(resultats)} réponse(s). Quota atteint (429) : attends la fin de sa "
@@ -123,32 +133,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     origines = {nom: origine_de(nom) for nom in (
-        sft.GEMINI_API_KEY_ENV, sft.GEMINI_MODEL_ENV, sft.MISTRAL_API_KEY_ENV, sft.LLM_PROVIDER_ENV)}
+        sft.GEMINI_API_KEY_ENV, sft.GEMINI_MODEL_ENV, sft.GEMINI_THINKING_LEVEL_ENV)}
     if args.modele:
         os.environ[sft.GEMINI_MODEL_ENV] = args.modele
         origines[sft.GEMINI_MODEL_ENV] = "option --modele"
     elif origines[sft.GEMINI_MODEL_ENV] == "absente":
         origines[sft.GEMINI_MODEL_ENV] = f"absente (défaut du code : {sft.GEMINI_DEFAULT_MODEL})"
+    if origines[sft.GEMINI_THINKING_LEVEL_ENV] == "absente":
+        origines[sft.GEMINI_THINKING_LEVEL_ENV] = (
+            f"absente (défaut du code : {sft.GEMINI_DEFAULT_THINKING_LEVEL})")
 
-    fournisseur = sft.fournisseur_llm()
-    print(f"Fournisseur : {sft.description_llm()}")
+    print(f"Modèle : {sft.description_llm()}")
     for nom, origine in origines.items():
-        print(f"  {nom:<20} {origine}")
-    if fournisseur is None:
+        print(f"  {nom:<22} {origine}")
+    if not sft.llm_disponible():
         print(f"\nAucune clé vue par ce processus. {sft.aide_cle_absente()}")
         return 1
 
     if args.modeles:
-        if fournisseur != "gemini":
-            print("\n--modeles ne concerne que Gemini.")
-            return 1
         print()
-        return afficher_modeles(os.environ[sft.GEMINI_API_KEY_ENV], sft._gemini_model())
+        return afficher_modeles(os.environ[sft.GEMINI_API_KEY_ENV].strip(), sft._gemini_model())
 
     essais = max(args.essais, 1)
-    print(f"\n{essais} requête(s) de test :")
+    print(f"\n{essais} requête(s) de test (document, consigne et schéma de réponse, "
+          "comme 04c, 07b et 02) :")
     resultats = essayer(essais, args.pause)
-    print("\n" + conclusion(resultats, fournisseur))
+    print("\n" + conclusion(resultats))
     return 0 if any(e.ok for e in resultats) else 1
 
 

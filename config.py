@@ -16,7 +16,7 @@ théorique s'écarte significativement du cours de bourse.
                                     (somme glissante des 4 derniers trimestres) point-in-time,
                                     voir sa docstring pour la distinction TTM vs trimestre brut
     04c_recuperation_8k.py      -> événements matériels (8-K) entre deux trimestres TTM connus,
-                                    classifiés par LLM (Mistral) via sec_filings_text.py
+                                    classifiés par LLM (Gemini) via sec_filings_text.py
     05_calcul_multiples.py      -> EV/EBITDA, EV/Sales, P/E à partir de 03(b) + 04 + 04b
     07b_validation_qualitative.py -> verdict LLM de cohérence qualitative (texte du 10-K/10-Q à sa
                                     date de dépôt) vs l'écart de valorisation quantitatif (07/06b)
@@ -100,7 +100,7 @@ MULTIPLES_FILE = DIR_MULTIPLES / "multiples.parquet"          # sortie de 06
 MULTIPLES_MOYENS_FILE = DIR_MULTIPLES / "multiples_moyens_par_secteur.xlsx"  # sortie de 07
 DCF_FILE = DIR_DCF / "resultats_dcf.xlsx"                     # sortie de 08
 
-# Sortie de 07b_validation_qualitative.py : verdict LLM (Mistral) de
+# Sortie de 07b_validation_qualitative.py : verdict LLM (Gemini) de
 # cohérence qualitative entre le signal quantitatif (DCF_HISTORY_FILE /
 # VALORISATION_COMBINEE_FILE) et le texte du 10-K/10-Q DE CE DÉPÔT PRÉCIS
 # (jamais un filing plus récent -- contrainte anti-anticipation, voir sa
@@ -815,14 +815,14 @@ LLM_8K_FENETRE_JOURS = max(BACKTEST_SIGNAL_MAX_AGE_DAYS, *BACKTEST_SIGNAL_MAX_AG
 # Verdicts de 07b_validation_qualitative.py qui DISQUALIFIENT un signal dans
 # les backtests (voir backtest/data_loader.apply_qualitative_gate). Vide ->
 # filtre désactivé. "non_evalue" ne doit PAS y figurer : c'est la valeur prise
-# par toutes les périodes quand MISTRAL_API_KEY n'est pas définie.
+# par toutes les périodes quand GEMINI_API_KEY n'est pas définie.
 QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
 
 # ----------------------------------------------------------------------------
 # Matérialité d'un 8-K par CODE D'ITEM SEC, sans LLM
 # ----------------------------------------------------------------------------
 # POURQUOI CE REPLI EXISTE. 04c classe la matérialité d'un 8-K par appel à un
-# modèle, et journalise `non_evalue` quand MISTRAL_API_KEY est absente. Mesuré
+# modèle, et journalisait `non_evalue` quand la clé d'API était absente. Mesuré
 # sur l'archive du dépôt : 99 147 dépôts, `category` à `non_evalue` sur 100%
 # des lignes et `materiality` vide partout. Le filtre d'événements matériels --
 # l'une des deux protections anti-value-trap que le moteur documente -- ne

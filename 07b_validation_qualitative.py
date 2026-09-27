@@ -1,5 +1,5 @@
 """
-Validation QUALITATIVE, par LLM (Mistral), du signal quantitatif de
+Validation QUALITATIVE, par LLM (Gemini), du signal quantitatif de
 valorisation (07_calcul_dcf.py / 06b_calcul_valorisation_combinee.py) :
 pour chaque (symbol, période) déjà valorisé, récupère le texte du 10-K/10-Q
 DE CE DÉPÔT PRÉCIS (jamais un filing plus récent) et demande au modèle si le
@@ -22,6 +22,15 @@ verdict produit pour une période N est donc exactement ce qu'un lecteur du
 10-K/10-Q de l'époque aurait pu établir à l'époque -- aucune connaissance
 d'événements survenus depuis n'est jamais transmise au modèle.
 
+Document, consigne et format séparés
+------------------------------------
+L'extrait du filing, la consigne (CONSIGNE_TEMPLATE) et le format de la
+réponse (SCHEMA_REPONSE, un schéma JSON) partent séparément
+(sec_filings_text.analyser_document). Gemini génère sous la contrainte du
+schéma : un verdict parmi coherent, a_surveiller et contradictoire -- ceux que
+lit le filtre qualitatif du backtest --, une phrase de justification et une
+liste courte de risques ; la réponse est revérifiée avant d'être gardée.
+
 Ce module ne crée volontairement PAS de mécanisme générique séparé : la
 logique de recherche/téléchargement/extraction de texte SEC et l'appel LLM
 générique vivent dans sec_filings_text.py (réutilisé aussi par
@@ -30,10 +39,9 @@ la détection d'événements matériels).
 
 Prérequis :
     pip install requests beautifulsoup4
-    export GEMINI_API_KEY="ta_cle"    (ou MISTRAL_API_KEY, voir
-                                      sec_filings_text.fournisseur_llm -- sans
-    cette variable, le script journalise chaque ligne comme "non_evalue" et
-    n'appelle jamais le modèle, plutôt que de planter)
+    GEMINI_API_KEY=ta_cle dans .env (modèle : .env.example) -- sans cette
+    variable, le script journalise chaque ligne comme "non_evalue" et
+    n'appelle jamais le modèle, plutôt que de planter
 
 Usage :
     python 07b_validation_qualitative.py
@@ -62,31 +70,73 @@ logger = logging.getLogger("validation_qualitative")
 CHECKPOINT_EVERY = 10
 FORM_BY_PERIOD_TYPE = {"FY": ("10-K",), "TTM": ("10-Q", "10-K")}  # TTM peut être "complété" par un 10-K si le dernier trimestre du TTM est un Q4 (voir 04b)
 
-PROMPT_TEMPLATE = """Tu es un analyste financier. Voici un extrait du début du \
-document SEC ({form}, déposé le {filed_date}) de l'entreprise {symbol}, et \
-l'écart de valorisation calculé par un modèle quantitatif (DCF/multiples) à \
-cette même date : {gap_pct:.1f}% (positif = jugée sous-évaluée par le \
-modèle, négatif = jugée survalorisée).
+# Verdicts possibles. Le filtre qualitatif du backtest exclut ceux de
+# config.QUALITATIVE_GATE_EXCLUDED_VERDICTS : ils doivent figurer ici, sinon le
+# modèle ne pourrait jamais les rendre et le filtre ne filtrerait plus rien.
+VERDICTS = ("coherent", "a_surveiller", "contradictoire")
 
-Analyse UNIQUEMENT le texte ci-dessous (ignore tout ce que tu pourrais savoir \
-par ailleurs sur cette entreprise après cette date) : ce texte reflète-t-il \
-une situation cohérente avec cet écart de valorisation, ou signale-t-il des \
-risques/événements qui pourraient le remettre en cause (dépréciation \
-d'actifs, procédure judiciaire matérielle, révision de guidance, doute sur \
-la continuité d'exploitation...) ?
+# Ce que contient l'extrait transmis, selon sec_filings_text.fetch_filing_text.
+# L'ancien prompt annonçait toujours « le début du document », y compris quand
+# le texte était fait des sections de risque.
+_CONTENU_EXTRAIT = {
+    "sections": "les sections repérées dans le document (facteurs de risque, procédures "
+                "judiciaires, analyse de la direction), chacune précédée de son intitulé entre crochets",
+    "debut_document": "le début du document",
+}
 
-Texte du document :
-{text}
+# La CONSIGNE donnée à Gemini (instruction système). Le document part à côté,
+# et le format de la réponse dans SCHEMA_REPONSE : la consigne ne répète ni
+# les champs ni un exemple de JSON -- Google le déconseille, la qualité baisse.
+CONSIGNE_TEMPLATE = """Tu es un analyste financier. Le document fourni est un \
+extrait du {form} déposé par {symbol} le {filed_date} : {contenu}. À cette même \
+date, un modèle quantitatif (DCF/multiples) calcule un écart de valorisation de \
+{gap_pct:.1f} % (positif : entreprise jugée sous-évaluée ; négatif : jugée \
+survalorisée).
 
-Réponds UNIQUEMENT avec un JSON valide au format :
-{{"verdict": "coherent" ou "a_surveiller" ou "contradictoire", \
-"justification": "une phrase courte", "risques_cites": ["liste courte de \
-risques mentionnés dans le texte, vide si aucun notable"]}}
-"""
+Analyse UNIQUEMENT ce document : ignore tout ce que tu pourrais savoir par \
+ailleurs sur cette entreprise, en particulier après cette date. Dis si la \
+situation qu'il décrit est cohérente avec cet écart de valorisation, ou s'il \
+signale des risques ou des événements qui pourraient le remettre en cause \
+(dépréciation d'actifs, procédure judiciaire matérielle, révision de guidance, \
+doute sur la continuité d'exploitation...). Justifie ton verdict en une phrase \
+courte, en français, et relève les principaux risques que le document cite."""
+
+# Le FORMAT de la réponse. Gemini génère sous sa contrainte : un verdict de la
+# liste, une phrase, une liste courte -- et rien d'autre. Les descriptions
+# guident le modèle champ par champ.
+SCHEMA_REPONSE = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": list(VERDICTS),
+            "description": "coherent : rien dans le document ne remet l'écart en cause ; "
+                           "a_surveiller : des risques à suivre ; contradictoire : le document "
+                           "contredit l'écart de valorisation.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Le verdict justifié en une phrase courte, en français.",
+        },
+        "risques_cites": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 5,
+            "description": "Les principaux risques que le document cite, en quelques mots "
+                           "chacun ; liste vide si aucun n'est notable.",
+        },
+    },
+    "required": ["verdict", "justification", "risques_cites"],
+    "propertyOrdering": ["verdict", "justification", "risques_cites"],
+}
 
 
-def build_prompt(symbol: str, form: str, filed_date: str, gap_pct: float, text: str) -> str:
-    return PROMPT_TEMPLATE.format(symbol=symbol, form=form, filed_date=filed_date, gap_pct=gap_pct, text=text)
+def build_consigne(symbol: str, form: str, filed_date: str, gap_pct: float,
+                   extraction_mode: Optional[str] = None) -> str:
+    return CONSIGNE_TEMPLATE.format(
+        symbol=symbol, form=form, filed_date=filed_date, gap_pct=gap_pct,
+        contenu=_CONTENU_EXTRAIT.get(extraction_mode, "un extrait du document"),
+    )
 
 
 def load_signal_periods(limit: Optional[int] = None) -> pd.DataFrame:
@@ -143,22 +193,22 @@ def evaluate_period(row: pd.Series) -> dict:
     if not sft.llm_disponible():
         return {
             "verdict": "non_evalue_pas_de_cle_api",
-            "justification": (
-                f"Ni {sft.GEMINI_API_KEY_ENV} ni {sft.MISTRAL_API_KEY_ENV} définie : "
-                "aucun appel au modèle."
-            ),
+            "justification": f"{sft.GEMINI_API_KEY_ENV} non définie : aucun appel au modèle.",
             "risques_cites": None,
             "accession_number": filing["accession_number"],
             "form": filing["form"],
             "extraction_mode": filing.get("extraction_mode"),
         }
 
-    prompt = build_prompt(symbol, filing["form"], filed_date, float(row["gap_pct"]), filing["text"])
-    result = sft.analyser_texte_llm(prompt)
+    # L'extrait, la consigne et le format partent séparément ; la réponse
+    # revient conforme à SCHEMA_REPONSE, ou pas du tout (None).
+    consigne = build_consigne(symbol, filing["form"], filed_date, float(row["gap_pct"]),
+                              filing.get("extraction_mode"))
+    result = sft.analyser_document(document=filing["text"], consigne=consigne, schema=SCHEMA_REPONSE)
     if result is None or "verdict" not in result:
         return {
             "verdict": "non_evalue_reponse_invalide",
-            "justification": "Réponse du LLM indisponible ou invalide.",
+            "justification": "Réponse de Gemini indisponible, ou hors du format demandé.",
             "risques_cites": None,
             "accession_number": filing["accession_number"],
             "form": filing["form"],
@@ -234,9 +284,9 @@ def main() -> None:
 
     if not sft.llm_disponible():
         logger.warning(
-            "Aucune clé LLM (%s ou %s) : toutes les périodes seront journalisées comme "
+            "Aucune clé Gemini (%s) : toutes les périodes seront journalisées comme "
             "'non_evalue_pas_de_cle_api' (pas d'appel au modèle). %s",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, sft.aide_cle_absente(),
+            sft.GEMINI_API_KEY_ENV, sft.aide_cle_absente(),
         )
     else:
         logger.info("Validation qualitative par %s.", sft.description_llm())

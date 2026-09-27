@@ -35,7 +35,7 @@ CE QUE FAIT LE RUN, DANS L'ORDRE
           mais c'est ce qui fait entrer un 10-K le jour de son dépôt sans
           attendre le run trimestriel.
     04b   10-Q + TTM, même logique incrémentale.
-    04c   8-K matériels (optionnel : MISTRAL_API_KEY).
+    04c   8-K matériels (optionnel : GEMINI_API_KEY).
     05    multiples par entreprise
     06    multiples sectoriels moyens
     06b   valorisation combinée (multiples, repli DCF)   <- LE SIGNAL

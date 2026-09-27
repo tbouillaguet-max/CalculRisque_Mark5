@@ -55,7 +55,7 @@ def build_universe() -> pd.DataFrame:
         "Exchange": "SMART",
         # Bonus : Wikipedia fournit déjà le secteur GICS officiel. On le
         # récupère ici pour que 02_categoriser_secteurs.py puisse s'en servir
-        # et n'appeler l'API Mistral que pour les cas ambigus (économie d'appels).
+        # et n'appeler le LLM (Gemini) que pour les cas ambigus (économie d'appels).
         "GICS_Sector": raw["GICS Sector"].str.strip() if "GICS Sector" in raw.columns else None,
         # La SOUS-INDUSTRIE, elle, était jetée alors qu'elle est dans la même
         # table. C'est pourtant le seul niveau où "Financials" se laisse

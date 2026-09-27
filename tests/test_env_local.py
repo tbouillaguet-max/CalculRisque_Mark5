@@ -30,14 +30,14 @@ def test_la_syntaxe_tolere_les_formes_courantes(tmp_path):
     chemin = _env(tmp_path, "\n".join([
         "# commentaire",
         "GEMINI_API_KEY=AIza-sans-guillemets",
-        'MISTRAL_API_KEY="entre-guillemets"',
+        'ALPHAVANTAGE_API_KEY="entre-guillemets"',
         "export SEC_CONTACT_EMAIL = moi@exemple.fr",
         "GEMINI_MODEL=gemini-2.5-flash # commentaire en fin de ligne",
         "ligne sans egal",
         "",
     ]), bom=True)
     assert env_local.lire(chemin) == {
-        "GEMINI_API_KEY": "AIza-sans-guillemets", "MISTRAL_API_KEY": "entre-guillemets",
+        "GEMINI_API_KEY": "AIza-sans-guillemets", "ALPHAVANTAGE_API_KEY": "entre-guillemets",
         "SEC_CONTACT_EMAIL": "moi@exemple.fr", "GEMINI_MODEL": "gemini-2.5-flash",
     }
 
@@ -78,7 +78,7 @@ def test_un_script_lance_ailleurs_voit_la_cle_du_fichier(tmp_path):
         "print(s.description_llm())"
     )
     chemin = _env(tmp_path, "GEMINI_API_KEY=cle-du-fichier\n")
-    env = {k: v for k, v in os.environ.items() if k not in ("GEMINI_API_KEY", "MISTRAL_API_KEY", "LLM_PROVIDER")}
+    env = {k: v for k, v in os.environ.items() if k not in ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_THINKING_LEVEL")}
     # config.py appelle env_local.charger() sans argument, qui lit FICHIER :
     # redirigé avant l'import de config, pour ne pas dépendre d'un vrai .env.
     resultat = subprocess.run(
@@ -97,7 +97,9 @@ def test_l_aide_montre_le_bon_chemin_et_detecte_une_cle_collee_dans_le_code(monk
 def test_les_constantes_sont_des_noms_de_variables_pas_des_cles():
     """Coller la clé à la place du nom fait chercher une variable qui porte ce
     nom -- elle n'existe pas, et le LLM est jugé indisponible."""
-    assert (sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV) == ("GEMINI_API_KEY", "MISTRAL_API_KEY")
+    assert (sft.GEMINI_API_KEY_ENV, sft.GEMINI_MODEL_ENV, sft.GEMINI_THINKING_LEVEL_ENV,
+            sft.GEMINI_REQUESTS_PER_SECOND_ENV) == (
+        "GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_THINKING_LEVEL", "GEMINI_REQUESTS_PER_SECOND")
 
 
 def test_le_fichier_env_ne_part_jamais_sur_git_et_le_modele_est_vide():
@@ -108,3 +110,11 @@ def test_le_fichier_env_ne_part_jamais_sur_git_et_le_modele_est_vide():
     texte = (RACINE / ".env.example").read_text(encoding="utf-8")
     assert [nom for nom in env_local.LISTE_BLANCHE if nom not in texte] == [], \
         "une variable lue dans .env n'est pas documentée dans .env.example"
+
+
+def test_tous_les_reglages_de_gemini_se_lisent_dans_le_fichier_env():
+    """Un réglage lu par sec_filings_text mais absent de la liste blanche
+    serait ignoré en silence dans .env."""
+    for nom in (sft.GEMINI_API_KEY_ENV, sft.GEMINI_MODEL_ENV, sft.GEMINI_THINKING_LEVEL_ENV,
+                sft.GEMINI_REQUESTS_PER_SECOND_ENV):
+        assert nom in env_local.LISTE_BLANCHE, nom

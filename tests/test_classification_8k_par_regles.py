@@ -1,6 +1,6 @@
 """Classification des 8-K À PARTIR DU DOCUMENT, sans modèle de langage.
 
-CE QUE CES TESTS PROTÈGENT. Sans MISTRAL_API_KEY, `classify_8k` renvoyait
+CE QUE CES TESTS PROTÈGENT. Sans clé d'API, `classify_8k` renvoyait
 `non_evalue` et jetait le texte qu'il venait de télécharger. Mesuré sur
 l'archive du dépôt : 99 147 dépôts, `category` à `non_evalue` sur 100% des
 lignes, `materiality` et `summary` vides partout -- le filtre d'événements
@@ -155,9 +155,9 @@ def test_une_mention_de_passage_dans_un_depot_administratif_ne_compte_pas():
 # Intégration : le repli s'enclenche, et n'écrase pas le modèle
 # --------------------------------------------------------------------------- #
 def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
-    """Sans clé d'API, `analyser_texte_llm` rend None : le document doit
+    """Sans clé d'API, `analyser_document` rend None : le document doit
     alors être classé par règles au lieu de repartir en `non_evalue`."""
-    monkeypatch.setattr(_c8k.sft, "analyser_texte_llm", lambda *a, **k: None)
+    monkeypatch.setattr(_c8k.sft, "analyser_document", lambda *a, **k: None)
     resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nThe Company recorded an impairment charge.")
 
     assert resultat["category"] != "non_evalue"
@@ -165,29 +165,25 @@ def test_classify_8k_se_replie_sur_les_regles_sans_modele(monkeypatch):
     assert resultat["classification_source"] == "regles_document"
 
 
-@pytest.mark.parametrize("fournisseur", ["gemini", "mistral"])
-def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch, fournisseur):
+def test_le_modele_reste_prioritaire_quand_il_repond(monkeypatch):
     """La règle est un repli, pas un remplacement : un verdict du modèle ne
-    doit jamais être écrasé par elle. La source enregistrée est le fournisseur
-    qui a répondu, pas un « mistral » figé."""
-    cle = {"gemini": _c8k.sft.GEMINI_API_KEY_ENV, "mistral": _c8k.sft.MISTRAL_API_KEY_ENV}[fournisseur]
-    monkeypatch.setenv(cle, "une-cle")
+    doit jamais être écrasé par elle."""
+    monkeypatch.setenv(_c8k.sft.GEMINI_API_KEY_ENV, "une-cle")
     monkeypatch.setattr(
-        _c8k.sft, "analyser_texte_llm",
+        _c8k.sft, "analyser_document",
         lambda *a, **k: {"category": "rachat_actions", "materiality": True, "summary": "verdict du modèle"},
     )
     resultat = _c8k.classify_8k("AAPL", "2021-05-03", "Item 2.06 Material Impairments\nimpairment charge")
 
     assert resultat["category"] == "rachat_actions"
     assert resultat["summary"] == "verdict du modèle"
-    assert resultat["classification_source"] == fournisseur
+    assert resultat["classification_source"] == "gemini"
 
 
-@pytest.mark.parametrize("cle_env", ["GEMINI_API_KEY", "MISTRAL_API_KEY"])
-def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch, cle_env):
-    """Un repli mémorisé ne doit pas devenir un plafond : dès qu'une clé d'API
-    est disponible -- Gemini comme Mistral -- les lignes classées par règles
-    repartent au modèle."""
+def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, monkeypatch):
+    """Un repli mémorisé ne doit pas devenir un plafond : dès qu'une clé
+    Gemini est disponible, les lignes classées par règles repartent au
+    modèle."""
     import json
 
     cache = _c8k.llm_cache_path(tmp_path)
@@ -196,13 +192,13 @@ def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, m
         json.dumps({"symbol": "AAPL", "accession_number": "0000-1", "category": "autre_materiel",
                     "classification_source": "regles_document"}) + "\n"
         + json.dumps({"symbol": "AAPL", "accession_number": "0000-2", "category": "rachat_actions",
-                      "classification_source": "mistral"}) + "\n",
+                      "classification_source": "gemini"}) + "\n",
         encoding="utf-8",
     )
 
     assert len(_c8k.load_llm_cache(tmp_path)) == 2, "sans clé, le repli mémorisé doit être réutilisé"
 
-    monkeypatch.setenv(cle_env, "une-cle")
+    monkeypatch.setenv(_c8k.sft.GEMINI_API_KEY_ENV, "une-cle")
     avec_cle = _c8k.load_llm_cache(tmp_path)
     assert len(avec_cle) == 1
     assert _c8k.cache_key("AAPL", "0000-2") in avec_cle

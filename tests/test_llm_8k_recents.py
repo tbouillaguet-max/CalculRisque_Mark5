@@ -1,4 +1,4 @@
-"""Gemini (ou Mistral) ne classe que les 8-K récents ; les anciens passent par les règles.
+"""Gemini ne classe que les 8-K récents ; les anciens passent par les règles.
 
 Un 8-K ne sert qu'à périmer un signal encore actionnable. Au-delà de la plus
 longue durée de vie d'un signal, il ne touche plus aucune décision : lui payer
@@ -41,7 +41,7 @@ def test_la_date_limite_et_le_tri():
 def test_un_8k_ancien_est_classe_par_regles_sans_appel(monkeypatch):
     def interdit(*a, **k):
         raise AssertionError("le modèle a été appelé pour un 8-K ancien")
-    monkeypatch.setattr(_04c.sft, "analyser_texte_llm", interdit)
+    monkeypatch.setattr(_04c.sft, "analyser_document", interdit)
     verdict = _04c.classify_8k("AAPL", "2015-03-02", TEXTE, llm=False)
     assert verdict["classification_source"] == "regles_document"
 
@@ -49,7 +49,7 @@ def test_un_8k_ancien_est_classe_par_regles_sans_appel(monkeypatch):
 def test_seul_le_8k_recent_part_au_modele(tmp_path, monkeypatch):
     monkeypatch.setenv(_04c.sft.GEMINI_API_KEY_ENV, "cle-de-test")
     appels = []
-    monkeypatch.setattr(_04c.sft, "analyser_texte_llm", lambda *a, **k: appels.append(1) or dict(VERDICT_MODELE))
+    monkeypatch.setattr(_04c.sft, "analyser_document", lambda *a, **k: appels.append(1) or dict(VERDICT_MODELE))
     monkeypatch.setattr(_04c.sft, "fetch_submissions_strict", lambda cik: [
         {"form": "8-K", "filing_date": "2015-03-02", "accession_number": "ANCIEN", "primary_document": "a.htm"},
         {"form": "8-K", "filing_date": "2026-06-01", "accession_number": "RECENT", "primary_document": "r.htm"},

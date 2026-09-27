@@ -280,7 +280,7 @@ def apply_qualitative_gate(df: pd.DataFrame, path=None) -> pd.DataFrame:
     (config.QUALITATIVE_GATE_EXCLUDED_VERDICTS) -- les value traps que le
     chiffre seul ne voit pas (dépréciation d'actif, guidance abaissée).
 
-    Sans effet si 07b n'a jamais tourné, ou tant que MISTRAL_API_KEY n'est pas
+    Sans effet si 07b n'a jamais tourné, ou tant que GEMINI_API_KEY n'est pas
     définie : tous les verdicts valent alors "non_evalue", et une période non
     évaluée est CONSERVÉE (on ne filtre que sur un jugement explicite)."""
     excluded = set(config.QUALITATIVE_GATE_EXCLUDED_VERDICTS or ())
@@ -466,9 +466,8 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
        clé d'API ;
     2. à défaut, les CODES D'ITEM SEC (config.MATERIAL_8K_ITEM_CODES).
 
-    Le repli 2 existe parce que le cas 1 échouait en silence : sans
-    MISTRAL_API_KEY, 04c écrit `non_evalue` partout et `materiality` reste
-    vide. Mesuré sur l'archive du dépôt, c'était 100% des 99 147 dépôts -- le
+    Le repli 2 existe parce que le cas 1 échouait en silence : sans clé
+    d'API, 04c écrivait `non_evalue` partout et `materiality` restait vide. Mesuré sur l'archive du dépôt, c'était 100% des 99 147 dépôts -- le
     filtre d'événements matériels, l'une des deux protections anti-value-trap
     du moteur, ne s'appliquait à rien. Un avertissement le disait, mais un
     avertissement n'est pas une protection.
@@ -498,7 +497,7 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
     if df.empty:
         logger.info(
             "%s ne désigne aucun 8-K matériel, ni par la classification de 04c "
-            "(MISTRAL_API_KEY non définie lors du run ?) ni par les codes d'item : "
+            "(GEMINI_API_KEY non définie lors du run ?) ni par les codes d'item : "
             "le filtre d'événements matériels reste sans effet.", path,
         )
         return None

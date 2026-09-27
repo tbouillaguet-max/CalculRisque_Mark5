@@ -11,10 +11,10 @@ Corrections / changements par rapport à CateEntMark2 :
       d'appel API. Le LLM n'est appelé qu'en dernier recours (GICS absent
       ou mapping ambigu), ce qui réduit fortement le coût/temps par rapport
       au script d'origine qui appelait l'API pour les 600 entreprises.
-    - La clé d'API se lit depuis l'environnement (GEMINI_API_KEY ou
-      MISTRAL_API_KEY, au lieu d'être en dur dans le fichier) : évite de
-      committer une clé par erreur. Le script tourne sans clé si le mapping
-      GICS suffit (cas le plus fréquent) et sans fichier secteurs_manuels.json.
+    - La clé d'API (GEMINI_API_KEY) se lit dans .env ou l'environnement, au
+      lieu d'être en dur dans le fichier : évite de committer une clé par
+      erreur. Le script tourne sans clé si le mapping GICS suffit (cas le plus
+      fréquent) et sans fichier secteurs_manuels.json.
 
 Usage :
     python 02_categoriser_secteurs.py
@@ -38,12 +38,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 # --- LLM (fallback uniquement) -------------------------------------------------
-# L'appel passe par sec_filings_text.analyser_texte_llm, partagé avec 04c et
-# 07b : Gemini si GEMINI_API_KEY est définie, sinon Mistral (MISTRAL_API_KEY).
-# ⚠️ Une clé Mistral était autrefois codée en dur dans ce fichier (committée
-# dans un dépôt public) : si tu utilises encore cette clé, RÉVOQUE-LA côté
-# Mistral. Les clés se lisent uniquement depuis l'environnement, ex:
-#   export GEMINI_API_KEY="ta_cle"
+# L'appel passe par sec_filings_text.analyser_document, partagé avec 04c et
+# 07b : Gemini, avec la clé GEMINI_API_KEY. Les clés se lisent uniquement
+# depuis .env ou l'environnement, jamais depuis ce fichier, ex. dans .env :
+#   GEMINI_API_KEY=ta_cle
+#
+# La liste des entreprises du lot, la consigne (CONSIGNE) et le format de la
+# réponse (schema_reponse) partent séparément. Gemini génère sous la contrainte
+# du schéma : pour CHAQUE entreprise du lot, un secteur de SECTEURS ou
+# « indetermine » -- ni entreprise oubliée, ni secteur inventé.
 
 SECTEURS = [
     "Agro-alimentaire et boissons", "Assurance", "Automobiles et équipementiers",
@@ -80,6 +83,17 @@ MANUAL_SECTORS_FILE = Path("secteurs_manuels.json")
 BATCH_SIZE = 5
 MAX_TOKENS = 100
 
+# Réponse quand aucun secteur de la liste ne convient.
+INDETERMINE = "indetermine"
+
+# La CONSIGNE donnée à Gemini (instruction système). La liste des entreprises
+# part à côté, et le format -- y compris la liste des secteurs autorisés --
+# dans schema_reponse : la consigne ne les répète pas, Google le déconseille.
+CONSIGNE = """Tu es un expert en analyse financière. Le document fourni liste \
+des entreprises cotées, une par ligne. Classe chacune dans le secteur qui \
+décrit le mieux son activité principale, ou « indetermine » si aucun secteur \
+ne convient ou si tu ne connais pas l'entreprise."""
+
 
 def charger_json(path: Path) -> Dict[str, str]:
     if path.exists():
@@ -99,39 +113,46 @@ def sauvegarder_cache(cache: Dict[str, str]) -> None:
         logger.error("Erreur de sauvegarde du cache: %s", e)
 
 
+def schema_reponse(entreprises: List[str]) -> dict:
+    """Le FORMAT de la réponse pour un lot : un champ obligatoire par
+    entreprise, dont la valeur est un secteur de SECTEURS ou INDETERMINE.
+
+    Construit par lot, parce que les champs SONT les entreprises : l'ancien
+    prompt donnait un exemple de JSON avec la seule première, et rien
+    n'empêchait d'en oublier une ou d'inventer un secteur hors de la liste."""
+    secteur = {"type": "string", "enum": [*SECTEURS, INDETERMINE]}
+    return {
+        "type": "object",
+        "properties": {entreprise: secteur for entreprise in entreprises},
+        "required": list(entreprises),
+        "propertyOrdering": list(entreprises),
+    }
+
+
 def appeler_llm(entreprises: List[str]) -> Dict[str, Optional[str]]:
+    # Un nom absent (NaN, possible pour une radiée de 01b) n'a rien à soumettre :
+    # il reste « indetermine » chez l'appelant, au lieu de faire échouer le lot.
+    entreprises = [e for e in entreprises if isinstance(e, str) and e.strip()]
     if not entreprises:
         return {}
     if not sft.llm_disponible():
         logger.warning(
-            "Aucune clé LLM (%s ou %s) : %d entreprises sans secteur GICS "
+            "Aucune clé Gemini (%s) : %d entreprises sans secteur GICS "
             "exploitable resteront 'indetermine' (renseigne secteurs_manuels.json "
             "ou définis une clé pour les résoudre via l'API). %s",
-            sft.GEMINI_API_KEY_ENV, sft.MISTRAL_API_KEY_ENV, len(entreprises), sft.aide_cle_absente(),
+            sft.GEMINI_API_KEY_ENV, len(entreprises), sft.aide_cle_absente(),
         )
         return {}
 
-    prompt = f"""
-    Tu es un expert en analyse financière. Catégorise les entreprises suivantes dans UN SEUL des secteurs ci-dessous.
-    Si aucune correspondance, réponds "indetermine" pour cette entreprise.
-    Secteurs possibles: {', '.join(SECTEURS)}.
-
-    Entreprises à catégoriser:
-    {chr(10).join(f"- {e}" for e in entreprises)}
-
-    Réponds UNIQUEMENT avec un JSON valide au format:
-    {{"{entreprises[0]}": "secteur ou indetermine"}}
-    """
-    # Réessais, débit et parsing du JSON sont gérés par analyser_texte_llm.
-    result = sft.analyser_texte_llm(prompt, max_tokens=MAX_TOKENS * max(1, len(entreprises)))
+    # Réessais, débit et vérification du format : sec_filings_text.analyser_document.
+    result = sft.analyser_document(
+        document="\n".join(entreprises), consigne=CONSIGNE,
+        schema=schema_reponse(entreprises), max_tokens=MAX_TOKENS * len(entreprises),
+    )
     if result is None:
         logger.error("Pas de réponse exploitable du LLM pour %s", entreprises)
         return {}
-    for entreprise in entreprises:
-        if entreprise not in result:
-            logger.warning("Entreprise manquante dans la réponse: %s", entreprise)
-            return {}
-    return result
+    return {entreprise: result.get(entreprise, INDETERMINE) for entreprise in entreprises}
 
 
 # Bucket retenu pour une financière dont la sous-industrie est absente ou
@@ -225,9 +246,9 @@ def categoriser_df(df: pd.DataFrame) -> pd.DataFrame:
         batch = a_appeler[i:i + BATCH_SIZE]
         result = appeler_llm(batch)
         for nom in batch:
-            secteurs[nom] = result.get(nom, "indetermine")
+            secteurs[nom] = result.get(nom, INDETERMINE)
 
-    cache.update({k: v for k, v in secteurs.items() if v != "indetermine"})
+    cache.update({k: v for k, v in secteurs.items() if v != INDETERMINE})
     sauvegarder_cache(cache)
 
     df["sector"] = df["Instrument_Name"].map(secteurs)
@@ -266,7 +287,7 @@ def main() -> None:
     df_categorise.to_csv(args.universe, index=False, encoding="utf-8-sig")
     logger.info("Univers mis à jour avec les secteurs : %s", args.universe)
 
-    indetermines = df_categorise[df_categorise["sector"] == "indetermine"]
+    indetermines = df_categorise[df_categorise["sector"] == INDETERMINE]
     if not indetermines.empty:
         logger.warning("%d entreprises à catégoriser manuellement (ajoute-les dans %s):",
                         len(indetermines), MANUAL_SECTORS_FILE)

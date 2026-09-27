@@ -58,7 +58,7 @@ EN_LFS = [
     "data/options/history/option_chains_20250115_120000.parquet",
     "data/dcf/resultats_dcf.xlsx",
     "data/multiples/multiples_moyens_par_secteur.xlsx",
-    "data/financials/cache_8k_mistral.jsonl",
+    "data/financials/cache_8k.jsonl",
     "data/financials/checkpoint_8k.jsonl",
     "data/financials/sec_submissions/CIK0000320193.json",
     "data/backtest_options/20250101_120000/trades.parquet",
@@ -162,7 +162,7 @@ def test_le_regroupement_separe_lfs_et_git_par_sous_dossier(depot):
     "data/dcf/resultats_dcf.xlsx",
     # Le "8" de 8-K ne fait pas un horodatage : ce fichier grossit et est
     # réécrit à chaque run, il repaie donc sa taille à chaque commit.
-    "data/financials/cache_8k_mistral.jsonl",
+    "data/financials/cache_8k.jsonl",
 ])
 def test_les_tables_consolidees_sont_reecrites(relatif):
     assert setup_lfs.est_reecrit(relatif) is True
