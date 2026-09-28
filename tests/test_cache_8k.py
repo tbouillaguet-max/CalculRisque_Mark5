@@ -46,6 +46,7 @@ def sec(monkeypatch):
                         "summary": "Départ du directeur financier."} for ident in documents}
 
     monkeypatch.setattr(sft, "fetch_filing_text", faux_fetch)
+    monkeypatch.setattr(sft, "texte_piece_jointe", lambda *a, **k: None)
     monkeypatch.setattr(sft, "analyser_documents", faux_lot)
     return compteurs
 
@@ -185,7 +186,8 @@ def test_les_verdicts_de_mistral_sont_ecartes_et_effaces(tmp_path):
         mistral_sans_source,
         _entree("MMM", "2", classification_source="mistral"),
         _entree("ABT", "3"),
-        _entree("AMD", "4", classification_source="regles_document"),
+        _entree("AMD", "4", classification_source="regles_document",
+                version_regles=module_04c.VERSION_REGLES),
     ]), encoding="utf-8")
 
     cache = module_04c.load_llm_cache(tmp_path)

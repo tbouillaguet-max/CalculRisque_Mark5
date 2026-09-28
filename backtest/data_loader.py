@@ -488,6 +488,11 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
         if "materiality" in df.columns
         else pd.Series(False, index=df.index)
     )
+    if "category" in df.columns:
+        # Une bonne nouvelle (rachat d'actions) ne donne pas l'alerte, même
+        # jugée « matérielle » par Gemini ou par une version antérieure des
+        # règles : voir config.CATEGORIES_8K_SANS_ALERTE.
+        retenus &= ~df["category"].isin(getattr(config, "CATEGORIES_8K_SANS_ALERTE", ()))
     if not retenus.any() and "item_codes" in df.columns:
         codes = getattr(config, "MATERIAL_8K_ITEM_CODES", ())
         retenus = _material_by_item_code(df, codes)

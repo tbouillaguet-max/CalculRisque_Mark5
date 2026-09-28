@@ -45,6 +45,7 @@ def _filings(monkeypatch):
         {"form": "8-K", "filing_date": "2026-06-01", "accession_number": "RECENT", "primary_document": "r.htm"},
     ])
     monkeypatch.setattr(_04c.sft, "fetch_filing_text", lambda url, form=None: (TEXTE, "debut_document"))
+    monkeypatch.setattr(_04c.sft, "texte_piece_jointe", lambda *a, **k: None)
 
 
 def test_un_8k_ancien_est_classe_par_regles_sans_mise_en_attente(tmp_path, monkeypatch):
@@ -87,9 +88,11 @@ def test_la_memoire_ne_rend_au_modele_que_les_verdicts_recents(tmp_path, monkeyp
     monkeypatch.setattr(_04c.sft, "llm_disponible", lambda: True)
     _memoire(tmp_path, [
         {"symbol": "AAPL", "accession_number": "ANCIEN", "filed_date": "2015-03-02",
-         "item_codes": ["Item 8.01"], "classification_source": "regles_document"},
+         "item_codes": ["Item 8.01"], "classification_source": "regles_document",
+         "version_regles": _04c.VERSION_REGLES},
         {"symbol": "AAPL", "accession_number": "RECENT", "filed_date": "2026-06-01",
-         "item_codes": ["Item 8.01"], "classification_source": "regles_document"},
+         "item_codes": ["Item 8.01"], "classification_source": "regles_document",
+         "version_regles": _04c.VERSION_REGLES},
         {"symbol": "AAPL", "accession_number": "MODELE", "filed_date": "2026-06-02",
          "item_codes": ["Item 8.01"], "classification_source": "gemini"},
     ])

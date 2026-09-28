@@ -213,23 +213,28 @@ def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, m
     repartent au modèle -- pas ceux dont les Items décident seuls."""
     import json
 
+    regles = {"classification_source": "regles_document", "version_regles": _c8k.VERSION_REGLES}
     cache = _c8k.llm_cache_path(tmp_path)
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(
         json.dumps({"symbol": "AAPL", "accession_number": "0000-1", "category": "autre_materiel",
-                    "item_codes": ["Item 8.01"], "classification_source": "regles_document"}) + "\n"
+                    "item_codes": ["Item 8.01"], **regles}) + "\n"
         + json.dumps({"symbol": "AAPL", "accession_number": "0000-2", "category": "rachat_actions",
                       "item_codes": ["Item 8.01"], "classification_source": "gemini"}) + "\n"
         + json.dumps({"symbol": "AAPL", "accession_number": "0000-3", "category": "non_materiel",
-                      "item_codes": ["Item 2.02", "Item 9.01"], "classification_source": "regles_document"}) + "\n",
+                      "item_codes": ["Item 2.02", "Item 9.01"], **regles}) + "\n"
+        + json.dumps({"symbol": "AAPL", "accession_number": "0000-4", "category": "autre_materiel",
+                      "item_codes": ["Item 2.06"], **regles}) + "\n",
         encoding="utf-8",
     )
 
-    assert len(_c8k.load_llm_cache(tmp_path)) == 3, "sans clé, le repli mémorisé doit être réutilisé"
+    assert len(_c8k.load_llm_cache(tmp_path)) == 4, "sans clé, le repli mémorisé doit être réutilisé"
 
     monkeypatch.setenv(_c8k.sft.GEMINI_API_KEY_ENV, "une-cle")
     avec_cle = _c8k.load_llm_cache(tmp_path)
-    assert set(avec_cle) == {_c8k.cache_key("AAPL", "0000-2"), _c8k.cache_key("AAPL", "0000-3")}
+    # 0000-1 (8.01) et 0000-3 (résultats, 2.02, lus avec leur communiqué)
+    # repartent au modèle ; 0000-4 (2.06, matériel par définition) reste.
+    assert set(avec_cle) == {_c8k.cache_key("AAPL", "0000-2"), _c8k.cache_key("AAPL", "0000-4")}
 
 
 # --------------------------------------------------------------------------- #
@@ -240,8 +245,9 @@ def test_un_verdict_par_regles_est_remis_en_jeu_quand_une_cle_arrive(tmp_path, m
     (["Item 8.01", "Item 9.01"], True),          # « autre événement »
     (["Item 1.01"], True),
     (["Item 1.02"], True),
-    (["Item 2.02", "Item 9.01"], False),         # résultats : renvoi à l'Exhibit 99.1
-    (["Item 7.01"], False),                      # Regulation FD : idem
+    (["Item 2.02", "Item 9.01"], True),          # résultats : lus avec leur communiqué joint
+    (["Item 7.01"], True),                       # Regulation FD : idem
+    (["Item 1.01", "Item 2.03"], True),          # une dette seule ne décide plus (2.03 retiré)
     (["Item 5.07"], False),                      # vote en assemblée : administratif
     (["Item 9.01"], False),
     (["Item 5.02", "Item 2.06"], False),         # un Item matériel par définition décide seul

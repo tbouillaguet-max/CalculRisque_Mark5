@@ -735,24 +735,27 @@ D'où :
   les quotas du jour épuisés, Gemini est coupé pour le run : les documents
   restants attendent le run suivant (`04c` les classe par règles d'ici là) ;
 - **un tri** (`04c`) : seuls vont au modèle les 8-K récents dont les Items ne
-  décident pas seuls — 1.01, 1.02, 5.02, 8.01, sans Item matériel par
-  définition. Résultats (2.02), Regulation FD (7.01), votes (5.07)… sont
-  classés par règles, sans requête ;
+  décident pas seuls — 1.01, 1.02, 2.02, 5.02, 7.01, 8.01, sans Item matériel
+  par définition —, avec leur communiqué joint (voir « Le communiqué joint »
+  plus bas). Votes (5.07), pièces jointes seules (9.01)… sont classés par
+  règles, sans requête ;
 - **des lots** : 10 8-K, 5 périodes ou 25 entreprises par requête (`--par-requete N`
   pour `04c` et `07b`). Pour `04c` et `07b`, uniquement des documents déposés
   le **même jour**, les plus récents d'abord : jamais un document plus récent
   à côté d'un plus ancien, qu'il pourrait éclairer ;
 - **moins de jetons** : texte du 8-K sans page de garde ni signatures, 6 000
-  caractères au plus ; extrait de 10-K/10-Q de 8 000 caractères ; schémas sans
-  descriptions ; réflexion minimale ;
+  caractères au plus, et autant pour le début de son communiqué joint ; extrait
+  de 10-K/10-Q de 8 000 caractères ; schémas sans descriptions ; réflexion
+  minimale ;
 - **une mémoire** : `04c` (`cache_8k.jsonl`) et `07b` (`cache_qualitative.jsonl`,
   un verdict par filing et par sens de l'écart de valorisation) ne renvoient
   jamais un document déjà jugé. `--no-llm-cache` force la ré-analyse ;
   `04c --vider-memoire` efface la mémoire des 8-K pour tout retélécharger à la
   SEC et tout reclasser.
 
-Sur l'archive du dépôt au 2026-09-27 : `04c` lit 2 884 des 6 327 8-K récents,
-en 390 requêtes (une par 8-K récent auparavant, 6 327) ; `07b` juge 2 182
+Sur les 8-K classés le 2026-09-27 : `04c` lit 6 352 des 6 968 8-K récents, en
+757 requêtes (3 697 en 490 requêtes avant que les résultats et la Regulation
+FD ne passent au modèle) ; `07b` juge 2 182
 périodes en 1 165 requêtes au premier run — déposées sur 1 122 jours
 différents, elles se regroupent peu —, puis seulement les nouvelles (toutes,
 à chaque run, auparavant) ; `02` fait cinq fois moins de requêtes qu'avec ses
@@ -778,6 +781,54 @@ sur 99 147 (6,4 %) dans la fenêtre, au lieu de tout l'historique.
 `--llm-depuis-jours N` change la fenêtre, `0` rend tout l'historique au
 modèle. Le backtest historique s'appuie donc sur la classification par règles
 pour tout ce qui est plus ancien.
+
+**Les règles, version 2 (2026-09-28).** Les règles classent 97 % des 8-K,
+donc presque tout l'historique du backtest. Confrontées à ce qui s'est passé
+ensuite — réaction du cours de la veille au lendemain du dépôt, SPY retiré,
+puis dérive sur 60 séances —, 9 863 de leurs 22 153 verdicts « matériels »
+venaient de six pièges, aussi inertes qu'un 8-K de routine (5,4 % de réactions
+au-delà de 5 %, dérive +0,3 %) :
+
+| Piège de la version 1 | 8-K | Réaction > 5 % | Dérive 60 j |
+|---|---|---|---|
+| « securities litigation » pris dans la mention « Private Securities Litigation Reform Act of 1995 » | 1 238 | 11,6 % | 0,0 % |
+| « bankruptcy » pris dans les clauses de défaut d'un contrat de dette | 1 011 | 6,1 % | +0,6 % |
+| Item 2.03 (émission d'obligations, ligne de crédit), matériel d'office | 3 380 | 6,3 % | +0,4 % |
+| « tender offer » sur des obligations, ou dans l'étiquette XBRL « PreCommencement Tender Offer » | 471 | 8,1 % | +1,1 % |
+| « départ de dirigeant » sur des nominations, des rémunérations, des vice-présidents | 2 249 | 8,3 % | +0,7 % |
+| rachat d'actions : une bonne nouvelle comptée comme alerte | 1 514 | 16,2 % | +0,8 % |
+
+La version 2 lit le 8-K phrase par phrase et ignore les phrases de formulaire
+(déclarations prospectives, clauses de défaut, étiquettes XBRL, cases de la
+page de garde). Elle ne compte « tender offer » que pour des actions, remplace
+« bankruptcy » par les formulations d'une faillite réelle (« voluntary
+petitions », « chapter 11 »), limite les départs au directeur général et au
+directeur financier hors clauses de rémunération, retire l'Item 2.03 des items
+matériels d'office (`config.MATERIAL_8K_ITEM_CATEGORIES`) et note les rachats
+d'actions sans alerte. Le résumé d'un verdict est la phrase même qui a
+décidé, vérifiable contre le dépôt. Ce qui portait un vrai signal reste :
+faillite (26,5 % de réactions > 5 %, dérive médiane −4,1 %), guidance révisée
+(35,8 %), dépréciation (25,5 %), accord de fusion (13 %).
+
+Chaque verdict par règles porte `version_regles`. Au lancement, `04c` écarte
+de sa mémoire ceux d'une version antérieure, puis retélécharge et reclasse ces
+8-K ; les verdicts de Gemini sont gardés. **Le premier run après cette mise à
+jour refait donc tout l'historique à la SEC** (plusieurs heures). Le filtre du
+backtest ignore en plus les rachats d'actions quelle que soit la source du
+verdict (`config.CATEGORIES_8K_SANS_ALERTE`), y compris dans un fichier déjà
+écrit.
+
+**Le communiqué joint.** Un 8-K de résultats (2.02) ou d'annonce (7.01, 8.01)
+tient souvent en une phrase — « the Company issued a press release, attached
+as Exhibit 99.1 » — et c'est le communiqué qui porte l'information. Sur les
+3 240 8-K suivis d'une réaction de cours de plus de 10 %, 2 598 avaient été
+jugés non matériels, dont 82 % de résultats : ni les règles ni Gemini n'en
+voyaient le contenu. Pour chaque 8-K que Gemini lit, `04c` télécharge
+désormais le communiqué joint (la première pièce EX-99 lisible, trouvée par la
+page d'index du dépôt) et le lui envoie après le 8-K ; les résultats et la
+Regulation FD lui sont donc confiés. Les règles restent sur le 8-K seul : un
+communiqué de résultats cite dépréciations et restructurations à chaque
+trimestre, dans ses tableaux.
 
 **Quand le modèle ne répond pas.** Un 503 (`The model is overloaded`) ou une
 coupure réseau est un incident chez Google, pas dans le code : l'appel est

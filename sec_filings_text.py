@@ -51,6 +51,7 @@ import warnings
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Dict, List, NamedTuple, Optional, Tuple
+from urllib.parse import urljoin
 
 from pathlib import Path
 
@@ -559,6 +560,73 @@ def fetch_filing_text(
         logger.debug("%s : aucune section Item 1A/3/7 localisée, repli sur le début du document.", url)
 
     return text[:max_chars], "debut_document"
+
+
+# --------------------------------------------------------------------------- #
+# Pièce jointe d'un 8-K : le communiqué de presse (Exhibit 99)
+# --------------------------------------------------------------------------- #
+# Un 8-K de résultats (Item 2.02) ou d'annonce (7.01, 8.01) tient souvent en
+# une phrase -- « the Company issued a press release, attached as Exhibit
+# 99.1 » -- et c'est la pièce jointe qui porte l'information : chiffres,
+# prévisions, opération. Sans elle, le modèle jugeait une page de couverture.
+# Mesuré le 2026-09-27 : sur les 3 240 8-K suivis d'une réaction de cours
+# au-delà de 10 %, 2 598 avaient été jugés non matériels, dont 82 % de
+# résultats trimestriels.
+#
+# La page d'index du dépôt liste ses documents AVEC LEUR TYPE (8-K, EX-99.1,
+# EX-99.2...) : c'est elle qui dit où est le communiqué, là où les noms de
+# fichiers varient d'un déposant à l'autre.
+INDEX_DEPOT_URL = ("https://www.sec.gov/Archives/edgar/data/{cik_nolead}/{accession_nodash}/"
+                   "{accession_number}-index.htm")
+_TYPE_EX99 = re.compile(r"^EX-99(?:\.(\d+))?\b", re.IGNORECASE)
+# Une pièce jointe en PDF ou en image n'a pas de texte à lire.
+_EXTENSIONS_TEXTE = (".htm", ".html", ".txt")
+
+
+def pieces_jointes_99(cik: str, accession_number: str) -> List[str]:
+    """URLs des pièces jointes EX-99 d'un dépôt, dans l'ordre de leur numéro
+    (99.1, 99.2...). Liste vide si la page d'index est introuvable ou n'en
+    déclare aucune : le 8-K est alors lu seul, comme avant."""
+    url = INDEX_DEPOT_URL.format(
+        cik_nolead=str(int(cik)), accession_nodash=accession_number.replace("-", ""),
+        accession_number=accession_number)
+    try:
+        reponse = sec_http.request(url)
+    except (sec_http.SecNotFound, sec_http.SecUnavailable, requests.exceptions.RequestException) as e:
+        # La pièce jointe est un plus : son absence ne doit jamais coûter le
+        # 8-K, ni l'entreprise entière.
+        logger.debug("Index du dépôt %s illisible (%s) : 8-K lu sans pièce jointe.", accession_number, e)
+        return []
+    soup = BeautifulSoup(reponse.content, _best_parser())
+    trouvees = []
+    for ligne in soup.find_all("tr"):
+        cellules = ligne.find_all("td")
+        if len(cellules) < 4:
+            continue
+        type_document = _TYPE_EX99.match(cellules[3].get_text(strip=True))
+        lien = cellules[2].find("a", href=True)
+        if type_document is None or lien is None:
+            continue
+        # Un document iXBRL est lié via la visionneuse (« /ix?doc=/Archives/... »).
+        chemin = lien["href"].replace("/ix?doc=", "")
+        if not chemin.lower().endswith(_EXTENSIONS_TEXTE):
+            continue
+        trouvees.append((int(type_document.group(1) or 0), urljoin("https://www.sec.gov/", chemin)))
+    return [u for _, u in sorted(trouvees)]
+
+
+def texte_piece_jointe(cik: str, accession_number: str, max_chars: int = MAX_TEXT_CHARS) -> Optional[str]:
+    """Texte du communiqué joint à un dépôt -- sa première pièce jointe EX-99
+    lisible --, borné à `max_chars`. None s'il n'y en a pas."""
+    for url in pieces_jointes_99(cik, accession_number):
+        try:
+            extrait = fetch_filing_text(url, max_chars=max_chars, form="8-K")
+        except requests.exceptions.RequestException as e:
+            logger.debug("Pièce jointe %s illisible (%s).", url, e)
+            continue
+        if extrait is not None and extrait[0].strip():
+            return extrait[0]
+    return None
 
 
 def find_filing_asof(cik: str, filed_date: str, forms: tuple = ("10-K", "10-Q")) -> Optional[Dict]:

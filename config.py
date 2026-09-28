@@ -844,7 +844,6 @@ QUALITATIVE_GATE_EXCLUDED_VERDICTS = ("contradictoire",)
 MATERIAL_8K_ITEM_CATEGORIES = {
     "1.03": "procedure_judiciaire",  # faillite ou mise sous séquestre
     "2.01": "fusion_acquisition",    # acquisition ou cession d'actifs réalisée
-    "2.03": "autre_materiel",        # nouvelle obligation financière directe (levier)
     "2.04": "autre_materiel",        # déchéance du terme d'une dette
     "2.05": "autre_materiel",        # coûts de restructuration ou de cession
     "2.06": "autre_materiel",        # dépréciation d'actifs significative
@@ -869,9 +868,22 @@ AMBIGUOUS_8K_ITEM_CODES = (
 # Délibérément absents des DEUX listes, chacun pour une raison précise :
 #   9.01 (43 373 dépôts, le plus fréquent) ne fait que déclarer des pièces
 #       jointes -- purement administratif ;
-#   5.07 (vote en assemblée) et 5.03 (statuts) sont de la routine annuelle.
+#   5.07 (vote en assemblée) et 5.03 (statuts) sont de la routine annuelle ;
+#   2.03 (nouvelle obligation financière : émission d'obligations, ligne de
+#       crédit) était matériel d'office. Retiré : c'est de la gestion courante
+#       pour le S&P 500. Mesuré sur les 99 787 8-K classés le 2026-09-27 : 3 380
+#       8-K dont 6,3 % suivis d'une réaction de cours > 5 % (5,4 % pour un 8-K
+#       de routine) et une dérive à 60 séances de +0,4 % -- aucun signal.
 # `MATERIAL_8K_ITEM_CATEGORIES = {}` désactive le repli et rend au filtre son
 # comportement d'avant (inerte sans classification par modèle).
+
+# Catégories qui ne donnent JAMAIS l'alerte, quelle que soit la source du
+# verdict (règles ou Gemini) : le filtre d'événements matériels protège d'un
+# piège à valeur, pas d'une bonne nouvelle. Un rachat d'actions (1 514 8-K par
+# règles le 2026-09-27) est suivi d'une réaction moyenne positive et d'une
+# dérive à 60 séances de +0,8 % : bloquer l'entreprise ensuite, c'est rater la
+# hausse que la stratégie cherche. La catégorie reste écrite, pour mémoire.
+CATEGORIES_8K_SANS_ALERTE = ("rachat_actions",)
 
 # ----------------------------------------------------------------------------
 # Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)

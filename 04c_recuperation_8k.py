@@ -30,7 +30,10 @@ et seuls vont ensuite à Gemini :
   - les 8-K RÉCENTS (config.LLM_8K_FENETRE_JOURS) : un 8-K plus ancien ne
     touche plus aucun signal actif ;
   - dont les Items ne décident pas seuls (ITEMS_POUR_LE_MODELE : 1.01, 1.02,
-    5.02, 8.01) -- 2 884 des 6 327 8-K récents de l'archive du dépôt.
+    2.02, 5.02, 7.01, 8.01) -- 6 352 des 6 968 8-K récents classés le
+    2026-09-27. Chacun part avec le début de son communiqué joint (Exhibit 99,
+    sec_filings_text.texte_piece_jointe) : c'est lui qui porte les résultats,
+    les prévisions, l'opération annoncée.
 Ils partent PAR LOTS (classer_en_attente) : jusqu'à DOCUMENTS_PAR_REQUETE 8-K
 par requête, tous déposés le même jour -- aucun 8-K plus récent n'éclaire le
 classement d'un plus ancien. Chaque lot réunit le texte des 8-K, allégé de la
@@ -145,23 +148,29 @@ CATEGORIES = (
 )
 
 # Items que Gemini lit : ceux dont SEUL le texte dit la portée -- un accord
-# (1.01, 1.02), un départ ou une nomination (5.02), un « autre événement »
-# (8.01). Tout autre 8-K est classé par règles, sans requête : les Items
-# administratifs (9.01, 5.07...) ne sont jamais matériels, ceux de
-# config.MATERIAL_8K_ITEM_CATEGORIES le sont par définition, et les résultats
-# (2.02) ou la Regulation FD (7.01) renvoient à une pièce jointe (Exhibit 99.1)
-# que 04c ne télécharge pas -- Gemini n'en verrait que la page de couverture.
-# Mesuré sur l'archive du dépôt, 400 derniers jours : 2 884 8-K sur 6 327.
-ITEMS_POUR_LE_MODELE = frozenset({"1.01", "1.02", "5.02", "8.01"})
+# (1.01, 1.02), des résultats (2.02), un départ ou une nomination (5.02), une
+# communication (7.01), un « autre événement » (8.01). Tout autre 8-K est
+# classé par règles, sans requête : les Items administratifs (9.01, 5.07...) ne
+# sont jamais matériels, ceux de config.MATERIAL_8K_ITEM_CATEGORIES le sont par
+# définition. Les résultats et la Regulation FD renvoient au communiqué joint
+# (Exhibit 99) : 04c le télécharge pour chaque 8-K que Gemini lit
+# (sec_filings_text.texte_piece_jointe) -- avant, Gemini n'aurait vu que la page
+# de couverture, et ces 8-K lui étaient épargnés. Mesuré sur les 8-K classés le
+# 2026-09-27, 400 derniers jours : 6 352 8-K lus sur 6 968, contre 3 697 sans
+# 2.02 ni 7.01.
+ITEMS_POUR_LE_MODELE = frozenset({"1.01", "1.02", "2.02", "5.02", "7.01", "8.01"})
 
-# 8-K par requête, tous déposés le MÊME jour (voir classer_en_attente). Sur
-# l'archive du dépôt, les 2 884 8-K à lire tombent sur 238 jours de dépôt :
-# 390 requêtes, au lieu de 2 884.
+# 8-K par requête, tous déposés le MÊME jour (voir classer_en_attente). Sur les
+# mêmes 8-K, les 6 352 à lire tombent sur 271 jours de dépôt : 757 requêtes, au
+# lieu de 6 352.
 DOCUMENTS_PAR_REQUETE = 10
 
 # Texte transmis à Gemini par 8-K, page de garde et signatures retirées (voir
 # texte_pour_le_modele) : l'objet d'un 8-K tient en quelques paragraphes.
 MAX_CARACTERES_MODELE = 6_000
+# Et de son communiqué joint : le titre, les faits marquants et, le plus
+# souvent, les prévisions viennent en tête ; les tableaux financiers suivent.
+MAX_CARACTERES_PIECE_JOINTE = 6_000
 
 # Budget de RÉPONSE par 8-K : une catégorie, un booléen, une phrase.
 JETONS_PAR_VERDICT = 120
@@ -170,7 +179,7 @@ JETONS_PAR_VERDICT = 120
 # 8-K partent à côté, et le format de la réponse dans SCHEMA_VERDICT : la
 # consigne ne répète ni les champs ni un exemple de JSON -- Google le
 # déconseille, la qualité baisse.
-CONSIGNE_TEMPLATE = """Tu es un analyste financier. Tu reçois des 8-K déposés le {filed_date}, chacun entre des balises <document id="...">, précédé de l'entreprise et des Items déclarés. Juge chaque document séparément, uniquement à partir de son propre texte : ignore les autres documents du lot et tout ce que tu pourrais savoir par ailleurs, en particulier après cette date.
+CONSIGNE_TEMPLATE = """Tu es un analyste financier. Tu reçois des 8-K déposés le {filed_date}, chacun entre des balises <document id="...">, précédé de l'entreprise et des Items déclarés, et suivi, quand il en a un, du communiqué de presse joint (Exhibit 99) : c'est souvent lui qui porte l'information -- résultats, prévisions, opération annoncée. Juge chaque document séparément, uniquement à partir de son propre texte : ignore les autres documents du lot et tout ce que tu pourrais savoir par ailleurs, en particulier après cette date.
 
 Pour chacun, dis si l'événement annoncé est matériel pour une thèse de valorisation, c'est-à-dire susceptible de changer significativement la valeur intrinsèque ou le risque perçu de l'entreprise ; classe-le dans la catégorie qui le décrit le mieux (non_materiel pour un dépôt de routine) ; résume-le en une phrase courte, en français."""
 
@@ -252,56 +261,139 @@ def compute_search_windows(ttm: pd.DataFrame, symbol: str, today: datetime) -> L
 # élection d'administrateur.
 _ITEMS_MATERIELS = dict(config.MATERIAL_8K_ITEM_CATEGORIES)
 _ITEMS_AMBIGUS = frozenset(config.AMBIGUOUS_8K_ITEM_CODES)
+# Catégories qui ne donnent pas l'alerte (un rachat d'actions est une bonne
+# nouvelle) : notées pour mémoire, jamais matérielles. Voir config.
+_SANS_ALERTE = frozenset(config.CATEGORIES_8K_SANS_ALERTE)
 
-# Formulations cherchées dans le CORPS du document. L'ordre compte : la
-# première catégorie dont un motif est trouvé l'emporte, du plus spécifique au
-# plus général.
+# Version des règles, écrite dans chaque verdict qu'elles rendent. Un verdict
+# d'une autre version est écarté de la mémoire au chargement (load_llm_cache) :
+# son 8-K est retéléchargé et reclassé au run suivant.
+#   1 (verdicts sans ce champ) : mots-clés cherchés dans tout le document.
+#   2 : phrases de formulaire ignorées, départs limités au directeur général et
+#       au directeur financier, rachats d'actions sans alerte, Item 2.03
+#       retiré des matériels d'office, résumé = la phrase qui a décidé.
+VERSION_REGLES = 2
+
+# POURQUOI LA VERSION 2. La version 1 cherchait ses mots-clés n'importe où dans
+# le document, et un seul suffisait. Confrontée à la réaction du cours autour
+# de chaque dépôt (99 787 8-K classés le 2026-09-27, rendement anormal de la
+# veille au lendemain, SPY retiré), 9 863 de ses 22 153 verdicts « matériels »
+# venaient de six pièges, aussi inertes qu'un 8-K de routine :
+#   - « securities litigation » pris dans la mention légale « Private
+#     Securities Litigation Reform Act of 1995 » (1 238) ;
+#   - « bankruptcy » pris dans les clauses de défaut d'un contrat de dette,
+#     « events of bankruptcy or insolvency » (1 011) ;
+#   - l'Item 2.03, une émission d'obligations, matériel d'office (3 380) ;
+#   - « tender offer » pris dans un rachat d'OBLIGATIONS, ou dans l'étiquette
+#     XBRL « PreCommencement Tender Offer false » (471) ;
+#   - « départ de dirigeant » sur des nominations, des rémunérations, un
+#     vice-président (2 249) ;
+#   - un rachat d'actions -- une bonne nouvelle -- compté comme alerte (1 514).
+# Réaction > 5 % : 6 à 12 % de ces dépôts, contre 5,4 % pour la routine ; dérive
+# à 60 séances positive. Le filtre bloquait donc des entreprises pour rien.
+# Les motifs qui portaient un vrai signal sont gardés : faillite (« chapter
+# 11 » : 26,5 % de réactions > 5 %, dérive médiane -4,1 %), guidance abaissée
+# (35,8 %, -3,7 %), dépréciation (25,5 %), accord de fusion (13 %).
+
+# Phrases de FORMULAIRE, présentes dans des milliers de 8-K sans rien annoncer :
+# avertissement sur les déclarations prospectives, clauses de défaut d'un
+# contrat de dette, étiquettes XBRL et cases à cocher de la page de garde. Une
+# phrase qui en contient une est ignorée en entier -- c'est dans ces phrases
+# que se trouvaient les mots-clés des faux positifs, pas dans l'annonce.
+_PHRASE_DE_FORMULAIRE = re.compile("|".join((
+    r"forward[- ]looking", r"litigation\s+reform\s+act", r"safe\s+harbor",
+    r"actual\s+results\s+(?:to|could|may|might|will)\s+differ",
+    r"events?\s+of\s+default", r"\bdefaults?\b",
+    r"co-registrant", r"pre-?commencement", r"rule\s+14d-2", r"rule\s+13e-4",
+    r"rule\s+425\b", r"rule\s+14a-12",
+)), re.IGNORECASE)
+
+# Fin de phrase : un point, un point d'exclamation ou d'interrogation suivi
+# d'un blanc. Les abréviations (« Inc. ») coupent des phrases en deux, ce qui
+# ne gêne pas : une moitié de phrase de formulaire en porte encore le marqueur.
+_FIN_DE_PHRASE = re.compile(r"(?<=[.!?])\s+")
+
+# Le titre de l'Item 5.02, « Departure of Directors or Certain Officers »,
+# annonce la RUBRIQUE, pas un départ : sans ce retrait, une simple nomination
+# de directeur financier se lisait comme un départ.
+_TITRE_ITEM_502 = re.compile(r"departure\s+of\s+directors\s+or\s+(?:certain|principal)\s+officers", re.IGNORECASE)
+
+# Départ de dirigeant : directeur général ou directeur financier SEULEMENT (un
+# vice-président, un administrateur ne changent pas une thèse de valorisation),
+# et un vrai départ -- pas un mot de contrat de travail.
+_DIRIGEANT = (r"(?:chief\s+executive\s+officer|chief\s+financial\s+officer|\bCEO\b|\bCFO\b"
+              r"|principal\s+(?:executive|financial)\s+officer)")
+_DEPART = (r"(?:\bresign\w*|\bstep(?:s|ped|ping)?\s+down|\bretir(?:e|es|ed|ing)\b"
+           r"|\bretirement\s+(?:as|from)\b|\bwill\s+leave\b|\bdepart(?:s|ed|ing|ure)?\b"
+           r"|\bterminated\s+(?:the\s+)?(?:his\s+|her\s+)?employment)")
+
+# Le texte d'une phrase qui annonce un départ ou une opération, là où la même
+# formulation apparaît aussi dans un autre contexte :
+#   - rémunération : « if the Chief Executive Officer retires, his options
+#     vest », « upon his resignation for good reason » -- une clause, pas un
+#     départ ;
+#   - dette : « cash tender offers for its senior notes » -- un rachat
+#     d'obligations, pas une offre sur les actions.
+_CLAUSE_DE_REMUNERATION = re.compile(
+    r"\bin\s+the\s+event\b|\bupon\s+(?:his|her|a|the|such)\s+\w*\s*(?:resignation|retirement|termination|departure)"
+    r"|\bif\s+(?:he|she|the\s+executive|mr\.|ms\.)|\beligib|\bvest|\bseverance\b|\bgood\s+reason\b"
+    r"|\bwithout\s+cause\b|\bchange\s+(?:in|of)\s+control\b",
+    re.IGNORECASE)
+_OPERATION_SUR_LA_DETTE = re.compile(
+    r"\bnotes?\b|debt\s+securities|debentures?|\bbonds?\b|consent\s+solicitation|principal\s+amount",
+    re.IGNORECASE)
+
+# Formulations cherchées dans le CORPS du document, phrase par phrase, avec la
+# phrase à écarter le cas échéant. L'ordre compte : la première catégorie dont
+# un motif est trouvé l'emporte, du plus spécifique au plus général ; les
+# catégories sans alerte ne passent qu'après les codes d'item (voir
+# classify_8k_par_regles).
 _MOTIFS_PAR_CATEGORIE = (
     ("fusion_acquisition", (
         r"merger agreement", r"agreement and plan of merger", r"business combination",
         r"definitive agreement to (?:acquire|purchase)", r"tender offer",
         r"agreed to (?:acquire|be acquired)", r"asset purchase agreement",
-    )),
+    ), _OPERATION_SUR_LA_DETTE),
     ("procedure_judiciaire", (
-        r"chapter 11", r"chapter 7", r"bankruptcy", r"receivership",
-        r"class action", r"securities litigation", r"sec investigation",
+        # La faillite de l'entreprise elle-même, pas le mot « bankruptcy » :
+        # celui-ci peuplait surtout les clauses de défaut des contrats de dette.
+        r"chapter 11", r"chapter 7\b", r"voluntary petitions?", r"petitions? for (?:relief|reorganization)",
+        r"(?:file[sd]?|filing) for (?:bankruptcy|chapter)", r"receivership",
+        r"class action", r"securities litigation(?!\s+reform)", r"sec investigation",
         r"department of justice", r"subpoena", r"consent decree",
         r"settlement agreement", r"civil penalty",
-    )),
+    ), None),
     ("changement_guidance", (
+        # Inchangés : même une guidance « mise à jour » (53 8-K, sens inconnu)
+        # était suivie de réactions fortes -- 30 % au-delà de 5 % -- et d'une
+        # dérive moyenne de -3,2 % à 60 séances.
         r"(?:revis|updat|lower|rais|reduc|increas)\w*\s+(?:its\s+)?(?:full[- ]year\s+)?(?:financial\s+)?(?:guidance|outlook)",
         r"withdraw\w*\s+(?:its\s+)?(?:guidance|outlook)",
         r"no longer expects", r"now expects", r"suspend\w*\s+(?:its\s+)?guidance",
-    )),
-    ("rachat_actions", (
-        r"share repurchase (?:program|authorization)", r"stock repurchase (?:program|authorization)",
-        r"repurchase up to", r"authorized the repurchase", r"buyback program",
-    )),
+    ), None),
     ("depart_dirigeant", (
-        # Restreint aux dirigeants exécutifs ET à un départ : une élection
-        # d'administrateur au conseil ne change pas une thèse de valorisation.
-        r"(?:chief executive officer|chief financial officer|president|chairman)[^.]{0,120}?"
-        r"(?:resign|step(?:ped|ping)? down|depart|terminat|will leave|retire)",
-        r"(?:resign|step(?:ped|ping)? down|depart|terminat)\w*[^.]{0,120}?"
-        r"(?:chief executive officer|chief financial officer)",
-    )),
+        rf"{_DIRIGEANT}[^.]{{0,150}}?{_DEPART}",
+        rf"{_DEPART}[^.]{{0,150}}?{_DIRIGEANT}",
+    ), _CLAUSE_DE_REMUNERATION),
     ("autre_materiel", (
         r"impairment charge", r"goodwill impairment", r"restructuring (?:plan|charge|program)",
         r"non[- ]reliance", r"should no longer be relied upon", r"material weakness",
         r"restate\w*\s+(?:its\s+)?(?:financial statements|prior)",
         r"delisting", r"notice of noncompliance", r"going concern",
         r"dismissed\s+\w+\s+as (?:its\s+)?independent registered public accounting firm",
-    )),
+    ), None),
+    ("rachat_actions", (
+        r"share repurchase (?:program|authorization)", r"stock repurchase (?:program|authorization)",
+        r"repurchase up to", r"authorized the repurchase", r"buyback program",
+    ), _OPERATION_SUR_LA_DETTE),
 )
 
+# Une expression par catégorie (l'alternative de ses motifs) : une recherche
+# par phrase et par catégorie, au lieu d'une par motif.
 _MOTIFS_COMPILES = tuple(
-    (categorie, tuple(re.compile(motif, re.IGNORECASE) for motif in motifs))
-    for categorie, motifs in _MOTIFS_PAR_CATEGORIE
+    (categorie, re.compile("|".join(f"(?:{motif})" for motif in motifs), re.IGNORECASE), exclusion)
+    for categorie, motifs, exclusion in _MOTIFS_PAR_CATEGORIE
 )
-
-# Une phrase du document, reprise telle quelle comme résumé. Vaut mieux qu'un
-# résumé fabriqué : c'est vérifiable contre la source.
-_PHRASE = re.compile(r"[^.\n]{40,400}\.")
 
 
 def _numero_item(code: str) -> str:
@@ -312,54 +404,67 @@ def _numero_item(code: str) -> str:
     return trouve.group(1) if trouve else ""
 
 
+def phrases_a_lire(texte: str) -> List[str]:
+    """Le document en phrases, sans les phrases de formulaire
+    (_PHRASE_DE_FORMULAIRE) ni le titre de l'Item 5.02."""
+    phrases = _FIN_DE_PHRASE.split(" ".join((texte or "").split()))
+    return [_TITRE_ITEM_502.sub(" ", p) for p in phrases if p and not _PHRASE_DE_FORMULAIRE.search(p)]
+
+
+def _preuve(phrases: List[str], motif: "re.Pattern", exclusion) -> Optional[str]:
+    """La première phrase du document qui porte un motif de la catégorie sans
+    tomber sous son exclusion."""
+    for phrase in phrases:
+        if motif.search(phrase) and not (exclusion is not None and exclusion.search(phrase)):
+            return phrase
+    return None
+
+
 def classify_8k_par_regles(item_codes: List[str], text: str) -> dict:
     """Catégorie, matérialité et résumé déduits du DOCUMENT, sans modèle.
 
-    Voir le pavé ci-dessus pour le raisonnement. Rend les mêmes clés que la
+    Voir les pavés ci-dessus pour le raisonnement. Rend les mêmes clés que la
     voie modèle, plus `classification_source` -- sans quoi on ne saurait plus,
-    en relisant le parquet, lequel des deux chemins a produit une ligne."""
+    en relisant le parquet, lequel des deux chemins a produit une ligne -- et
+    `version_regles`. Le résumé est la phrase même qui a décidé : vérifiable
+    contre la source."""
     numeros = {_numero_item(c) for c in item_codes}
-    corps = text or ""
+    phrases = phrases_a_lire(text)
 
-    categorie = None
-    preuve = None
-    for candidate, motifs in _MOTIFS_COMPILES:
-        for motif in motifs:
-            trouve = motif.search(corps)
-            if trouve:
-                categorie, preuve = candidate, trouve
-                break
-        if categorie:
-            break
+    def chercher(sans_alerte: bool):
+        for candidate, motif, exclusion in _MOTIFS_COMPILES:
+            if (candidate in _SANS_ALERTE) != sans_alerte:
+                continue
+            preuve = _preuve(phrases, motif, exclusion)
+            if preuve:
+                return candidate, preuve
+        return None, None
 
-    # Le texte n'a rien dit : les codes non ambigus tranchent seuls.
+    # Une catégorie qui donne l'alerte d'abord, puis les codes matériels par
+    # définition, et seulement ensuite une catégorie sans alerte : un rachat
+    # d'actions annoncé avec une dépréciation ne doit pas la masquer.
+    categorie, preuve = chercher(sans_alerte=False)
     if categorie is None:
         for numero in sorted(numeros):
             if numero in _ITEMS_MATERIELS:
                 categorie = _ITEMS_MATERIELS[numero]
                 break
+    if categorie is None:
+        categorie, preuve = chercher(sans_alerte=True)
 
     # Un motif trouvé dans un document qui ne déclare QUE des codes
-    # administratifs (9.01 pièces jointes, 5.07 vote en assemblée) est très
-    # probablement une mention de passage, pas l'objet du dépôt.
+    # administratifs (9.01 pièces jointes, 5.07 vote en assemblée, 2.03 dette)
+    # est très probablement une mention de passage, pas l'objet du dépôt.
     if categorie and not (numeros & (set(_ITEMS_MATERIELS) | _ITEMS_AMBIGUS)):
         categorie = None
 
+    base = {"item_codes": item_codes, "classification_source": SOURCE_REGLES,
+            "version_regles": VERSION_REGLES}
     if categorie is None:
-        return {
-            "item_codes": item_codes, "category": "non_materiel", "materiality": False,
-            "summary": None, "classification_source": SOURCE_REGLES,
-        }
-
-    resume = None
-    if preuve is not None:
-        fenetre = corps[max(0, preuve.start() - 200): preuve.end() + 200]
-        phrase = _PHRASE.search(fenetre)
-        resume = " ".join(phrase.group(0).split())[:300] if phrase else None
-
+        return {**base, "category": "non_materiel", "materiality": False, "summary": None}
     return {
-        "item_codes": item_codes, "category": categorie, "materiality": True,
-        "summary": resume, "classification_source": SOURCE_REGLES,
+        **base, "category": categorie, "materiality": categorie not in _SANS_ALERTE,
+        "summary": " ".join(preuve.split())[:300] if preuve else None,
     }
 
 
@@ -393,17 +498,21 @@ def passe_au_modele(item_codes: List[str]) -> bool:
 _SIGNATURES = re.compile(r"\bSIGNATURES?\b")
 
 
-def texte_pour_le_modele(text: str) -> str:
+def texte_pour_le_modele(text: str, piece_jointe: Optional[str] = None) -> str:
     """Ce que Gemini lit d'un 8-K : du premier Item aux signatures, espaces
     resserrés, au plus MAX_CARACTERES_MODELE caractères. La page de garde
     (cases à cocher, adresse, titres cotés) et les signatures sont du
-    formulaire, identique d'un dépôt à l'autre : des jetons payés pour rien."""
+    formulaire, identique d'un dépôt à l'autre : des jetons payés pour rien.
+    Suivi, s'il y en a un, du début du communiqué joint (Exhibit 99), au plus
+    MAX_CARACTERES_PIECE_JOINTE caractères."""
     debut = ITEM_CODE_PATTERN.search(text)
     corps = text[debut.start():] if debut else text
     fin = _SIGNATURES.search(corps)
     if fin and fin.start() > 0:
         corps = corps[:fin.start()]
-    return " ".join(corps.split())[:MAX_CARACTERES_MODELE]
+    texte = " ".join(corps.split())[:MAX_CARACTERES_MODELE]
+    communique = " ".join((piece_jointe or "").split())[:MAX_CARACTERES_PIECE_JOINTE]
+    return f"{texte}\n[Communiqué joint (Exhibit 99)]\n{communique}" if communique else texte
 
 
 @dataclass
@@ -469,6 +578,7 @@ def classer_en_attente(
                 **attente.ligne,
                 "category": verdict["category"], "materiality": verdict["materiality"],
                 "summary": verdict["summary"], "classification_source": SOURCE_GEMINI,
+                "version_regles": None,
                 "modele": sft.dernier_modele_utilise(),
                 "fetch_timestamp": datetime.now().isoformat(timespec="seconds"), "from_cache": False,
             }
@@ -541,6 +651,14 @@ def is_cacheable(classification: dict) -> bool:
     return classification.get("category") not in NON_CACHEABLE_CATEGORIES
 
 
+def regles_perimees(entree: dict) -> bool:
+    """Verdict par règles rendu par une autre version qu'aujourd'hui (voir
+    VERSION_REGLES) : la mémoire ne doit plus le servir. Un 8-K est figé, mais
+    la règle qui l'a lu ne l'est pas."""
+    return (entree.get("classification_source") == SOURCE_REGLES
+            and entree.get("version_regles") != VERSION_REGLES)
+
+
 def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
     """Ce que la mémoire doit garder de chaque 8-K : son dernier verdict du
     MODÈLE, plus son dernier verdict PAR RÈGLES s'il est plus récent.
@@ -591,8 +709,10 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
     ignorees = illisibles + len(lignes) - len(entrees)
     reconnues = [e for e in entrees if e.get("classification_source") in SOURCES_RECONNUES]
     ecartees = len(entrees) - len(reconnues)
-    conservees = entrees_a_conserver(reconnues)
-    doublons = len(reconnues) - len(conservees)
+    a_jour = [e for e in reconnues if not regles_perimees(e)]
+    perimees = len(reconnues) - len(a_jour)
+    conservees = entrees_a_conserver(a_jour)
+    doublons = len(a_jour) - len(conservees)
     if ignorees:
         logger.warning("%d ligne(s) illisible(s) ignorée(s) dans %s.", ignorees, path)
     if ecartees:
@@ -600,11 +720,17 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
             "%d verdict(s) d'avant Gemini (Mistral) écarté(s) de %s : ces 8-K sont reclassés comme "
             "des neufs -- par Gemini les récents quand une clé est disponible, par règles sinon.",
             ecartees, path)
-    if doublons or ignorees or ecartees:
+    if perimees:
+        logger.info(
+            "%d verdict(s) rendu(s) par une version antérieure des règles écarté(s) de %s : ces 8-K "
+            "sont retéléchargés et reclassés par les règles v%d (voir VERSION_REGLES). Les verdicts "
+            "de Gemini sont gardés.", perimees, path, VERSION_REGLES)
+    if doublons or ignorees or ecartees or perimees:
         reprise_jsonl.reecrire(path, conservees)
         logger.info(
-            "Mémoire des classifications nettoyée : %d doublon(s), %d ligne(s) illisible(s) et "
-            "%d verdict(s) d'avant Gemini retirés de %s.", doublons, ignorees, ecartees, path)
+            "Mémoire des classifications nettoyée : %d doublon(s), %d ligne(s) illisible(s), "
+            "%d verdict(s) d'avant Gemini et %d verdict(s) par règles périmé(s) retirés de %s.",
+            doublons, ignorees, ecartees, perimees, path)
 
     llm_disponible = sft.llm_disponible()
     cache: Dict[str, dict] = {}
@@ -660,6 +786,7 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
         # lequel des deux chemins l'a produite, et le parquet deviendrait
         # ininterprétable dès qu'un run mélange les deux.
         "classification_source": entry.get("classification_source"),
+        "version_regles": entry.get("version_regles"),
         "modele": entry.get("modele"),
         "fetch_timestamp": entry.get("fetch_timestamp"),
         "from_cache": True,
@@ -742,7 +869,12 @@ def process_ticker_8k(
             # suivant (voir load_llm_cache).
             if (en_attente is not None and llm_pour(filing["filing_date"], limite_llm)
                     and passe_au_modele(item_codes)):
-                en_attente.append(EnAttente(ligne=row, texte=texte_pour_le_modele(text)))
+                # Le communiqué joint, pour Gemini seulement : les règles
+                # restent sur le 8-K, où leurs motifs ont été mesurés -- un
+                # communiqué de résultats cite dépréciations et restructurations
+                # à chaque trimestre, dans ses tableaux.
+                communique = sft.texte_piece_jointe(cik, filing["accession_number"], MAX_CARACTERES_PIECE_JOINTE)
+                en_attente.append(EnAttente(ligne=row, texte=texte_pour_le_modele(text, communique)))
     return rows, cache_hits
 
 
