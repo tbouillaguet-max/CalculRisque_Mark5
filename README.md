@@ -830,6 +830,14 @@ Regulation FD lui sont donc confiés. Les règles restent sur le 8-K seul : un
 communiqué de résultats cite dépréciations et restructurations à chaque
 trimestre, dans ses tableaux.
 
+Les 8-K que Gemini avait déjà classés avant cette version l'ont été sans leur
+communiqué, et la mémoire les sert tels quels : le quota de requêtes est
+compté. `04c --force-evaluation` les lui rend — retéléchargés, et relus avec
+le communiqué. Chaque verdict de Gemini porte `version_lecture` : un 8-K relu
+ne l'est pas deux fois, et relancer l'option après un quota épuisé reprend là
+où elle s'est arrêtée. Pour tout refaire, anciens 8-K compris :
+`--no-llm-cache`.
+
 **Quand le modèle ne répond pas.** Un 503 (`The model is overloaded`) ou une
 coupure réseau est un incident chez Google, pas dans le code : l'appel est
 réessayé jusqu'à six fois, et le journal le signale en INFO avec le message de

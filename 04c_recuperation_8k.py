@@ -82,6 +82,8 @@ Usage :
     python 04c_recuperation_8k.py --ticker AAPL
     python 04c_recuperation_8k.py --no-llm-cache
     python 04c_recuperation_8k.py --vider-memoire     # tout reclasser, 8-K retéléchargés
+    python 04c_recuperation_8k.py --force-evaluation  # Gemini relit, avec leur communiqué joint,
+                                                      # les 8-K récents qu'il a lus sans lui
     python 04c_recuperation_8k.py --par-requete 5
 """
 
@@ -171,6 +173,14 @@ MAX_CARACTERES_MODELE = 6_000
 # Et de son communiqué joint : le titre, les faits marquants et, le plus
 # souvent, les prévisions viennent en tête ; les tableaux financiers suivent.
 MAX_CARACTERES_PIECE_JOINTE = 6_000
+
+# Ce que Gemini LIT d'un 8-K, écrit dans chacun de ses verdicts :
+#   1 (verdicts sans ce champ) : le 8-K seul ;
+#   2 : le 8-K et le début de son communiqué joint (Exhibit 99).
+# Un verdict lu dans une version antérieure reste servi par la mémoire -- le
+# quota de requêtes est compté -- sauf avec --force-evaluation, qui le rend à
+# Gemini (voir load_llm_cache).
+VERSION_LECTURE_MODELE = 2
 
 # Budget de RÉPONSE par 8-K : une catégorie, un booléen, une phrase.
 JETONS_PAR_VERDICT = 120
@@ -578,7 +588,7 @@ def classer_en_attente(
                 **attente.ligne,
                 "category": verdict["category"], "materiality": verdict["materiality"],
                 "summary": verdict["summary"], "classification_source": SOURCE_GEMINI,
-                "version_regles": None,
+                "version_regles": None, "version_lecture": VERSION_LECTURE_MODELE,
                 "modele": sft.dernier_modele_utilise(),
                 "fetch_timestamp": datetime.now().isoformat(timespec="seconds"), "from_cache": False,
             }
@@ -659,6 +669,13 @@ def regles_perimees(entree: dict) -> bool:
             and entree.get("version_regles") != VERSION_REGLES)
 
 
+def lecture_perimee(entree: dict) -> bool:
+    """Verdict de Gemini rendu sur une lecture antérieure du 8-K (voir
+    VERSION_LECTURE_MODELE) -- sans son communiqué joint."""
+    return (entree.get("classification_source") == SOURCE_GEMINI
+            and entree.get("version_lecture") != VERSION_LECTURE_MODELE)
+
+
 def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
     """Ce que la mémoire doit garder de chaque 8-K : son dernier verdict du
     MODÈLE, plus son dernier verdict PAR RÈGLES s'il est plus récent.
@@ -681,7 +698,8 @@ def entrees_a_conserver(entrees: List[dict]) -> List[dict]:
     return [entree for i, entree in enumerate(entrees) if i in garder]
 
 
-def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[str, dict]:
+def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None,
+                   forcer_modele: bool = False) -> Dict[str, dict]:
     """Cache des classifications déjà obtenues, indexé par symbole:accession.
 
     Tolérant aux lignes corrompues (un run tué en plein write laisse une ligne
@@ -699,7 +717,13 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
     Les verdicts rendus PAR RÈGLES (`classification_source == "regles_document"`)
     sont ignorés dès qu'une clé d'API est disponible : ils ont été produits
     faute de mieux, et les garder empêcherait le modèle de reprendre la main
-    le jour où la clé arrive -- un repli qui se transformerait en plafond."""
+    le jour où la clé arrive -- un repli qui se transformerait en plafond.
+
+    `forcer_modele` (--force-evaluation) ignore EN PLUS les verdicts de Gemini
+    rendus sur une lecture antérieure (lecture_perimee : sans le communiqué
+    joint) des 8-K qu'il lirait aujourd'hui : ils sont retéléchargés et relus.
+    Un 8-K relu porte la version courante et ne l'est pas deux fois -- relancer
+    l'option après un quota épuisé reprend là où elle s'est arrêtée."""
     migrer_ancien_cache(output_dir)
     path = llm_cache_path(output_dir)
     if not path.exists():
@@ -735,28 +759,35 @@ def load_llm_cache(output_dir: Path, limite_llm: Optional[str] = None) -> Dict[s
     llm_disponible = sft.llm_disponible()
     cache: Dict[str, dict] = {}
     par_regles = set()
+    a_relire = set()
     for entree in conservees:
         cle = cache_key(entree["symbol"], entree["accession_number"])
-        if (llm_disponible and entree.get("classification_source") == SOURCE_REGLES
-                and llm_pour(entree.get("filed_date"), limite_llm)
-                and passe_au_modele(entree.get("item_codes") or [])):
-            # Seul un 8-K RÉCENT, et que Gemini lirait (voir passe_au_modele),
-            # repart au modèle : un ancien, ou un 8-K dont les Items décident
-            # seuls, classé par règles, reste servi par le cache (cf.
-            # config.LLM_8K_FENETRE_JOURS).
+        # Seul un 8-K RÉCENT, et que Gemini lirait (voir passe_au_modele),
+        # repart au modèle : un ancien, ou un 8-K dont les Items décident
+        # seuls, reste servi par le cache (cf. config.LLM_8K_FENETRE_JOURS).
+        pour_le_modele = (llm_disponible and llm_pour(entree.get("filed_date"), limite_llm)
+                          and passe_au_modele(entree.get("item_codes") or []))
+        if pour_le_modele and entree.get("classification_source") == SOURCE_REGLES:
             par_regles.add(cle)
+            continue
+        if pour_le_modele and forcer_modele and lecture_perimee(entree):
+            a_relire.add(cle)
             continue
         # Dernière écriture gagnante : une ré-analyse (--no-llm-cache)
         # remplace l'ancien verdict.
         cache[cle] = entree
     # Remis en jeu : les 8-K qui n'ont QU'UN verdict par règles. Ceux qui ont
     # aussi un verdict du modèle le gardent, et ne repartent pas au modèle.
-    remis_en_jeu = len(par_regles - set(cache))
+    remis_en_jeu = len(par_regles - set(cache) - a_relire)
     if remis_en_jeu:
         logger.info(
             "%d 8-K classés par règles remis en jeu : %s est disponible, "
             "le modèle reprend la main dessus.", remis_en_jeu, sft.description_llm(),
         )
+    if a_relire:
+        logger.info(
+            "--force-evaluation : %d 8-K récents lus par Gemini sans leur communiqué joint lui sont "
+            "rendus -- retéléchargés, et relus avec le communiqué.", len(a_relire))
     logger.info("Mémoire des classifications : %d 8-K déjà analysés dans %s.", len(cache), path)
     return cache
 
@@ -787,6 +818,7 @@ def row_from_cache(entry: dict, symbol: str, cik: str, filing: dict) -> dict:
         # ininterprétable dès qu'un run mélange les deux.
         "classification_source": entry.get("classification_source"),
         "version_regles": entry.get("version_regles"),
+        "version_lecture": entry.get("version_lecture"),
         "modele": entry.get("modele"),
         "fetch_timestamp": entry.get("fetch_timestamp"),
         "from_cache": True,
@@ -958,6 +990,13 @@ def main() -> None:
              "SEC et reclassé (règles, puis Gemini pour les récents à lire).",
     )
     parser.add_argument(
+        "--force-evaluation", action="store_true",
+        help="Rend à Gemini les 8-K récents qu'il a déjà classés sans leur communiqué joint "
+             "(Exhibit 99) : ils sont retéléchargés et relus avec lui. Un 8-K relu ne l'est pas "
+             "deux fois : relancer l'option après un quota épuisé reprend là où elle s'est "
+             "arrêtée. Tout refaire, 8-K anciens compris : --no-llm-cache.",
+    )
+    parser.add_argument(
         "--max-failure-ratio", type=float, default=DEFAULT_MAX_FAILURE_RATIO,
         help="Part maximale d'entreprises en échec RÉSEAU tolérée avant d'abandonner le run "
              "sans rien écrire (défaut: %(default)s). Un material_events_8k.parquet incomplet "
@@ -1037,13 +1076,17 @@ def main() -> None:
                 chemin.unlink()
                 logger.info("--vider-memoire : %s effacé, chaque 8-K sera retéléchargé et reclassé.", chemin)
 
+    if args.force_evaluation and not sft.llm_disponible():
+        logger.warning("--force-evaluation sans clé Gemini (%s) : il n'y a pas de modèle à qui "
+                       "rendre les 8-K, l'option est sans effet.", sft.GEMINI_API_KEY_ENV)
+
     llm_cache: Optional[Dict[str, dict]] = None
     if args.no_llm_cache:
         logger.warning(
             "--no-llm-cache : les 8-K déjà classifiés seront re-téléchargés et re-soumis à Gemini."
         )
     else:
-        llm_cache = load_llm_cache(args.output_dir, limite_llm)
+        llm_cache = load_llm_cache(args.output_dir, limite_llm, forcer_modele=args.force_evaluation)
 
     today = datetime.now()
     to_process = []

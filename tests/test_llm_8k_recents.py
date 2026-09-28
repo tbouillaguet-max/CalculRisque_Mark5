@@ -106,5 +106,5 @@ def test_l_option_du_script_vaut_la_fenetre_de_config():
     import re
     texte = pathlib.Path(_04c.__file__).read_text(encoding="utf-8")
     assert re.search(r'"--llm-depuis-jours", type=int, default=config\.LLM_8K_FENETRE_JOURS', texte)
-    assert "load_llm_cache(args.output_dir, limite_llm)" in texte
+    assert "load_llm_cache(args.output_dir, limite_llm" in texte
     assert "process_ticker_8k(symbol, cik, windows, llm_cache, args.output_dir, limite_llm," in texte
