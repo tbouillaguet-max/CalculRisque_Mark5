@@ -22,7 +22,7 @@ LIMIT_ARG := $(if $(LIMIT),--limit $(LIMIT),)
 .DEFAULT_GOAL := help
 .PHONY: help daily daily-fast quarterly replay backtest backtest-actions audit \
         compare report test install universe bootstrap slippage merite lfs lfs-apply \
-        backtest-distant optimize-actions paper paper-transmettre paper-hors-ligne llm
+        backtest-distant optimize-actions classifier paper paper-transmettre paper-hors-ligne llm
 
 help:
 	@echo "CalculRisque -- raccourcis disponibles"
@@ -44,6 +44,7 @@ help:
 	@echo "    make backtest-actions   Backtest de la strategie actions (DCF)"
 	@echo "    make optimize-actions   Grid-search des reglages actions (108 combinaisons, ~12 min)"
 	@echo "    make audit         Relit le dernier run de backtest sans le relancer"
+	@echo "    make classifier    Points communs des theses perdantes et gagnantes (dernier run)"
 	@echo "    make compare       Compare les strategies options entre elles"
 	@echo "    make slippage      Mesure le slippage reel sur les snapshots archives"
 	@echo "    make backtest-distant   Rapatrie un backtest lance sur GitHub Actions"
@@ -133,6 +134,12 @@ optimize-actions:
 # signaux, theses reelles derriere le win-rate, sous-periodes glissantes.
 audit:
 	$(PYTHON) 14_audit_backtest.py
+
+# Qu'ont en commun les theses perdantes, et les gagnantes ? Classification
+# sur le dernier run actions (~1 min), sans le relancer. Un run precis :
+#   python 18_classification_trades.py --run-id <run>
+classifier:
+	$(PYTHON) 18_classification_trades.py
 
 compare:
 	$(PYTHON) compare_options_strategies.py

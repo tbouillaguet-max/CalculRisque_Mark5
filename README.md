@@ -1022,6 +1022,99 @@ python 14_audit_backtest.py --run-id 20260816_000429
 5. **Sensibilité aux coûts** : ce que devient le résultat si l'exécution réelle
    coûte 20, 30 ou 50 bps par aller simple au lieu des 10 bps supposés.
 
+### Points communs des thèses perdantes et gagnantes : `18_classification_trades.py`
+
+```bash
+make classifier                                           # dernier run actions
+python 18_classification_trades.py --run-id <run>
+python 18_classification_trades.py --run-dir data/backtest_options/<run>   # run options
+python 18_classification_trades.py --label extremes --extremes-pct 25
+```
+
+Le script relit un run sans le relancer, comme `14_audit_backtest.py`. Il
+cherche par apprentissage automatique ce qui distingue les thèses perdantes des
+gagnantes. La méthode, en quatre règles :
+
+- **Une ligne par thèse** (symbole, date d'entrée). Ce n'est pas une ligne par
+  vente : les allègements de rebalancement feraient apprendre « les lignes
+  qu'on allège », pas « les paris qui perdent » (défaut A3 ci-dessous). Les
+  thèses encore ouvertes en fin de run sont écartées, car leur issue est
+  inconnue.
+- **Gagnante = alpha > 0.** L'alpha est le rendement de la thèse moins celui
+  de SPY sur les dates de chacune de ses ventes. Avec le P&L brut, les
+  perdantes seraient d'abord les thèses ouvertes avant un krach, et le modèle
+  apprendrait des dates. Les variantes sont `--label pnl` et
+  `--label extremes` (les meilleures contre les pires, sans le milieu).
+- **Seules les variables connues à la clôture de la veille de l'entrée**
+  entrent dans le modèle. Il y en a 56, en sept familles :
+  - le signal : écart au dépôt et à la décision, source, nombre de pairs,
+    désaccord entre DCF et multiples, dispersion des trois multiples, âge ;
+  - les fondamentaux : croissance, marges, levier, taille, multiples ;
+  - les prix : momentum, distance au plus haut et au plus bas sur un an,
+    volatilité, bêta, liquidité ;
+  - le marché ;
+  - les 8-K par code d'item ;
+  - l'ancienneté dans l'indice ;
+  - le portefeuille.
+
+  Ce qui se passe pendant la détention (préfixe `pendant_`) est décrit à part,
+  jamais appris : ce serait montrer la réponse au modèle.
+- **La validation est temporelle**, avec la coupure de `16` (2022-01-01). Les
+  thèses à cheval sur la coupure sont écartées, et un réapprentissage a lieu
+  chaque année. Les intervalles de confiance sont tirés par mois d'entrée,
+  car les thèses d'un même mois ne sont pas indépendantes. Une variable n'est
+  dite **stable** que si elle reste significative après la correction de
+  Benjamini-Hochberg sur l'apprentissage, **puis** si elle est confirmée au
+  test dans le même sens.
+
+Les tables sont écrites dans `<run>/classification/` : `univarie.csv`,
+`quintiles.csv`, `regles.csv`, `importance.csv`, `walk_forward.csv`,
+`lecture_economique.csv` et `theses.parquet`.
+
+**Résultat sur `valuation_gap_combined_ancre`.** Le run est en configuration
+de production, sur le signal `tiers` : 2 649 thèses, dont 1 272 en
+apprentissage et 1 297 en test.
+
+| | AUC test | IC 95 % |
+|---|---|---|
+| Gradient boosting, 56 variables | 0,510 | [0,468 ; 0,550] |
+| Écart de valorisation seul | 0,541 | [0,509 ; 0,572] |
+| Régression logistique, 56 variables | 0,563 | [0,519 ; 0,601] |
+
+Le réapprentissage annuel donne une AUC de 0,501 sur 2 217 thèses.
+
+Ce que ça dit :
+
+- **Les perdantes ne se reconnaissent presque pas à l'entrée.** Le modèle
+  flexible ne bat pas le hasard hors échantillon, et ne bat pas l'écart seul.
+  La logistique fait un peu mieux. Ce qu'il y a à trouver est donc faible et
+  plutôt linéaire.
+- **Une seule variable est stable : la taille.** Les plus petites
+  capitalisations de l'indice gagnent 57 % du temps (alpha moyen +3,7 %) à
+  l'apprentissage, et 53 % (+2,7 %) au test. Les plus grandes gagnent 41 %
+  puis 37 % du temps.
+- **Les secteurs Immobilier et Agro-alimentaire perdent sur les deux
+  périodes** : 28 à 37 % de gagnantes, alpha de −4 à −9 %. C'est descriptif,
+  pas testé comme règle.
+- **La thèse médiane perd contre SPY** (43 % de gagnantes), alors que le
+  portefeuille bat SPY. L'alpha vient de la queue droite : 58 % des gagnantes
+  sortent en prise de gain, et 71 % des perdantes au stop ou au stop suiveur.
+  La différence se joue après l'entrée, pas à l'entrée.
+
+Une règle de profil dont aucune thèse du test ne relève (`n_test = 0`) porte
+sur une variable qui dérive avec le temps, comme le nombre de lignes du
+portefeuille. Elle décrit une époque, pas un titre.
+
+Sur un run options (`valuation_gap_multiples_options`), 15 variables sont
+stables, dont l'écart et la volatilité. Le rendement d'une prime comparé à SPY
+se lit cependant moins bien qu'un rendement d'action : sur les options,
+`--label pnl` est souvent plus parlant.
+
+**Ce que ce script ne fait pas.** Il ne filtre aucune entrée. Un effet stable
+ici reste à brancher comme filtre, puis à mesurer par l'A/B apparié du
+backtest. Un écart d'alpha par thèse ne dit rien du cash redistribué ni de la
+rotation.
+
 ### Correctifs de l'audit du moteur actions
 
 L'audit du run `20260816_000429` (19,00 % de CAGR, +5,49 % d'alpha, **17,9 %
