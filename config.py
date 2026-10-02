@@ -113,6 +113,12 @@ QUALITATIVE_VALIDATION_FILE = DIR_DCF / "validation_qualitative.parquet"
 # module LLM point-in-time que 07b (sec_filings_text.py).
 MATERIAL_EVENTS_8K_FILE = DIR_FINANCIALS / "material_events_8k.parquet"
 
+# Sortie de 04d_extraction_8k.py : les FAITS CHIFFRÉS extraits par Gemini des
+# 8-K des signaux actifs (résultats, guidance, émissions, M&A...), chacun avec
+# la citation qui le justifie, vérifiée dans le texte. recalcul_8k.py s'en sert
+# pour recalculer DCF et multiples (voir AJUSTEMENT_8K_MODE).
+EXTRACTIONS_8K_FILE = DIR_FINANCIALS / "extractions_8k.parquet"
+
 # ----------------------------------------------------------------------------
 # Backtest (voir 01b/03b/09 et le package backtest/)
 # ----------------------------------------------------------------------------
@@ -884,6 +890,67 @@ AMBIGUOUS_8K_ITEM_CODES = (
 # dérive à 60 séances de +0,8 % : bloquer l'entreprise ensuite, c'est rater la
 # hausse que la stratégie cherche. La catégorie reste écrite, pour mémoire.
 CATEGORIES_8K_SANS_ALERTE = ("rachat_actions",)
+
+# ----------------------------------------------------------------------------
+# Recalcul de la valorisation à partir des 8-K (04d_extraction_8k.py,
+# recalcul_8k.py)
+# ----------------------------------------------------------------------------
+# Ce que devient un signal quand un 8-K CHIFFRABLE est déposé après lui :
+#   "veto"      comportement historique : tout 8-K matériel périme le signal,
+#               rien n'est recalculé. Point de comparaison du backtest.
+#   "garder"    le signal est RECALCULÉ avec les chiffres du 8-K, mais une
+#               bonne nouvelle ne peut que le maintenir : la valeur théorique
+#               ne s'éloigne jamais du cours dans le sens de la thèse au-delà de
+#               ce qu'elle était avant le 8-K. Une mauvaise nouvelle, elle,
+#               réduit ou retourne l'écart.
+#   "renforcer" le signal est recalculé et l'écart suit les chiffres dans les
+#               deux sens : une bonne nouvelle peut RENFORCER la position.
+# Un 8-K matériel NON chiffrable garde le veto dans les trois modes.
+# "veto" par défaut : rien ne change tant que le backtest n'a pas tranché
+# (--ajustement-8k sur 09, 10 et 17).
+AJUSTEMENT_8K_MODES = ("veto", "garder", "renforcer")
+AJUSTEMENT_8K_MODE = "veto"
+
+# Faut-il croire les chiffres PROSPECTIFS de la direction (guidance,
+# économies visées, nouveaux contrats) ?
+#   "sectoriel" non : la croissance reste celle du secteur (SECTOR_DCF_PARAMS),
+#               seuls les faits RÉALISÉS (résultats publiés, émissions,
+#               acquisitions finalisées, charges payées) sont pris en compte.
+#   "guidance"  oui : la guidance remplace la croissance de l'année 1 du DCF,
+#               qui revient ensuite linéairement vers le taux sectoriel en fin
+#               de période de prévision ; économies et contrats s'ajoutent aux
+#               fondamentaux. Le tout pondéré par PROJECTIONS_8K_PRUDENCE.
+# Le levier est puissant -- un écart de 8 points de croissance en année 1
+# déplace un DCF d'environ 20 %, parce que le niveau atteint est prolongé dans
+# la valeur terminale --, d'où le mode prudent par défaut.
+PROJECTIONS_8K_MODES = ("sectoriel", "guidance")
+PROJECTIONS_8K_MODE = "sectoriel"
+# Part de l'écart entre la projection de la direction et le repère sectoriel
+# qui est retenue : 0 = la direction est ignorée, 1 = elle est crue sur parole.
+# 0,5 : une guidance à +15 % pour un secteur à +7 % donne +11 %.
+PROJECTIONS_8K_PRUDENCE = 0.5
+# Bornes de la croissance déduite d'une guidance : au-delà, c'est plus
+# probablement une erreur d'unité ou de période qu'une prévision.
+CROISSANCE_GUIDANCE_BORNES = (-0.5, 0.5)
+
+# Prime de risque ajoutée au WACC pour un risque révélé mais NON chiffrable
+# (départ soudain du CFO, avenant de covenant, désaccord avec l'auditeur...).
+# Gemini ne choisit qu'une catégorie ; le montant est décidé ICI. La même prime
+# réduit les multiples, dans le rapport où elle réduit le DCF.
+PRIME_RISQUE_8K_BPS = {"aucune": 0, "faible": 25, "moyenne": 75, "forte": 150}
+
+# Items d'un 8-K dont 04d extrait des chiffres. Absents à dessein : 4.02, 1.03,
+# 3.01 et 2.04 mettent en cause la survie ou la fiabilité des comptes -- on ne
+# recalcule pas avec des chiffres qu'on ne peut plus croire, le veto reste ;
+# 9.01, 5.07, 5.03 sont administratifs.
+ITEMS_EXTRACTION_8K = ("1.01", "1.02", "2.01", "2.02", "2.03", "2.05", "2.06",
+                       "3.02", "5.02", "7.01", "8.01")
+
+# Un signal est « actif » pour 04d (et mérite qu'on paie l'extraction de ses
+# 8-K) si son écart dépasse ce seuil à la date du 8-K, et s'il n'est pas périmé.
+# La MOITIÉ du seuil d'entrée : une position ouverte reste détenue quand son
+# écart se resserre (positions gelées), et ses 8-K comptent encore.
+EXTRACTION_8K_GAP_MIN_PCT = 10.0
 
 # ----------------------------------------------------------------------------
 # Paramètres par défaut de la stratégie OPTIONS (backtest/options_engine.py)

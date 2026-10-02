@@ -52,6 +52,7 @@ import pandas as pd
 import config
 from backtest import data_loader, metrics as metrics_mod
 from backtest.options_engine import OptionsBacktestEngine
+from backtest.construction_moteur import ajouter_options_8k, reglages_8k_depuis
 from backtest.strategies import OPTIONS_STRATEGY_REGISTRY
 
 logger = logging.getLogger("backtest_options.cli")
@@ -274,6 +275,7 @@ def main() -> None:
     )
     parser.add_argument("--strategy-param", action="append", default=[], metavar="KEY=VALUE")
     parser.add_argument("--run-id", default=None)
+    ajouter_options_8k(parser)
     parser.add_argument(
         "--benchmark-symbol", default=config.BENCHMARK_SYMBOL,
         help="Indice de référence (défaut: %(default)s). Doit être présent dans les cours "
@@ -312,12 +314,13 @@ def main() -> None:
     logger.info("Chargement des données...")
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)
-    valorisation_combinee = data_loader.load_valorisation_combinee_history()
+    reglages_8k = reglages_8k_depuis(args)
+    valorisation_combinee = data_loader.load_valorisation_combinee_history(reglages_8k=reglages_8k)
     signal_events = data_loader.build_options_signal_events(valorisation_combinee)
     universe_history = data_loader.load_universe_history()
     fallback_symbols = data_loader.load_current_universe_symbols()
     option_snapshots = data_loader.load_option_snapshots_history()
-    material_events = data_loader.load_material_events_8k()
+    material_events = data_loader.load_material_events_8k(reglages_8k=reglages_8k)
 
     strategy_cls = OPTIONS_STRATEGY_REGISTRY[args.strategy]
     engine_settings, imposed = resolve_engine_settings(strategy_cls, args)
@@ -448,6 +451,8 @@ def main() -> None:
     (out_dir / "metrics.json").write_text(json.dumps(run_metrics, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     (out_dir / "run_config.json").write_text(json.dumps({
         "strategy": args.strategy, "strategy_params": strategy_params,
+        "ajustement_8k": args.ajustement_8k, "projections_8k": args.projections_8k,
+        "prudence_8k": args.prudence_8k,
         "initial_capital": args.initial_capital, "commission_per_contract": args.commission_per_contract,
         "slippage_pct_of_premium": args.slippage_pct_of_premium,
         "min_deployment_pct": args.min_deployment_pct,

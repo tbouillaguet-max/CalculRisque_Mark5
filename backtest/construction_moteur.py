@@ -18,6 +18,7 @@ from typing import Optional
 import pandas as pd
 
 import config
+import recalcul_8k
 from backtest import data_loader
 from backtest.engine import BacktestEngine
 from backtest.strategies import STRATEGY_REGISTRY
@@ -38,6 +39,32 @@ def parse_strategy_params(pairs: list[str]) -> dict:
             value = raw_value
         params[key] = value
     return params
+
+
+def ajouter_options_8k(parser: argparse.ArgumentParser) -> None:
+    """Les trois réglages du recalcul de la valorisation par les 8-K
+    (recalcul_8k.py), partagés par les backtests actions, options et le compte
+    paper : le backtest les compare, le compte paper rejoue celui retenu."""
+    parser.add_argument(
+        "--ajustement-8k", choices=config.AJUSTEMENT_8K_MODES, default=config.AJUSTEMENT_8K_MODE,
+        help="Ce que fait un 8-K chiffrable déposé après le signal : veto (le périme, comportement "
+             "historique), garder (le recalcule, une bonne nouvelle ne fait que le maintenir), "
+             "renforcer (le recalcule dans les deux sens). Défaut: %(default)s.")
+    parser.add_argument(
+        "--projections-8k", choices=config.PROJECTIONS_8K_MODES, default=config.PROJECTIONS_8K_MODE,
+        help="sectoriel : croissance du secteur, chiffres de la direction ignorés ; guidance : la "
+             "guidance remplace la croissance de l'année 1 du DCF. Défaut: %(default)s.")
+    parser.add_argument(
+        "--prudence-8k", type=float, default=config.PROJECTIONS_8K_PRUDENCE,
+        help="Part de l'écart guidance/secteur retenue, entre 0 et 1 (défaut: %(default)s).")
+
+
+def reglages_8k_depuis(args: argparse.Namespace) -> recalcul_8k.Reglages:
+    return recalcul_8k.Reglages(
+        mode=getattr(args, "ajustement_8k", config.AJUSTEMENT_8K_MODE),
+        projections=getattr(args, "projections_8k", config.PROJECTIONS_8K_MODE),
+        prudence=getattr(args, "prudence_8k", config.PROJECTIONS_8K_PRUDENCE),
+    )
 
 
 def ajouter_options_moteur(parser: argparse.ArgumentParser) -> None:
@@ -126,6 +153,7 @@ def ajouter_options_moteur(parser: argparse.ArgumentParser) -> None:
              "quand la volatilite realisee recente depasse la cible, jamais augmentee au-dela "
              "de 100%% (le moteur n'est pas marge). Defaut: desactive.",
     )
+    ajouter_options_8k(parser)
 
 
 @dataclass
@@ -138,7 +166,7 @@ class DonneesActions:
     material_events: Optional[pd.DataFrame]
 
 
-def charger_donnees(strategy_name: str) -> DonneesActions:
+def charger_donnees(strategy_name: str, reglages_8k: Optional[recalcul_8k.Reglages] = None) -> DonneesActions:
     daily_prices = data_loader.load_daily_prices()
     price_panel = data_loader.build_price_panel(daily_prices)
     # La source du signal est déclarée par la STRATÉGIE (Strategy.signal_source)
@@ -146,13 +174,13 @@ def charger_donnees(strategy_name: str) -> DonneesActions:
     # stratégie en dur obligerait à modifier ce fichier à chaque ajout, ce que
     # le registre sert précisément à éviter.
     signal_events = data_loader.build_strategy_signal_events(
-        STRATEGY_REGISTRY[strategy_name].signal_source)
+        STRATEGY_REGISTRY[strategy_name].signal_source, reglages_8k=reglages_8k)
     return DonneesActions(
         price_panel=price_panel,
         signal_events=signal_events,
         universe_history=data_loader.load_universe_history(),
         fallback_symbols=data_loader.load_current_universe_symbols(),
-        material_events=data_loader.load_material_events_8k(),
+        material_events=data_loader.load_material_events_8k(reglages_8k=reglages_8k),
     )
 
 

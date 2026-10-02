@@ -33,6 +33,7 @@ import config
 import paper_trading
 from backtest.construction_moteur import (
     ajouter_options_moteur, charger_donnees, construire_moteur, construire_strategie,
+    reglages_8k_depuis,
 )
 from backtest.strategies import STRATEGY_REGISTRY
 
@@ -100,7 +101,7 @@ def construire_parser() -> argparse.ArgumentParser:
 
 def rejouer_strategie(args: argparse.Namespace) -> tuple[paper_trading.PortefeuilleCible, object]:
     logger.info("Chargement des données...")
-    donnees = charger_donnees(args.strategy)
+    donnees = charger_donnees(args.strategy, reglages_8k_depuis(args))
     strategy = construire_strategie(args.strategy, args)
     engine = construire_moteur(args, donnees, strategy, start_date=pd.Timestamp(args.start_date))
     logger.info(
@@ -206,6 +207,8 @@ def main() -> None:
                 "strategy": args.strategy, "start_date": args.start_date,
                 "type_ordre": args.type_ordre, "tolerance_pct": args.tolerance_pct,
                 "capital": args.capital, "montant_minimal": montant_minimal,
+                "ajustement_8k": args.ajustement_8k, "projections_8k": args.projections_8k,
+                "prudence_8k": args.prudence_8k,
             })
         logger.info("Journal : %s", config.DIR_PAPER_TRADING)
     except paper_trading.RefusEnvoi as exc:

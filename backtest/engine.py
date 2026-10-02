@@ -652,7 +652,7 @@ class BacktestEngine:
         # sortie au motif que sa dernière valeur connue était basse. La
         # péremption gèle la ligne, elle ne la vend pas (cf. _signal_is_actionable).
         max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
-        if (today - signal["published_date"]).days > max_age:
+        if data_loader.signal_age_days(signal, today) > max_age:
             return False
         return gap < self.exit_gap_threshold_pct
 
@@ -919,7 +919,7 @@ class BacktestEngine:
             if gap is not None and gap == gap and abs(gap) > self.max_plausible_gap_pct:
                 return False
         max_age = data_loader.signal_max_age_for(signal, self.signal_max_age_days)
-        if (today - signal["published_date"]).days > max_age:
+        if data_loader.signal_age_days(signal, today) > max_age:
             return False
         # Un 8-K matériel déposé depuis la publication du signal (04c) rend
         # celui-ci périmé : les fondamentaux sur lesquels il repose ont bougé.

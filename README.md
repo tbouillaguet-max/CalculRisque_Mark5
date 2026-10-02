@@ -221,9 +221,10 @@ python run_pipeline_daily.py --paper-trading  # + ordres au compte paper (voir �
 ```
 
 Étapes, dans l'ordre : `03b` (cours, incrémental) → `04`/`04b` (dépôts SEC,
-`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `07` → `06b` → `07b` → `08`.
+`--refresh-days 7`) → `04c` (8-K) → `05` → `06` → `07` → `06b` → `04d`
+(chiffres des 8-K) → `07b` → `08`.
 `03b` et `05/06/07/06b` sont **requises** (sans elles le signal du jour est
-absent ou incohérent avec les cours) ; `04/04b/04c/07b/08` sont des
+absent ou incohérent avec les cours) ; `04/04b/04c/04d/07b/08` sont des
 enrichissements dont l'échec est journalisé sans arrêter le run, qui se
 termine alors en statut `partial`.
 
@@ -521,6 +522,49 @@ deux autres. Le repli fonctionne là où il doit : une entreprise en perte n'a n
 P/E ni souvent EBITDA positif, et c'est précisément le cas où un multiple de
 chiffre d'affaires est la seule valorisation possible.
 
+### Le recalcul par les 8-K (`04d`, `recalcul_8k.py`)
+
+Par défaut, un 8-K matériel déposé après un signal le **périme** (veto). Le
+recalcul remplace ce veto, quand le 8-K est chiffrable, par un signal
+**recalculé** avec ses chiffres :
+
+1. `04d_extraction_8k.py` (Gemini) lit les 8-K des signaux actifs et des
+   positions ouvertes. Le modèle **extrait** des faits — résultats du
+   trimestre et du même trimestre un an plus tôt, guidance, actions émises ou
+   rachetées, acquisition ou cession finalisée, décaissement ponctuel… —, chacun
+   avec la citation où il figure. Il ne calcule rien. Chaque fait est vérifié :
+   la citation doit figurer mot pour mot dans le texte, et le nombre dans la
+   citation ; sinon il est rejeté. Sortie : `extractions_8k.parquet`.
+2. `recalcul_8k.py` (Python) modifie les fondamentaux de la période d'origine
+   (le TTM glisse d'un trimestre, la dette nette et le nombre d'actions
+   suivent les opérations), réapplique les multiples de 06b — retrouvés en
+   inversant les prix implicites stockés — et refait le DCF de 07. Le signal
+   recalculé est daté du 8-K, valorisé au cours de ce jour, et se périme avec
+   le 10-K/10-Q qui le fonde. Un risque non chiffrable ajoute une prime au WACC
+   (`PRIME_RISQUE_8K_BPS`), qui décote aussi les multiples. Un 8-K qui met en
+   cause la survie ou les comptes reste un veto.
+
+Trois réglages, sur `09`, `10` et `17` (défauts dans `config.py`) :
+
+| Option | Valeurs | Effet |
+|---|---|---|
+| `--ajustement-8k` | `veto` (défaut), `garder`, `renforcer` | `veto` : comportement historique. `garder` : recalcul, mais une bonne nouvelle ne fait que maintenir le signal. `renforcer` : l'écart suit les chiffres dans les deux sens. |
+| `--projections-8k` | `sectoriel` (défaut), `guidance` | `guidance` : la guidance remplace la croissance de l'année 1 du DCF (retour linéaire au taux sectoriel en année 5) ; économies et contrats annoncés s'ajoutent aux fondamentaux. |
+| `--prudence-8k` | 0 à 1 (défaut 0,5) | Part de l'écart entre la direction et le repère sectoriel qui est retenue. |
+
+```bash
+python 04d_extraction_8k.py --dry-run                 # les 8-K concernés, sans appel
+python 04d_extraction_8k.py                           # extraction (mémorisée : jamais deux fois)
+python 09_backtest.py --strategy valuation_gap_dcf --ajustement-8k garder
+python 09_backtest.py --strategy valuation_gap_dcf --ajustement-8k renforcer --projections-8k guidance
+```
+
+Limites connues : le multiple **mérité** n'est pas re-régressé sur les
+fondamentaux modifiés (le multiple appliqué reste celui de 06b) ; seuls les
+8-K extraits sont recalculés, donc la comparaison au backtest ne porte que sur
+la fenêtre que `04d` a couverte (`--depuis` pour l'élargir, à un coût en
+requêtes).
+
 ### Le multiple mérité : un test avant tout branchement
 
 `warranted_multiple.py` estime, par régression en coupe sur les fondamentaux
@@ -682,6 +726,7 @@ génère alors sous la contrainte du schéma, et ne peut répondre que :
 | Script | Documents d'une requête | Format imposé |
 |---|---|---|
 | `04c` | jusqu'à 10 8-K déposés le même jour | pour chaque 8-K : une des sept catégories, un booléen de matérialité, une phrase de résumé |
+| `04d` | 2 8-K déposés le même jour | pour chaque 8-K : les faits chiffrés (type, valeur, citation exacte), la date de clôture des résultats publiés, un sens, une catégorie de risque, un veto, une phrase de résumé |
 | `07b` | jusqu'à 5 extraits de 10-K/10-Q déposés le même jour | pour chaque extrait : un verdict (`coherent`, `a_surveiller`, `contradictoire`), une phrase de justification, au plus cinq risques cités |
 | `02` | jusqu'à 25 entreprises | pour chaque entreprise, un secteur de la liste ou `indetermine` |
 

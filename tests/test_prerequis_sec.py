@@ -27,7 +27,7 @@ import run_pipeline_quarterly as quarterly
 
 RACINE = pathlib.Path(__file__).resolve().parent.parent
 SEC = {"04_recuperation_10k.py", "04b_recuperation_10q.py",
-       "04c_recuperation_8k.py", "07b_validation_qualitative.py"}
+       "04c_recuperation_8k.py", "04d_extraction_8k.py", "07b_validation_qualitative.py"}
 
 
 @pytest.fixture

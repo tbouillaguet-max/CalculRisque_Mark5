@@ -32,6 +32,7 @@ import pandas as pd
 
 import config
 import hierarchie_multiples
+import recalcul_8k
 
 logger = logging.getLogger("backtest.data_loader")
 
@@ -307,13 +308,46 @@ def apply_qualitative_gate(df: pd.DataFrame, path=None) -> pd.DataFrame:
     return df[mask].reset_index(drop=True)
 
 
-def load_dcf_history(path=None) -> pd.DataFrame:
+def _reglages_8k(reglages_8k) -> "recalcul_8k.Reglages":
+    return reglages_8k if reglages_8k is not None else recalcul_8k.Reglages.depuis_config()
+
+
+def _avec_ajustements_8k(df: pd.DataFrame, reglages_8k, source: str, hierarchie=None) -> pd.DataFrame:
+    """Ajoute à l'historique les signaux RECALCULÉS à partir des 8-K
+    (recalcul_8k.py), selon config.AJUSTEMENT_8K_MODE ou `reglages_8k`.
+    En mode "veto" (défaut), l'historique est rendu tel quel.
+
+    Appelé AVANT le filtre qualitatif : une ligne ajustée garde la période de
+    son 10-K/10-Q d'origine, elle est donc écartée avec lui si 07b l'a jugé
+    contradictoire -- et l'ajustement se rattache toujours au vrai dernier
+    dépôt, pas à celui d'avant parce que le filtre aurait retiré le bon."""
+    reglages = _reglages_8k(reglages_8k)
+    if not reglages.actif:
+        return df
+    ajustees, _vetos = recalcul_8k.lignes_ajustees(df, reglages, source, hierarchie=hierarchie)
+    if ajustees.empty:
+        return df
+    return pd.concat([df, ajustees], ignore_index=True)
+
+
+def signal_age_days(signal: dict, today: pd.Timestamp) -> int:
+    """Âge d'un signal, en jours, pour sa péremption. Un signal recalculé par
+    un 8-K est daté du 8-K, mais il vieillit avec le 10-K/10-Q qui le fonde
+    (`age_reference_date`) : un 8-K ne prolonge pas la vie d'une période."""
+    reference = signal.get("age_reference_date")
+    if reference is None or reference != reference or pd.isna(reference):
+        reference = signal["published_date"]
+    return (today - pd.Timestamp(reference)).days
+
+
+def load_dcf_history(path=None, reglages_8k=None) -> pd.DataFrame:
     path = path or config.DCF_HISTORY_FILE
     if not path.exists():
         raise FileNotFoundError(
             f"{path} introuvable. Lance d'abord 07_calcul_dcf.py (avec 04 déjà à jour)."
         )
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
+    df = _avec_ajustements_8k(df, reglages_8k, "dcf")
     df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
@@ -334,8 +368,9 @@ def build_signal_events(dcf_history: pd.DataFrame) -> pd.DataFrame:
     # period_type : porté jusqu'à l'engine pour dater la péremption du signal
     # (un TTM trimestriel se périme plus vite qu'un exercice annuel, cf.
     # signal_max_age_for). Absent des caches antérieurs au TTM (04b).
-    if "period_type" in renamed.columns:
-        cols.append("period_type")
+    for facultative in ("period_type", "age_reference_date"):
+        if facultative in renamed.columns:
+            cols.append(facultative)
     return renamed[cols]
 
 
@@ -365,13 +400,13 @@ def build_combined_signal_events(valorisation_combinee: pd.DataFrame) -> pd.Data
         valuation_dcf_per_share=renamed["valuation_theoretical_per_share"])
     cols = ["symbol", "published_date", "fiscal_year", "sector", "close_at_filing",
             "valuation_dcf_per_share", "gap_pct"]
-    for facultative in ("period_type", "source"):
+    for facultative in ("period_type", "source", "age_reference_date"):
         if facultative in renamed.columns:
             cols.append(facultative)
     return renamed[cols].dropna(subset=["gap_pct", "published_date"])
 
 
-def build_strategy_signal_events(signal_source: str, hierarchie=None) -> pd.DataFrame:
+def build_strategy_signal_events(signal_source: str, hierarchie=None, reglages_8k=None) -> pd.DataFrame:
     """Événements de signal correspondant à la source déclarée par une
     stratégie (cf. `Strategy.signal_source`). Point d'entrée unique, pour que
     ni 09_backtest.py ni l'optimiseur n'aient à connaître les tables.
@@ -382,14 +417,14 @@ def build_strategy_signal_events(signal_source: str, hierarchie=None) -> pd.Data
     s'applique pas."""
     if signal_source == "combinee":
         return build_combined_signal_events(
-            load_valorisation_combinee_history(hierarchie=hierarchie))
+            load_valorisation_combinee_history(hierarchie=hierarchie, reglages_8k=reglages_8k))
     if signal_source == "dcf":
         if hierarchie is not None:
             raise ValueError(
                 "Une hiérarchie de multiples n'a pas de sens sur la source 'dcf' : "
                 "ce signal ne combine aucun multiple."
             )
-        return build_signal_events(load_dcf_history())
+        return build_signal_events(load_dcf_history(reglages_8k=reglages_8k))
     raise ValueError(
         f"Source de signal inconnue : {signal_source!r}. Attendu 'dcf' ou 'combinee' "
         "(cf. backtest.strategies.base.Strategy.signal_source)."
@@ -459,7 +494,20 @@ def _material_by_item_code(df: pd.DataFrame, codes: tuple) -> pd.Series:
     return df["item_codes"].map(materiel)
 
 
-def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
+def _vetos_8k(reglages_8k) -> Optional[pd.DataFrame]:
+    """8-K que 04d a jugés de VETO (survie ou fiabilité des comptes en
+    cause), à ajouter aux événements matériels quand le recalcul est actif :
+    un tel 8-K périme le signal même si 04c ne l'avait pas jugé matériel."""
+    if not _reglages_8k(reglages_8k).actif:
+        return None
+    extractions = recalcul_8k.charger_extractions()
+    if extractions is None or "veto" not in extractions.columns:
+        return None
+    vetos = extractions[extractions["veto"].fillna(False).astype(bool)]
+    return vetos[["symbol", "filed_date"]] if not vetos.empty else None
+
+
+def load_material_events_8k(path=None, reglages_8k=None) -> Optional[pd.DataFrame]:
     """8-K matériels. Deux sources, dans cet ordre :
 
     1. la classification de 04c (`materiality`), quand elle a tourné avec une
@@ -476,11 +524,12 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
     moindre événement : le filtre reste alors sans effet plutôt que d'écarter
     tous les signaux."""
     path = path or config.MATERIAL_EVENTS_8K_FILE
+    vetos = _vetos_8k(reglages_8k)
     if not path.exists():
-        return None
+        return _dater(vetos)
     df = pd.read_parquet(path)
     if "filed_date" not in df.columns:
-        return None
+        return _dater(vetos)
 
     source = "classification 04c"
     retenus = (
@@ -499,6 +548,8 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
         source = f"codes d'item SEC {tuple(codes)}"
 
     df = df[retenus].copy()
+    if vetos is not None:
+        df = pd.concat([df, vetos], ignore_index=True)
     if df.empty:
         logger.info(
             "%s ne désigne aucun 8-K matériel, ni par la classification de 04c "
@@ -515,6 +566,14 @@ def load_material_events_8k(path=None) -> Optional[pd.DataFrame]:
     return df.dropna(subset=["symbol", "filed_date"])
 
 
+def _dater(evenements: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    if evenements is None or evenements.empty:
+        return None
+    evenements = evenements.copy()
+    evenements["filed_date"] = config.to_naive_day(evenements["filed_date"])
+    return evenements.dropna(subset=["symbol", "filed_date"])
+
+
 def signal_max_age_for(signal: dict, default: int) -> int:
     """Âge maximal (en jours) au-delà duquel ce signal n'est plus actionnable,
     selon le type de période qui l'a produit (config.BACKTEST_SIGNAL_MAX_AGE_DAYS_BY_PERIOD).
@@ -523,7 +582,7 @@ def signal_max_age_for(signal: dict, default: int) -> int:
     return by_period.get(signal.get("period_type"), default)
 
 
-def load_valorisation_combinee_history(path=None, hierarchie=None) -> pd.DataFrame:
+def load_valorisation_combinee_history(path=None, hierarchie=None, reglages_8k=None) -> pd.DataFrame:
     """Signal de la stratégie OPTIONS (multiples sectoriels par année en
     priorité, DCF en repli -- voir 06b_calcul_valorisation_combinee.py),
     distinct de load_dcf_history (stratégie actions, DCF seul).
@@ -544,6 +603,7 @@ def load_valorisation_combinee_history(path=None, hierarchie=None) -> pd.DataFra
     df = _fill_missing_filed_dates(pd.read_parquet(path), path)
     if hierarchie is not None:
         df = hierarchie_multiples.recombiner(df, hierarchie)
+    df = _avec_ajustements_8k(df, reglages_8k, "combinee", hierarchie=hierarchie)
     df = apply_qualitative_gate(df)
     return df.dropna(subset=["gap_pct", "symbol"]).sort_values(["symbol", "filed_date"]).reset_index(drop=True)
 
@@ -572,8 +632,9 @@ def build_options_signal_events(valorisation_combinee: pd.DataFrame) -> pd.DataF
         "symbol", "published_date", "fiscal_year", "sector", "close",
         "valuation_theoretical_per_share", "source", "gap_pct",
     ]
-    if "period_type" in renamed.columns:
-        cols.append("period_type")
+    for facultative in ("period_type", "age_reference_date"):
+        if facultative in renamed.columns:
+            cols.append(facultative)
     return renamed[cols]
 
 

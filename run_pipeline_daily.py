@@ -149,6 +149,9 @@ def daily_steps(filings_refresh_days: int, paper_trading: bool = False) -> List[
         # 07 avant 06b : 06b lit le DCF que 07 écrit (cf. LIVE_STEPS).
         Step("07_calcul_dcf.py"),
         Step("06b_calcul_valorisation_combinee.py"),
+        # Après 06b et 07 : 04d lit leurs signaux pour savoir quels 8-K
+        # touchent un signal actif, et en extrait les chiffres (recalcul_8k).
+        Step("04d_extraction_8k.py", required=False, accepts_limit=True, needs_sec=True),
         Step("07b_validation_qualitative.py", required=False, accepts_limit=True,
              needs_sec=True),
         # Sur demande seulement (--paper-trading) : après le signal et 07b, dont

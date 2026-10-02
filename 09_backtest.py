@@ -42,6 +42,7 @@ import config
 from backtest import data_loader, metrics as metrics_mod
 from backtest.construction_moteur import (  # noqa: F401 -- parse_strategy_params : API de ce script
     ajouter_options_moteur, charger_donnees, construire_moteur, construire_strategie,
+    reglages_8k_depuis,
     parse_strategy_params,
 )
 from backtest.strategies import STRATEGY_REGISTRY
@@ -85,7 +86,7 @@ def main() -> None:
         sys.exit(1)
 
     logger.info("Chargement des données...")
-    donnees = charger_donnees(args.strategy)
+    donnees = charger_donnees(args.strategy, reglages_8k_depuis(args))
     universe_history = donnees.universe_history
     price_panel = donnees.price_panel
     strategy = construire_strategie(args.strategy, args)
@@ -126,6 +127,8 @@ def main() -> None:
         # la ligne de commande portait laissait un run irreproductible dès
         # qu'un défaut bougeait.
         "strategy": args.strategy, "strategy_params": strategy.params,
+        "ajustement_8k": args.ajustement_8k, "projections_8k": args.projections_8k,
+        "prudence_8k": args.prudence_8k,
         "initial_capital": args.initial_capital, "commission_bps": args.commission_bps,
         "slippage_bps": args.slippage_bps, "stop_loss_pct": args.stop_loss_pct,
         "take_profit_pct": args.take_profit_pct,

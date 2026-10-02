@@ -186,6 +186,9 @@ LIVE_STEPS: List[Step] = [
     # périodes que ce run venait de récupérer n'y trouvaient aucun DCF du tout.
     Step("07_calcul_dcf.py"),
     Step("06b_calcul_valorisation_combinee.py"),
+    # Après 06b et 07, dont il lit les signaux : chiffres des 8-K des signaux
+    # actifs, pour le recalcul de la valorisation (recalcul_8k).
+    Step("04d_extraction_8k.py", required=False, accepts_limit=True, needs_sec=True),
     # Télécharge le texte des dépôts depuis la SEC (via sec_filings_text) :
     # sans adresse de contact, chaque période est « ignorée » une à une.
     Step("07b_validation_qualitative.py", required=False, accepts_limit=True, needs_sec=True),
@@ -434,6 +437,7 @@ APPORT_DES_ETAPES_SEC = {
     "04_recuperation_10k.py": "comptes annuels (10-K)",
     "04b_recuperation_10q.py": "comptes trimestriels (10-Q)",
     "04c_recuperation_8k.py": "événements 8-K (péremption des signaux)",
+    "04d_extraction_8k.py": "chiffres des 8-K (recalcul des signaux actifs)",
     "07b_validation_qualitative.py": "validation qualitative des dépôts",
 }
 

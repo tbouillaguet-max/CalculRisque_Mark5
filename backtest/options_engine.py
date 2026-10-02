@@ -2274,7 +2274,7 @@ class OptionsBacktestEngine:
                 continue
             if sym not in universe_today:
                 continue
-            if (today - s["published_date"]).days > data_loader.signal_max_age_for(
+            if data_loader.signal_age_days(s, today) > data_loader.signal_max_age_for(
                 s, self.signal_max_age_days
             ):
                 continue
